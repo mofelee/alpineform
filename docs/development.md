@@ -56,6 +56,8 @@ serialization. `--color auto` honors `NO_COLOR` and non-terminal output;
 Target facts use a read-only engine capability that is separate from future
 state and lock backends. See [facts.md](facts.md).
 
+Remote state persistence is described in [state-backend.md](state-backend.md).
+
 ## Product names
 
 | Surface | Value |

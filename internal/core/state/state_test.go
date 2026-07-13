@@ -72,3 +72,29 @@ func TestStateRoundTripAndRevision(t *testing.T) {
 		t.Fatalf("round-trip facts = %#v, want %#v", decoded.Facts, input.Facts)
 	}
 }
+
+func TestEncodeNeverPersistsProtectedResourceValues(t *testing.T) {
+	secret := "not-a-real-state-secret"
+	for _, resource := range []Resource{
+		{Kind: "file", Desired: map[string]any{"content": secret}, Sensitive: true, DesiredDigest: "digest"},
+		{Kind: "file", Desired: map[string]any{"content": secret, "sensitive": true}, DesiredDigest: "digest"},
+		{Kind: "file", Desired: map[string]any{"content": secret}, Ephemeral: true, DesiredDigest: "ephemeral-digest"},
+		{Kind: "file", Desired: map[string]any{"content": secret, "ephemeral": true}, DesiredDigest: "ephemeral-digest"},
+	} {
+		state := Empty("node")
+		state.Resources["file.secret"] = resource
+		data, err := Encode(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		if strings.Contains(text, secret) || !strings.Contains(text, `"protected": true`) {
+			t.Fatalf("encoded protected state = %s", text)
+		}
+		if resource.Ephemeral || mapMarkedEphemeral(resource.Desired) {
+			if strings.Contains(text, "ephemeral-digest") {
+				t.Fatalf("encoded ephemeral state persisted digest: %s", text)
+			}
+		}
+	}
+}

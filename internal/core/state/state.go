@@ -29,9 +29,27 @@ type Resource struct {
 	Kind          string         `json:"kind"`
 	Ownership     string         `json:"ownership"`
 	Desired       map[string]any `json:"desired,omitempty"`
-	DesiredDigest string         `json:"desired_digest"`
+	DesiredDigest string         `json:"desired_digest,omitempty"`
 	Observed      map[string]any `json:"observed,omitempty"`
 	Order         int            `json:"order"`
+	Protected     bool           `json:"protected,omitempty"`
+	Sensitive     bool           `json:"-"`
+	Ephemeral     bool           `json:"-"`
+}
+
+func (resource Resource) MarshalJSON() ([]byte, error) {
+	type resourceJSON Resource
+	out := resourceJSON(resource)
+	protected := resource.Protected || resource.Sensitive || resource.Ephemeral || mapMarksProtected(resource.Desired) || mapMarksProtected(resource.Observed)
+	if protected {
+		out.Desired = nil
+		out.Observed = nil
+		out.Protected = true
+	}
+	if resource.Ephemeral || mapMarkedEphemeral(resource.Desired) || mapMarkedEphemeral(resource.Observed) {
+		out.DesiredDigest = ""
+	}
+	return json.Marshal(out)
 }
 
 func Empty(host string) State {
@@ -104,4 +122,21 @@ func Encode(input State) ([]byte, error) {
 		return nil, err
 	}
 	return json.MarshalIndent(normalized, "", "  ")
+}
+
+func mapMarksProtected(value map[string]any) bool {
+	if value == nil {
+		return false
+	}
+	sensitive, _ := value["sensitive"].(bool)
+	ephemeral, _ := value["ephemeral"].(bool)
+	return sensitive || ephemeral
+}
+
+func mapMarkedEphemeral(value map[string]any) bool {
+	if value == nil {
+		return false
+	}
+	ephemeral, _ := value["ephemeral"].(bool)
+	return ephemeral
 }
