@@ -216,3 +216,59 @@ func TestParseHostSSHRejectsUnsupportedValues(t *testing.T) {
 		})
 	}
 }
+
+func TestParseHostNativeResourceDeclarations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resources.apf.hcl")
+	writeConfig(t, path, `
+variable "motd" {
+  type    = string
+  default = "Alpine"
+}
+host "node" {
+  files {
+    file "/etc/app/motd" {
+      content   = var.motd
+      sensitive = true
+      lifecycle { prevent_destroy = true }
+    }
+  }
+}
+`)
+	config, err := ParseFiles([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resources := config.Hosts["node"].Resources
+	if len(resources) != 1 {
+		t.Fatalf("resources = %#v", resources)
+	}
+	file := resources[0]
+	if file.Kind != ResourceFile || file.Label != "/etc/app/motd" || file.Attributes["content"].Expression == nil || !file.Lifecycle.PreventDestroy {
+		t.Fatalf("file declaration = %#v", file)
+	}
+}
+
+func TestParseHostNativeResourcesRejectInvalidShapeAndDuplicates(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "collection attributes", content: "host \"node\" {\n  files {\n    enabled = true\n  }\n}\n", want: "containing only file blocks"},
+		{name: "wrong child", content: "host \"node\" {\n  files {\n    directory \"/tmp\" {}\n  }\n}\n", want: "supports only file blocks"},
+		{name: "unknown attribute", content: "host \"node\" {\n  files {\n    file \"/tmp/x\" {\n      template = \"x\"\n    }\n  }\n}\n", want: "unsupported attribute"},
+		{name: "duplicate", content: "host \"node\" {\n  files {\n    file \"/tmp/x\" {}\n  }\n  files {\n    file \"/tmp/x\" {}\n  }\n}\n", want: `duplicate file label "/tmp/x"`},
+		{name: "control label", content: "host \"node\" {\n  files {\n    file \"bad\\nname\" {}\n  }\n}\n", want: "contain no control characters"},
+		{name: "deferred domain", content: "host \"node\" {\n  users {\n    user \"app\" {}\n  }\n}\n", want: "unsupported block"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "invalid-resource.apf.hcl")
+			writeConfig(t, path, test.content)
+			_, err := ParseFiles([]string{path})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ParseFiles() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}

@@ -17,6 +17,7 @@ import (
 	coremerge "github.com/mofelee/alpineform/internal/core/merge"
 	coreparser "github.com/mofelee/alpineform/internal/core/parser"
 	coreplan "github.com/mofelee/alpineform/internal/core/plan"
+	coreprovider "github.com/mofelee/alpineform/internal/core/provider"
 	corestate "github.com/mofelee/alpineform/internal/core/state"
 )
 
@@ -71,7 +72,6 @@ func defaultOnlineRuntime() onlineRuntime {
 		NewRunner: func(host ir.HostSpec) (onlineRunner, error) {
 			return corebackend.NewSSHRunner(host, corebackend.SSHOptions{})
 		},
-		Provider: unavailableProvider{},
 	}
 }
 
@@ -84,9 +84,6 @@ func (runtime onlineRuntime) normalized() (onlineRuntime, error) {
 	}
 	if runtime.NewRunner == nil {
 		return onlineRuntime{}, fmt.Errorf("online command requires an SSH runner factory")
-	}
-	if runtime.Provider == nil {
-		return onlineRuntime{}, fmt.Errorf("online command requires a resource provider")
 	}
 	return runtime, nil
 }
@@ -269,6 +266,28 @@ type onlineWorkflow struct {
 	ctx    context.Context
 }
 
+type onlineHostRegistry struct {
+	mu    sync.RWMutex
+	hosts map[string]ir.HostSpec
+}
+
+func (registry *onlineHostRegistry) replace(hosts []ir.HostSpec) {
+	next := make(map[string]ir.HostSpec, len(hosts))
+	for _, host := range hosts {
+		next[host.Name] = host
+	}
+	registry.mu.Lock()
+	registry.hosts = next
+	registry.mu.Unlock()
+}
+
+func (registry *onlineHostRegistry) get(name string) (ir.HostSpec, bool) {
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	host, exists := registry.hosts[name]
+	return host, exists
+}
+
 func newOnlineWorkflow(loader onlineConfigLoader, runtime onlineRuntime, parallel int) (onlineWorkflow, error) {
 	if parallel < 1 {
 		return onlineWorkflow{}, fmt.Errorf("parallelism must be at least 1")
@@ -291,10 +310,20 @@ func newOnlineWorkflow(loader onlineConfigLoader, runtime onlineRuntime, paralle
 		}
 		return runner, nil
 	}
+	registry := &onlineHostRegistry{}
 	remote := corebackend.RemoteBackend{NewRunner: func(host ir.HostSpec) (corebackend.Runner, error) {
 		return newRunner(host)
 	}}
 	provider := runtime.Provider
+	if provider == nil {
+		provider = coreprovider.Native{NewRunner: func(hostName string) (corebackend.Runner, error) {
+			host, exists := registry.get(hostName)
+			if !exists {
+				return nil, fmt.Errorf("no compiled SSH identity for provider host %q", hostName)
+			}
+			return newRunner(host)
+		}}
+	}
 	if runtime.Events != nil {
 		provider = debugProvider{delegate: provider, events: runtime.Events}
 	}
@@ -324,6 +353,7 @@ func newOnlineWorkflow(loader onlineConfigLoader, runtime onlineRuntime, paralle
 		if err != nil {
 			return nil, nil, err
 		}
+		registry.replace(program.Hosts)
 		resourceGraph, err := coregraph.Compile(program)
 		if err != nil {
 			return nil, nil, err

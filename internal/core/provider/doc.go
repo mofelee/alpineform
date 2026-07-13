@@ -1,2 +1,2 @@
-// Package provider will observe and converge Alpine Linux resources.
+// Package provider observes and converges Alpine Linux resources.
 package provider

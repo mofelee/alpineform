@@ -98,3 +98,22 @@ func TestEncodeNeverPersistsProtectedResourceValues(t *testing.T) {
 		}
 	}
 }
+
+func TestEncodePersistsSafeWriteOnlyVersionDigest(t *testing.T) {
+	state := Empty("node")
+	state.Resources["file.write_only"] = Resource{
+		Kind:          "file",
+		Ephemeral:     true,
+		DigestSafe:    true,
+		DesiredDigest: "safe-version-digest",
+		Delete:        map[string]any{"path": "/etc/app/config"},
+	}
+	data, err := Encode(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "safe-version-digest") || !strings.Contains(text, `"digest_safe": true`) || !strings.Contains(text, `/etc/app/config`) || !strings.Contains(text, `"protected": true`) {
+		t.Fatalf("write-only state = %s", text)
+	}
+}

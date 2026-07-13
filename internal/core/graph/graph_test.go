@@ -67,6 +67,48 @@ func TestProtectedNodeJSONDoesNotLeakDesiredValues(t *testing.T) {
 	}
 }
 
+func TestCompileFileNodeSeparatesProviderPayload(t *testing.T) {
+	secret := "not-a-real-graph-file-secret"
+	program := &ir.Program{Hosts: []ir.HostSpec{{
+		Name:   "node",
+		Source: source(1),
+		Files: []ir.ManagedFileSpec{{
+			Path:             "/etc/app/config",
+			Content:          secret,
+			ContentVersion:   "release-1",
+			ContentWriteOnly: true,
+			ContentBytes:     int64(len(secret)),
+			Owner:            "root",
+			Group:            "root",
+			Mode:             "0600",
+			Ensure:           "present",
+			OnRemove:         "destroy",
+			Sensitive:        true,
+			Ephemeral:        true,
+			Lifecycle:        ir.LifecycleSpec{PreventDestroy: true},
+			Source:           source(3),
+		}},
+	}}}
+	resourceGraph, err := Compile(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resourceGraph.ManagedCount() != 1 || len(resourceGraph.Nodes) != 2 {
+		t.Fatalf("graph = %#v", resourceGraph)
+	}
+	file := resourceGraph.Nodes[1]
+	if file.Address != `host.node.files.file["/etc/app/config"]` || file.Kind != "file" || !file.Managed || !file.Sensitive || !file.Ephemeral || !file.DigestSafe || file.Payload["content"] != secret || file.Desired["delete_behavior"] != "destroy" {
+		t.Fatalf("file node = %#v", file)
+	}
+	data, err := json.Marshal(resourceGraph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secret) || strings.Contains(string(data), "release-1") || !strings.Contains(string(data), `"protected":true`) {
+		t.Fatalf("graph JSON = %s", data)
+	}
+}
+
 func TestCompileBuildsStructuralGraph(t *testing.T) {
 	program := &ir.Program{Hosts: []ir.HostSpec{{
 		Name:     "node",

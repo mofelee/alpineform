@@ -58,6 +58,26 @@ func TestTextColorIsExplicit(t *testing.T) {
 	}
 }
 
+func TestOfflinePlanRendersExplicitAbsenceAsDelete(t *testing.T) {
+	resourceGraph := &graph.ResourceGraph{Nodes: []graph.Node{{
+		Host:    "node",
+		Address: `host.node.files.file["/tmp/old"]`,
+		Kind:    "file",
+		Managed: true,
+		Desired: map[string]any{"ensure": "absent", "path": "/tmp/old"},
+		Source:  ir.SourceRef{File: "model.apf.hcl", Line: 3},
+	}}}
+	document := New(resourceGraph, Options{Hosts: []string{"node"}})
+	if document.Summary.Create != 0 || document.Summary.Delete != 1 || document.Changes[0].Action != "delete" {
+		t.Fatalf("offline absent document = %#v", document)
+	}
+	var output bytes.Buffer
+	PrintText(&output, document, TextOptions{})
+	if !strings.Contains(output.String(), "  - host.node.files.file") || !strings.Contains(output.String(), "1 to delete") {
+		t.Fatalf("offline absent text = %s", output.String())
+	}
+}
+
 func TestOnlinePlanRendersEveryActionWithoutProtectedValues(t *testing.T) {
 	secret := "not-a-real-online-plan-secret"
 	host := ir.HostSpec{Name: "node"}

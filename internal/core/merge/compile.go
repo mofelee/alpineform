@@ -290,6 +290,10 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 			Source:             host.Platform.Source,
 		}
 	}
+	out.Files, err = compileHostFiles(host, facts, hostContext)
+	if err != nil {
+		return ir.HostSpec{}, err
+	}
 	for _, name := range resolved.Order {
 		instance := resolved.Components[name]
 		compiled, err := compileComponentInstance(config, host, facts, instance, hostContext)

@@ -514,3 +514,133 @@ func TestCompileSetsSSHAndBackendDefaults(t *testing.T) {
 		t.Fatalf("compiled host defaults = %#v", host)
 	}
 }
+
+func TestCompileFileResourceProtectsWriteOnlyContent(t *testing.T) {
+	secret := "not-a-real-write-only-file-secret"
+	config, err := compileConfig(t, `
+variable "payload" {
+  type      = string
+  default   = "`+secret+`"
+  sensitive = true
+  ephemeral = true
+}
+host "node" {
+  files {
+    file "/etc/app/config" {
+      content         = var.payload
+      content_version = "release-7"
+      owner           = "root"
+      group           = "root"
+      mode            = "600"
+      on_remove       = "destroy"
+      lifecycle { prevent_destroy = true }
+    }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Hosts[0].Files) != 1 {
+		t.Fatalf("files = %#v", program.Hosts[0].Files)
+	}
+	file := program.Hosts[0].Files[0]
+	if file.Content != secret || file.ContentSHA256 != "" || file.ContentVersion != "release-7" || !file.ContentWriteOnly || !file.Sensitive || !file.Ephemeral || file.Mode != "0600" || file.OnRemove != "destroy" || !file.Lifecycle.PreventDestroy {
+		t.Fatalf("compiled file = %#v", file)
+	}
+	data, err := json.Marshal(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secret) || strings.Contains(string(data), `"content"`) {
+		t.Fatalf("compiled program leaked content: %s", data)
+	}
+}
+
+func TestCompileFileResourceValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		file    string
+		wantErr string
+	}{
+		{name: "relative path", file: "file \"relative\" {\n  content = \"x\"\n}", wantErr: "clean absolute"},
+		{name: "missing content", file: "file \"/tmp/x\" {}", wantErr: "exactly one of content or source"},
+		{name: "both payloads", file: "file \"/tmp/x\" {\n  content = \"x\"\n  source = \"x\"\n}", wantErr: "only one of content or source"},
+		{name: "invalid mode", file: "file \"/tmp/x\" {\n  content = \"x\"\n  mode = \"0988\"\n}", wantErr: "octal string"},
+		{name: "invalid owner", file: "file \"/tmp/x\" {\n  content = \"x\"\n  owner = \"bad owner\"\n}", wantErr: "valid Alpine account"},
+		{name: "absent payload", file: "file \"/tmp/x\" {\n  ensure = \"absent\"\n  content = \"x\"\n}", wantErr: "must not set content"},
+		{name: "bad remove behavior", file: "file \"/tmp/x\" {\n  content = \"x\"\n  on_remove = \"delete\"\n}", wantErr: "forget"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := compileConfig(t, "host \"node\" {\n  files {\n    "+test.file+"\n  }\n}\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Compile(config)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Compile() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestCompileEphemeralFileRequiresPublicVersion(t *testing.T) {
+	secret := "not-a-real-ephemeral-content"
+	config, err := compileConfig(t, `
+variable "payload" {
+  type      = string
+  default   = "`+secret+`"
+  ephemeral = true
+}
+host "node" {
+  files {
+    file "/tmp/x" { content = var.payload }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Compile(config)
+	if err == nil || !strings.Contains(err.Error(), "content_version") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("Compile() error = %v", err)
+	}
+}
+
+func TestCompileFileLoadsRelativeSource(t *testing.T) {
+	dir := t.TempDir()
+	payload := "source-backed content\n"
+	if err := os.WriteFile(filepath.Join(dir, "payload.txt"), []byte(payload), 0600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "main.apf.hcl")
+	content := `
+host "node" {
+  files {
+    file "/etc/source-backed" {
+      source = "payload.txt"
+    }
+  }
+}
+`
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := parser.ParseFiles([]string{configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := program.Hosts[0].Files[0]
+	if file.Content != payload || file.ContentBytes != int64(len(payload)) || file.ContentSHA256 == "" {
+		t.Fatalf("source-backed file = %#v", file)
+	}
+}

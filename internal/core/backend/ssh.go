@@ -70,6 +70,11 @@ func (runner *SSHRunner) Run(ctx context.Context, command Command) ([]byte, erro
 	if strings.TrimSpace(command.Script) == "" {
 		return nil, fmt.Errorf("SSH command %q has an empty remote script", command.Name)
 	}
+	for _, argument := range command.Arguments {
+		if strings.ContainsRune(argument, '\x00') {
+			return nil, fmt.Errorf("SSH command %q has a NUL byte in a remote argument", command.Name)
+		}
+	}
 	args := []string{
 		"-o", "BatchMode=yes",
 		"-o", "ClearAllForwardings=yes",
@@ -84,7 +89,14 @@ func (runner *SSHRunner) Run(ctx context.Context, command Command) ([]byte, erro
 	if runner.host.SSH.IdentityFile != "" {
 		args = append(args, "-i", runner.host.SSH.IdentityFile)
 	}
-	args = append(args, "-l", "root", "--", runner.host.SSH.Host, "sh -c "+sshShellQuote(command.Script))
+	remoteCommand := "sh -c " + sshShellQuote(command.Script)
+	if len(command.Arguments) > 0 {
+		remoteCommand += " alpineform"
+		for _, argument := range command.Arguments {
+			remoteCommand += " " + sshShellQuote(argument)
+		}
+	}
+	args = append(args, "-l", "root", "--", runner.host.SSH.Host, remoteCommand)
 	stdout, stderr, err := runner.options.Executor.Execute(ctx, runner.options.Binary, args, command.Stdin)
 	if err != nil {
 		if command.RedactOutput {

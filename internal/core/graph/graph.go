@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/mofelee/alpineform/internal/core/ir"
@@ -15,17 +16,19 @@ type ResourceGraph struct {
 }
 
 type Node struct {
-	Host      string            `json:"host,omitempty"`
-	Address   string            `json:"address"`
-	Kind      string            `json:"kind"`
-	Managed   bool              `json:"managed"`
-	Summary   string            `json:"summary,omitempty"`
-	Source    ir.SourceRef      `json:"source"`
-	Lifecycle *ir.LifecycleSpec `json:"lifecycle,omitempty"`
-	Desired   map[string]any    `json:"desired,omitempty"`
-	DependsOn []string          `json:"depends_on,omitempty"`
-	Sensitive bool              `json:"-"`
-	Ephemeral bool              `json:"-"`
+	Host       string            `json:"host,omitempty"`
+	Address    string            `json:"address"`
+	Kind       string            `json:"kind"`
+	Managed    bool              `json:"managed"`
+	Summary    string            `json:"summary,omitempty"`
+	Source     ir.SourceRef      `json:"source"`
+	Lifecycle  *ir.LifecycleSpec `json:"lifecycle,omitempty"`
+	Desired    map[string]any    `json:"desired,omitempty"`
+	Payload    map[string]any    `json:"-"`
+	DependsOn  []string          `json:"depends_on,omitempty"`
+	Sensitive  bool              `json:"-"`
+	Ephemeral  bool              `json:"-"`
+	DigestSafe bool              `json:"-"`
 }
 
 func (node Node) MarshalJSON() ([]byte, error) {
@@ -71,6 +74,48 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 				},
 			})
 		}
+		for _, file := range host.Files {
+			address := hostAddress + ".files.file[" + strconv.Quote(file.Path) + "]"
+			deleteBehavior := file.OnRemove
+			if deleteBehavior == "forget" {
+				deleteBehavior = ""
+			}
+			contentBytes := file.ContentBytes
+			if file.ContentWriteOnly {
+				contentBytes = 0
+			}
+			desired := map[string]any{
+				"path":               file.Path,
+				"owner":              file.Owner,
+				"group":              file.Group,
+				"mode":               file.Mode,
+				"ensure":             file.Ensure,
+				"content_sha256":     file.ContentSHA256,
+				"content_bytes":      contentBytes,
+				"content_version":    file.ContentVersion,
+				"content_write_only": file.ContentWriteOnly,
+				"delete_behavior":    deleteBehavior,
+				"delete":             map[string]any{"path": file.Path},
+				"prevent_destroy":    file.Lifecycle.PreventDestroy,
+			}
+			graph.Nodes = append(graph.Nodes, Node{
+				Host:      host.Name,
+				Address:   address,
+				Kind:      "file",
+				Managed:   true,
+				Summary:   fileSummary(file),
+				Source:    file.Source,
+				Lifecycle: &file.Lifecycle,
+				Desired:   desired,
+				Payload: map[string]any{
+					"content": file.Content,
+				},
+				DependsOn:  []string{hostAddress},
+				Sensitive:  file.Sensitive,
+				Ephemeral:  file.Ephemeral,
+				DigestSafe: true,
+			})
+		}
 		for _, component := range host.Components {
 			address := hostAddress + ".component." + component.Name
 			dependencies := []string{hostAddress}
@@ -100,6 +145,13 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 		return nil, err
 	}
 	return graph, nil
+}
+
+func fileSummary(file ir.ManagedFileSpec) string {
+	if file.Ensure == "absent" {
+		return "ensure file is absent " + file.Path
+	}
+	return "manage file " + file.Path
 }
 
 func (graph *ResourceGraph) Validate() error {

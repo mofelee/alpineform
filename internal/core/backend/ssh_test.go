@@ -85,6 +85,27 @@ func TestSSHRunnerReadUsesRemoteScript(t *testing.T) {
 	}
 }
 
+func TestSSHRunnerPassesRemoteArgumentsWithoutScriptInterpolation(t *testing.T) {
+	executor := &fakeSSHExecutor{stdout: []byte("ok\n")}
+	runner, err := NewSSHRunner(sshHost(), SSHOptions{Executor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/tmp/a; echo not-a-command"
+	_, err = runner.Run(context.Background(), Command{Name: "argv", Script: `printf '%s\n' "$1"`, Arguments: []string{path}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := executor.invocations[0].args[len(executor.invocations[0].args)-1]
+	if strings.Contains(remote, "path=") || !strings.Contains(remote, `sh -c 'printf '"'"'%s\n'"'"' "$1"' alpineform '/tmp/a; echo not-a-command'`) {
+		t.Fatalf("remote command = %q", remote)
+	}
+	_, err = runner.Run(context.Background(), Command{Name: "argv", Script: "true", Arguments: []string{"bad\x00argument"}})
+	if err == nil || !strings.Contains(err.Error(), "NUL byte") || len(executor.invocations) != 1 {
+		t.Fatalf("NUL argument error = %v, invocations=%d", err, len(executor.invocations))
+	}
+}
+
 func TestSSHRunnerReadRedactsRemoteErrors(t *testing.T) {
 	secret := "not-a-real-fact-error-secret"
 	executor := &fakeSSHExecutor{stderr: []byte(secret), err: errors.New("exit status 1")}

@@ -40,8 +40,8 @@ selected code patterns of DebianForm v0.6.0; see [NOTICE.md](NOTICE.md).
 
 The current model accepts reusable profiles, typed component metadata,
 component instances, assertions, lifecycle metadata, and offline Alpine
-platform declarations. It does not yet turn those declarations into remote
-resource changes.
+platform declarations. Host-level `files.file` resources form the first native
+remote convergence domain; see [docs/files.md](docs/files.md).
 
 Online commands first discover and validate Alpine 3.24 facts through fixed
 read-only commands. `apply` shows a preview, acquires each host's runtime lease,

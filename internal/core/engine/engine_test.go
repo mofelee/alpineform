@@ -231,12 +231,15 @@ func TestPlanNodeActionModel(t *testing.T) {
 		{name: "create new", node: node, want: ActionCreate},
 		{name: "adopt existing", node: node, observed: ObservedResource{Exists: true, Digest: digest}, want: ActionAdopt},
 		{name: "update untracked existing", node: node, observed: ObservedResource{Exists: true, Digest: "different"}, want: ActionUpdate},
+		{name: "write-only untracked existing", node: testNode(map[string]any{"content_write_only": true, "content_version": "v1"}), observed: ObservedResource{Exists: true, Digest: corestate.Digest(map[string]any{"content_write_only": true, "content_version": "v1"})}, want: ActionUpdate},
 		{name: "repair missing", node: node, prior: matching, hasPrior: true, want: ActionCreate},
-		{name: "update desired", node: node, prior: old, hasPrior: true, observed: ObservedResource{Exists: true, Digest: digest}, want: ActionUpdate},
+		{name: "adopt desired already converged", node: node, prior: old, hasPrior: true, observed: ObservedResource{Exists: true, Digest: digest}, want: ActionAdopt},
 		{name: "repair drift", node: node, prior: matching, hasPrior: true, observed: ObservedResource{Exists: true, Digest: "different"}, want: ActionUpdate},
 		{name: "no-op", node: node, prior: matching, hasPrior: true, observed: ObservedResource{Exists: true, Digest: digest}, want: ActionNoOp},
 		{name: "delete present", node: testNode(map[string]any{"ensure": "absent"}), observed: ObservedResource{Exists: true}, want: ActionDelete},
 		{name: "absent no-op", node: testNode(map[string]any{"ensure": "absent"}), want: ActionNoOp},
+		{name: "adopt stale absent state", node: testNode(map[string]any{"ensure": "absent"}), prior: matching, hasPrior: true, want: ActionAdopt},
+		{name: "rewrite changed write-only version", node: testNode(map[string]any{"content_write_only": true, "content_version": "v2"}), prior: corestate.Resource{DesiredDigest: corestate.Digest(map[string]any{"content_write_only": true, "content_version": "v1"})}, hasPrior: true, observed: ObservedResource{Exists: true, Digest: corestate.Digest(map[string]any{"content_write_only": true, "content_version": "v2"})}, want: ActionUpdate},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

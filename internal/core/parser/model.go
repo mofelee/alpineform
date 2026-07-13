@@ -83,6 +83,7 @@ type Host struct {
 	SSH        SSH
 	Platform   *Platform
 	Components []ComponentInstance
+	Resources  []ResourceDeclaration
 	Asserts    []Assert
 	Source     ir.SourceRef
 }
@@ -340,6 +341,15 @@ func parseHost(file string, block *hclsyntax.Block, ctx EvalContext) (Host, erro
 	}
 	for _, child := range block.Body.Blocks {
 		switch child.Type {
+		case "files":
+			resources, err := parseHostResourceCollection(file, path, child, ctx)
+			if err != nil {
+				return Host{}, err
+			}
+			host.Resources, err = appendUniqueResources(host.Resources, resources)
+			if err != nil {
+				return Host{}, err
+			}
 		case "ssh":
 			if host.SSH.Source.Path != host.Source.Path {
 				return Host{}, fmt.Errorf("%s:%d: duplicate %s.ssh block", file, child.TypeRange.Start.Line, path)

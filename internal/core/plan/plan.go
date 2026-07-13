@@ -87,17 +87,19 @@ func New(resourceGraph *graph.ResourceGraph, options Options) Document {
 		if !node.Managed {
 			continue
 		}
+		action := engine.ActionCreate
+		if ensure, _ := node.Desired["ensure"].(string); ensure == "absent" {
+			action = engine.ActionDelete
+		}
 		desired := cloneMap(node.Desired)
 		if node.Sensitive || node.Ephemeral {
 			desired = map[string]any{"protected": true}
 		}
-		document.Changes = append(document.Changes, Change{Address: node.Address, Action: "create", Summary: node.Summary, Source: node.Source, Desired: desired})
+		document.Changes = append(document.Changes, Change{Address: node.Address, Action: action, Summary: node.Summary, Source: node.Source, Desired: desired})
+		document.addAction(action)
 	}
-	document.Summary = Summary{
-		Create:           len(document.Changes),
-		ManagedResources: resourceGraph.ManagedCount(),
-		GraphNodes:       len(nodes),
-	}
+	document.Summary.ManagedResources = resourceGraph.ManagedCount()
+	document.Summary.GraphNodes = len(nodes)
 	return document
 }
 
@@ -187,8 +189,13 @@ func PrintText(w io.Writer, document Document, options TextOptions) {
 	} else {
 		for _, change := range document.Changes {
 			symbol := "+"
+			color := "\x1b[32m"
+			if change.Action == engine.ActionDelete {
+				symbol = "-"
+				color = "\x1b[31m"
+			}
 			if options.Color {
-				symbol = "\x1b[32m+\x1b[0m"
+				symbol = color + symbol + "\x1b[0m"
 			}
 			fmt.Fprintf(w, "  %s %s\n", symbol, change.Address)
 			if change.Summary != "" {
@@ -325,7 +332,7 @@ const planHTML = `<!doctype html>
 <body>
 <main>
   <h1>AlpineForm {{if eq .Mode "online"}}online{{else}}offline{{end}} plan</h1>
-  <div class="summary">{{if eq .Mode "online"}}{{.Summary.Create}} create; {{.Summary.Update}} update; {{.Summary.Adopt}} adopt; {{.Summary.Delete}} delete; {{.Summary.Destroy}} destroy; {{.Summary.Forget}} forget; {{.Summary.NoOp}} no-op.{{else}}{{.Summary.GraphNodes}} graph nodes; {{.Summary.ManagedResources}} managed resources; {{.Summary.Create}} to create.{{end}}</div>
+  <div class="summary">{{if eq .Mode "online"}}{{.Summary.Create}} create; {{.Summary.Update}} update; {{.Summary.Adopt}} adopt; {{.Summary.Delete}} delete; {{.Summary.Destroy}} destroy; {{.Summary.Forget}} forget; {{.Summary.NoOp}} no-op.{{else}}{{.Summary.GraphNodes}} graph nodes; {{.Summary.ManagedResources}} managed resources; {{.Summary.Create}} to create; {{.Summary.Delete}} to delete.{{end}}</div>
 {{if eq .Mode "online"}}  <table>
     <thead><tr><th>Address</th><th>Action</th><th>Summary</th><th>Source</th></tr></thead>
     <tbody>{{range .Changes}}<tr><td><code>{{.Address}}</code></td><td>{{.Action}}</td><td>{{.Summary}}</td><td><code>{{.Source.File}}:{{.Source.Line}}</code></td></tr>{{end}}</tbody>

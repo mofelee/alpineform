@@ -318,11 +318,15 @@ func planNode(node graph.Node, prior corestate.Resource, hasPrior bool, observed
 	if ensure == "absent" {
 		if observed.Exists {
 			action = ActionDelete
+		} else if hasPrior && prior.DesiredDigest != desiredDigest {
+			action = ActionAdopt
 		}
 	} else if !hasPrior {
 		switch {
 		case !observed.Exists:
 			action = ActionCreate
+		case desiredBool(node.Desired, "content_write_only"):
+			action = ActionUpdate
 		case observedDigest == desiredDigest:
 			action = ActionAdopt
 		default:
@@ -332,6 +336,10 @@ func planNode(node graph.Node, prior corestate.Resource, hasPrior bool, observed
 		switch {
 		case !observed.Exists:
 			action = ActionCreate
+		case desiredBool(node.Desired, "content_write_only") && prior.DesiredDigest != desiredDigest:
+			action = ActionUpdate
+		case observedDigest == desiredDigest && prior.DesiredDigest != desiredDigest:
+			action = ActionAdopt
 		case prior.DesiredDigest != desiredDigest:
 			action = ActionUpdate
 		case observedDigest != desiredDigest:
@@ -423,7 +431,7 @@ func resourceForStep(step Step, observed ObservedResource) corestate.Resource {
 	if step.Node.Sensitive || step.Node.Ephemeral || observed.Protected {
 		observedValues = nil
 	}
-	if step.Node.Ephemeral {
+	if step.Node.Ephemeral && !step.Node.DigestSafe {
 		digest = ""
 	}
 	resource := corestate.Resource{
@@ -435,6 +443,7 @@ func resourceForStep(step Step, observed ObservedResource) corestate.Resource {
 		Protected:     observed.Protected,
 		Sensitive:     step.Node.Sensitive,
 		Ephemeral:     step.Node.Ephemeral,
+		DigestSafe:    step.Node.DigestSafe,
 	}
 	if step.Node.Lifecycle != nil {
 		resource.PreventDestroy = step.Node.Lifecycle.PreventDestroy
@@ -442,7 +451,26 @@ func resourceForStep(step Step, observed ObservedResource) corestate.Resource {
 	if behavior, ok := step.Node.Desired["delete_behavior"].(string); ok {
 		resource.DeleteBehavior = behavior
 	}
+	if deletion, ok := step.Node.Desired["delete"].(map[string]any); ok {
+		resource.Delete = copyMap(deletion)
+	}
 	return resource
+}
+
+func desiredBool(desired map[string]any, name string) bool {
+	value, _ := desired[name].(bool)
+	return value
+}
+
+func copyMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
 }
 
 func resourceIsProtected(resource *corestate.Resource) bool {

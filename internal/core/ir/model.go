@@ -51,7 +51,26 @@ type HostSpec struct {
 	Platform   *PlatformSpec           `json:"platform,omitempty"`
 	Facts      *HostFacts              `json:"facts,omitempty"`
 	Components []ComponentInstanceSpec `json:"components,omitempty"`
+	Files      []ManagedFileSpec       `json:"files,omitempty"`
 	Source     SourceRef               `json:"source"`
+}
+
+type ManagedFileSpec struct {
+	Path             string        `json:"path"`
+	Content          string        `json:"-"`
+	ContentSHA256    string        `json:"content_sha256,omitempty"`
+	ContentBytes     int64         `json:"content_bytes,omitempty"`
+	ContentVersion   string        `json:"content_version,omitempty"`
+	ContentWriteOnly bool          `json:"content_write_only,omitempty"`
+	Owner            string        `json:"owner"`
+	Group            string        `json:"group"`
+	Mode             string        `json:"mode"`
+	Ensure           string        `json:"ensure"`
+	OnRemove         string        `json:"on_remove"`
+	Sensitive        bool          `json:"sensitive,omitempty"`
+	Ephemeral        bool          `json:"ephemeral,omitempty"`
+	Lifecycle        LifecycleSpec `json:"lifecycle"`
+	Source           SourceRef     `json:"source"`
 }
 
 type SSHSpec struct {

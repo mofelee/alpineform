@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -432,6 +433,11 @@ type fakeOnlineTransport struct {
 	state       corestate.State
 	events      []string
 	stateWrites int
+	fileExists  bool
+	fileContent []byte
+	fileOwner   string
+	fileGroup   string
+	fileMode    string
 }
 
 func newFakeOnlineTransport(osID string) *fakeOnlineTransport {
@@ -469,6 +475,23 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 		return []byte("acquired\n"), nil
 	case "lock.release":
 		return []byte("released\n"), nil
+	case "inspect.file":
+		if !transport.fileExists {
+			return []byte("missing\n"), nil
+		}
+		sum := sha256.Sum256(transport.fileContent)
+		return []byte(fmt.Sprintf("file\n%s\n0\n%s\n0\n%s\n%d\n%x\n", transport.fileOwner, transport.fileGroup, strings.TrimPrefix(transport.fileMode, "0"), len(transport.fileContent), sum)), nil
+	case "apply.file":
+		transport.fileExists = true
+		transport.fileContent = append([]byte(nil), command.Stdin...)
+		transport.fileOwner = command.Arguments[1]
+		transport.fileGroup = command.Arguments[2]
+		transport.fileMode = command.Arguments[3]
+		return nil, nil
+	case "delete.file":
+		transport.fileExists = false
+		transport.fileContent = nil
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected backend command %q", command.Name)
 	}
@@ -483,6 +506,12 @@ func fakeOnlineRuntime(transport *fakeOnlineTransport, input string) onlineRunti
 		},
 		Provider: unavailableProvider{},
 	}
+}
+
+func fakeNativeRuntime(transport *fakeOnlineTransport, input string) onlineRuntime {
+	runtime := fakeOnlineRuntime(transport, input)
+	runtime.Provider = nil
+	return runtime
 }
 
 func writeOnlineHostConfig(t *testing.T, dir string) {
@@ -689,5 +718,119 @@ func TestCheckReturnsCleanWithoutWritingState(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "No remote resource changes.") || transport.stateWrites != 0 {
 		t.Fatalf("clean check output = %s, writes=%d", output.String(), transport.stateWrites)
+	}
+}
+
+func TestNativeFileWorkflowCreatesDetectsDriftAndRepairs(t *testing.T) {
+	dir := t.TempDir()
+	secret := "not-a-real-managed-file-secret"
+	content := `
+host "node" {
+  files {
+    file "/etc/app/config" {
+      content   = "` + secret + `"
+      sensitive = true
+      mode      = "0640"
+    }
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.apf.hcl"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	transport := newFakeOnlineTransport("alpine")
+	var applyOutput bytes.Buffer
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--debug", "--lock-timeout", "0"}, &applyOutput, dir, nil, fakeNativeRuntime(transport, "")); err != nil {
+		t.Fatal(err)
+	}
+	address := `host.node.files.file["/etc/app/config"]`
+	if !transport.fileExists || string(transport.fileContent) != secret || transport.fileMode != "0640" || transport.stateWrites != 1 {
+		t.Fatalf("remote file/state = exists=%v content=%q mode=%q writes=%d", transport.fileExists, transport.fileContent, transport.fileMode, transport.stateWrites)
+	}
+	resource, exists := transport.state.Resources[address]
+	if !exists || resource.DesiredDigest == "" || !resource.Protected || resource.Delete["path"] != "/etc/app/config" {
+		t.Fatalf("file state = %#v", resource)
+	}
+	stateData, err := corestate.Encode(transport.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(applyOutput.String(), secret) || strings.Contains(string(stateData), secret) {
+		t.Fatalf("file workflow leaked secret:\n%s\n%s", applyOutput.String(), stateData)
+	}
+	for _, phase := range []string{"phase=inspect", "phase=operation"} {
+		if !strings.Contains(applyOutput.String(), phase) {
+			t.Fatalf("file debug output missing %s:\n%s", phase, applyOutput.String())
+		}
+	}
+
+	if err := runCheckWithRuntime(nil, &bytes.Buffer{}, dir, nil, fakeNativeRuntime(transport, "")); err != nil {
+		t.Fatalf("second check = %v", err)
+	}
+	transport.fileContent = []byte("external drift")
+	var driftOutput bytes.Buffer
+	if err := runCheckWithRuntime(nil, &driftOutput, dir, nil, fakeNativeRuntime(transport, "")); err == nil || !strings.Contains(err.Error(), "drift") || !strings.Contains(driftOutput.String(), "update "+address) {
+		t.Fatalf("drift check error = %v, output = %s", err, driftOutput.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, fakeNativeRuntime(transport, "")); err != nil {
+		t.Fatalf("repair apply = %v", err)
+	}
+	if string(transport.fileContent) != secret || transport.state.Serial != 2 {
+		t.Fatalf("repaired file/state = content=%q state=%#v", transport.fileContent, transport.state)
+	}
+}
+
+func TestNativeFileRemovalDefaultsToForgetAndSupportsDestroy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.apf.hcl")
+	writeFileConfig := func(onRemove string) {
+		t.Helper()
+		attribute := ""
+		if onRemove != "" {
+			attribute = "      on_remove = \"" + onRemove + "\"\n"
+		}
+		content := "host \"node\" {\n  files {\n    file \"/etc/app/config\" {\n      content = \"managed\"\n" + attribute + "    }\n  }\n}\n"
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeEmptyHost := func() {
+		t.Helper()
+		if err := os.WriteFile(path, []byte("host \"node\" {}\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport := newFakeOnlineTransport("alpine")
+	runtime := fakeNativeRuntime(transport, "")
+	writeFileConfig("")
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	writeEmptyHost()
+	var forgetPlan bytes.Buffer
+	if err := runCheckWithRuntime(nil, &forgetPlan, dir, nil, runtime); err == nil || !strings.Contains(forgetPlan.String(), "forget host.node.files.file[\"/etc/app/config\"]") {
+		t.Fatalf("forget check error = %v, output = %s", err, forgetPlan.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if !transport.fileExists || len(transport.state.Resources) != 0 {
+		t.Fatalf("forget removed remote file or retained state: exists=%v state=%#v", transport.fileExists, transport.state)
+	}
+
+	writeFileConfig("destroy")
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	writeEmptyHost()
+	var destroyPlan bytes.Buffer
+	if err := runCheckWithRuntime(nil, &destroyPlan, dir, nil, runtime); err == nil || !strings.Contains(destroyPlan.String(), "destroy host.node.files.file[\"/etc/app/config\"]") {
+		t.Fatalf("destroy check error = %v, output = %s", err, destroyPlan.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if transport.fileExists || len(transport.state.Resources) != 0 {
+		t.Fatalf("destroy result: exists=%v state=%#v", transport.fileExists, transport.state)
 	}
 }

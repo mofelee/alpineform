@@ -39,6 +39,8 @@ type Resource struct {
 	Ephemeral      bool           `json:"-"`
 	PreventDestroy bool           `json:"prevent_destroy,omitempty"`
 	DeleteBehavior string         `json:"delete_behavior,omitempty"`
+	Delete         map[string]any `json:"delete,omitempty"`
+	DigestSafe     bool           `json:"digest_safe,omitempty"`
 }
 
 func Digest(value any) string {
@@ -59,7 +61,7 @@ func (resource Resource) MarshalJSON() ([]byte, error) {
 		out.Observed = nil
 		out.Protected = true
 	}
-	if resource.Ephemeral || mapMarkedEphemeral(resource.Desired) || mapMarkedEphemeral(resource.Observed) {
+	if (resource.Ephemeral && !resource.DigestSafe) || mapMarkedEphemeral(resource.Desired) || mapMarkedEphemeral(resource.Observed) {
 		out.DesiredDigest = ""
 	}
 	return json.Marshal(out)

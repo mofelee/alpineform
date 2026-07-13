@@ -6,6 +6,7 @@ import "context"
 type Command struct {
 	Name         string
 	Script       string
+	Arguments    []string
 	Stdin        []byte
 	RedactStdin  bool
 	RedactOutput bool
