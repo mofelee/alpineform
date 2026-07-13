@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -79,10 +80,19 @@ type Platform struct {
 type Host struct {
 	Name       string
 	Imports    []string
+	SSH        SSH
 	Platform   *Platform
 	Components []ComponentInstance
 	Asserts    []Assert
 	Source     ir.SourceRef
+}
+
+type SSH struct {
+	Host         string
+	Port         int
+	User         string
+	IdentityFile string
+	Source       ir.SourceRef
 }
 
 type Script struct {
@@ -321,7 +331,7 @@ func parseHost(file string, block *hclsyntax.Block, ctx EvalContext) (Host, erro
 	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "imports"); err != nil {
 		return Host{}, err
 	}
-	host := Host{Name: name, Source: source}
+	host := Host{Name: name, SSH: SSH{Host: name, User: "root", Source: source}, Source: source}
 	if attr, exists := block.Body.Attributes["imports"]; exists {
 		host.Imports, err = parseReferences(file, path+".imports", attr.Expr, "profile")
 		if err != nil {
@@ -330,6 +340,15 @@ func parseHost(file string, block *hclsyntax.Block, ctx EvalContext) (Host, erro
 	}
 	for _, child := range block.Body.Blocks {
 		switch child.Type {
+		case "ssh":
+			if host.SSH.Source.Path != host.Source.Path {
+				return Host{}, fmt.Errorf("%s:%d: duplicate %s.ssh block", file, child.TypeRange.Start.Line, path)
+			}
+			ssh, err := parseSSH(file, path+".ssh", child, ctx, name)
+			if err != nil {
+				return Host{}, err
+			}
+			host.SSH = ssh
 		case "platform":
 			if host.Platform != nil {
 				return Host{}, fmt.Errorf("%s:%d: duplicate %s.platform block", file, child.TypeRange.Start.Line, path)
@@ -359,6 +378,59 @@ func parseHost(file string, block *hclsyntax.Block, ctx EvalContext) (Host, erro
 		}
 	}
 	return host, nil
+}
+
+func parseSSH(file, path string, block *hclsyntax.Block, ctx EvalContext, defaultHost string) (SSH, error) {
+	if len(block.Labels) != 0 || len(block.Body.Blocks) != 0 {
+		return SSH{}, fmt.Errorf("%s:%d: %s must be an unlabeled attribute-only block", file, block.TypeRange.Start.Line, path)
+	}
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "host", "port", "user", "identity_file"); err != nil {
+		return SSH{}, err
+	}
+	ssh := SSH{Host: defaultHost, User: "root", Source: ir.SourceRef{File: file, Line: block.TypeRange.Start.Line, Path: path}}
+	var err error
+	if attr, exists := block.Body.Attributes["host"]; exists {
+		ssh.Host, err = evalStringAttribute(file, path, "host", attr, ctx, true)
+		if err != nil {
+			return SSH{}, err
+		}
+		if strings.HasPrefix(ssh.Host, "-") || strings.ContainsAny(ssh.Host, " \t\r\n") {
+			return SSH{}, fmt.Errorf("%s:%d:%s.host: SSH host must be a single alias or address", file, attr.NameRange.Start.Line, path)
+		}
+	}
+	if attr, exists := block.Body.Attributes["port"]; exists {
+		value, err := evalValue(attr.Expr, ctx, ir.SourceRef{File: file, Line: attr.NameRange.Start.Line, Path: path + ".port"})
+		if err != nil {
+			return SSH{}, err
+		}
+		if value.Kind != KindNumber || strings.ContainsAny(value.Number, ".eE") {
+			return SSH{}, fmt.Errorf("%s:%d:%s.port: SSH port must be an integer", file, attr.NameRange.Start.Line, path)
+		}
+		port, err := strconv.Atoi(value.Number)
+		if err != nil || port < 1 || port > 65535 {
+			return SSH{}, fmt.Errorf("%s:%d:%s.port: SSH port must be between 1 and 65535", file, attr.NameRange.Start.Line, path)
+		}
+		ssh.Port = port
+	}
+	if attr, exists := block.Body.Attributes["user"]; exists {
+		ssh.User, err = evalStringAttribute(file, path, "user", attr, ctx, true)
+		if err != nil {
+			return SSH{}, err
+		}
+		if ssh.User != "root" {
+			return SSH{}, fmt.Errorf("%s:%d:%s.user: AlpineForm v0.1 requires root SSH; user %q is unsupported", file, attr.NameRange.Start.Line, path, ssh.User)
+		}
+	}
+	if attr, exists := block.Body.Attributes["identity_file"]; exists {
+		ssh.IdentityFile, err = evalStringAttribute(file, path, "identity_file", attr, ctx, true)
+		if err != nil {
+			return SSH{}, err
+		}
+		if strings.ContainsAny(ssh.IdentityFile, "\x00\r\n") {
+			return SSH{}, fmt.Errorf("%s:%d:%s.identity_file: invalid identity file path", file, attr.NameRange.Start.Line, path)
+		}
+	}
+	return ssh, nil
 }
 
 func parsePlatform(file, path string, block *hclsyntax.Block, ctx EvalContext) (Platform, error) {

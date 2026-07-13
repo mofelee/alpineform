@@ -238,7 +238,18 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 		}
 	}
 
-	out := ir.HostSpec{Name: host.Name, Source: host.Source}
+	out := ir.HostSpec{
+		Name: host.Name,
+		SSH: ir.SSHSpec{
+			Host:         host.SSH.Host,
+			Port:         host.SSH.Port,
+			User:         host.SSH.User,
+			IdentityFile: host.SSH.IdentityFile,
+			Source:       host.SSH.Source,
+		},
+		State:  ir.StateSpec{Path: product.DefaultStatePath, LockPath: product.DefaultLockPath},
+		Source: host.Source,
+	}
 	if facts != nil {
 		copied := *facts
 		out.Facts = &copied

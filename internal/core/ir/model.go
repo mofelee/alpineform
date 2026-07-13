@@ -46,10 +46,25 @@ type ScriptSpec struct {
 
 type HostSpec struct {
 	Name       string                  `json:"name"`
+	SSH        SSHSpec                 `json:"ssh"`
+	State      StateSpec               `json:"state"`
 	Platform   *PlatformSpec           `json:"platform,omitempty"`
 	Facts      *HostFacts              `json:"facts,omitempty"`
 	Components []ComponentInstanceSpec `json:"components,omitempty"`
 	Source     SourceRef               `json:"source"`
+}
+
+type SSHSpec struct {
+	Host         string    `json:"host"`
+	Port         int       `json:"port,omitempty"`
+	User         string    `json:"user"`
+	IdentityFile string    `json:"identity_file,omitempty"`
+	Source       SourceRef `json:"source"`
+}
+
+type StateSpec struct {
+	Path     string `json:"path"`
+	LockPath string `json:"lock_path"`
 }
 
 type HostFacts struct {

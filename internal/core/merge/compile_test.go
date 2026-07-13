@@ -431,6 +431,7 @@ host "node" {
     version      = "3.24.1"
   }
 }
+
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -461,5 +462,20 @@ host "node" {
 				t.Fatalf("CompileWithOptions() error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestCompileSetsSSHAndBackendDefaults(t *testing.T) {
+	config, err := compileConfig(t, `host "node" {}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := program.Hosts[0]
+	if host.SSH.Host != "node" || host.SSH.User != "root" || host.SSH.Port != 0 || host.State.Path != "/var/lib/alpineform/state.json" || host.State.LockPath != "/run/lock/alpineform/lock" {
+		t.Fatalf("compiled host defaults = %#v", host)
 	}
 }

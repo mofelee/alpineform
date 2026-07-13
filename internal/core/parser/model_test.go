@@ -163,9 +163,56 @@ host "node" {
   component "app" { source = component.app }
   component "app" { source = component.app }
 }
+
 `)
 	_, err := ParseFiles([]string{path})
 	if err == nil || !strings.Contains(err.Error(), `duplicate component instance "app"`) {
 		t.Fatalf("ParseFiles() error = %v", err)
+	}
+}
+
+func TestParseHostSSHContract(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ssh.apf.hcl")
+	writeConfig(t, path, `
+host "node" {
+  ssh {
+    host          = "alpine-prod"
+    port          = 2222
+    user          = "root"
+    identity_file = "~/.ssh/alpine"
+  }
+}
+`)
+	config, err := ParseFiles([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ssh := config.Hosts["node"].SSH
+	if ssh.Host != "alpine-prod" || ssh.Port != 2222 || ssh.User != "root" || ssh.IdentityFile != "~/.ssh/alpine" || !strings.HasSuffix(ssh.Source.Path, ".ssh") {
+		t.Fatalf("ssh = %#v", ssh)
+	}
+}
+
+func TestParseHostSSHRejectsUnsupportedValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "non-root", content: "host \"node\" {\n  ssh { user = \"admin\" }\n}\n", want: "requires root SSH"},
+		{name: "zero port", content: "host \"node\" {\n  ssh { port = 0 }\n}\n", want: "between 1 and 65535"},
+		{name: "fractional port", content: "host \"node\" {\n  ssh { port = 22.5 }\n}\n", want: "must be an integer"},
+		{name: "option-like alias", content: "host \"node\" {\n  ssh { host = \"-oProxyCommand=bad\" }\n}\n", want: "single alias or address"},
+		{name: "spaced alias", content: "host \"node\" {\n  ssh { host = \"bad alias\" }\n}\n", want: "single alias or address"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "invalid.apf.hcl")
+			writeConfig(t, path, test.content)
+			_, err := ParseFiles([]string{path})
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "invalid.apf.hcl") {
+				t.Fatalf("ParseFiles() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }

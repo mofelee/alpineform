@@ -4,11 +4,12 @@ package backend
 import "context"
 
 type Command struct {
-	Name        string
-	Script      string
-	Stdin       []byte
-	RedactStdin bool
-	Parameters  map[string]string
+	Name         string
+	Script       string
+	Stdin        []byte
+	RedactStdin  bool
+	RedactOutput bool
+	Parameters   map[string]string
 }
 
 type Runner interface {
