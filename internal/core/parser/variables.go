@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mofelee/alpineform/internal/core/ir"
 	"github.com/mofelee/alpineform/internal/product"
 )
 
@@ -94,4 +95,39 @@ func ResolveVariableSources(layers ...[]VariableSource) map[string]VariableSourc
 		}
 	}
 	return resolved
+}
+
+// CollectExternalVariableValues returns inputs from lowest to highest
+// precedence. ParseFilesWithOptions deliberately applies last-value-wins.
+func CollectExternalVariableValues(configFiles, environ, explicitFiles, cliValues []string) ([]ExternalVariableValue, error) {
+	var values []ExternalVariableValue
+	for _, value := range EnvironmentVariableSources(environ) {
+		values = append(values, ExternalVariableValue{
+			Name:          value.Name,
+			Value:         value.Value,
+			Source:        ir.SourceRef{File: "env", Line: 1, Path: value.Origin},
+			IgnoreUnknown: true,
+		})
+	}
+	automaticFiles, err := DiscoverAutomaticVariableFiles(configFiles)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range append(automaticFiles, explicitFiles...) {
+		fileValues, err := ParseVariableFile(path)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, fileValues...)
+	}
+	for i, raw := range cliValues {
+		name, value, ok := strings.Cut(raw, "=")
+		name = strings.TrimSpace(name)
+		source := ir.SourceRef{File: "cli", Line: i + 1, Path: fmt.Sprintf("cli.var[%d]", i)}
+		if !ok || name == "" {
+			return nil, fmt.Errorf("%s:%d:%s: -var must be name=value", source.File, source.Line, source.Path)
+		}
+		values = append(values, ExternalVariableValue{Name: name, Value: value, Source: source})
+	}
+	return values, nil
 }

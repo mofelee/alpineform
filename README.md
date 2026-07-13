@@ -1,8 +1,9 @@
 # AlpineForm
 
 AlpineForm is a declarative configuration tool for Alpine Linux hosts. The
-project is currently being bootstrapped; Alpine resource management is not yet
-available.
+project is currently being bootstrapped. Typed variables, locals, variable
+input precedence, and local validation are available; Alpine resource
+management is not yet available.
 
 The future workflow is:
 
@@ -18,6 +19,7 @@ Configuration files use the `*.apf.hcl` suffix. Variable inputs use
 ```sh
 make build
 ./apf version
+./apf validate -f examples/variables.apf.hcl
 make check
 ```
 

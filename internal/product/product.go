@@ -5,6 +5,8 @@ const (
 	Name               = "AlpineForm"
 	CLIName            = "apf"
 	ConfigSuffix       = ".apf.hcl"
+	VarFileSuffix      = ".apfvars"
+	VarJSONSuffix      = ".apfvars.json"
 	DefaultVarFile     = "alpineform.apfvars"
 	DefaultVarJSONFile = "alpineform.apfvars.json"
 	AutoVarSuffix      = ".auto.apfvars"

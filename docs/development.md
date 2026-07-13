@@ -18,9 +18,10 @@ parser -> merge -> IR -> graph -> plan -> engine -> provider -> backend
 - `backend` owns transport, remote state persistence, and runtime locking.
 - `state` validates the AlpineForm state envelope and schema compatibility.
 
-The bootstrap implements only source discovery, product constants, version
-metadata, and state envelope validation. Resource commands return an explicit
-bootstrap error. No Alpine or Debian resource schema is public yet.
+The bootstrap implements source discovery, typed variables, locals, input
+precedence, product constants, version metadata, and state envelope validation.
+`apf validate` checks the implemented language subset. Resource commands return
+an explicit bootstrap error. No Alpine or Debian resource schema is public yet.
 
 ## Product names
 

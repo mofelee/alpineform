@@ -9,7 +9,10 @@ reference:
 
 The initial AlpineForm bootstrap reuses the high-level layering, configuration
 source ordering, version metadata pattern, and state validation approach. The
-code has been rewritten and reduced for an Alpine-only product contract.
+typed value, input type, expression evaluation, variable file, locals, and
+variable validation implementations are derived from the corresponding
+`internal/core/parser` files at the upstream commit. They have been reduced and
+modified for an Alpine-only product contract.
 
 Major differences from the referenced version:
 

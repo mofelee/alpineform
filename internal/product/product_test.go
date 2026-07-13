@@ -10,6 +10,8 @@ func TestProductContractNames(t *testing.T) {
 		"Name":               {Name, "AlpineForm"},
 		"CLIName":            {CLIName, "apf"},
 		"ConfigSuffix":       {ConfigSuffix, ".apf.hcl"},
+		"VarFileSuffix":      {VarFileSuffix, ".apfvars"},
+		"VarJSONSuffix":      {VarJSONSuffix, ".apfvars.json"},
 		"DefaultVarFile":     {DefaultVarFile, "alpineform.apfvars"},
 		"DefaultVarJSONFile": {DefaultVarJSONFile, "alpineform.apfvars.json"},
 		"AutoVarSuffix":      {AutoVarSuffix, ".auto.apfvars"},
