@@ -2,14 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	coregraph "github.com/mofelee/alpineform/internal/core/graph"
@@ -21,13 +24,22 @@ import (
 )
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	runtime := defaultOnlineRuntime()
+	runtime.Context = ctx
+	runtime.Stdin = os.Stdin
+	if err := runWithRuntime(os.Args[1:], os.Stdout, runtime); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", product.CLIName, err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string, stdout io.Writer) error {
+	return runWithRuntime(args, stdout, defaultOnlineRuntime())
+}
+
+func runWithRuntime(args []string, stdout io.Writer, runtime onlineRuntime) error {
 	if len(args) == 0 {
 		printUsage(stdout)
 		return nil
@@ -68,15 +80,29 @@ func run(args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return runPlan(args[1:], stdout, workingDir, os.Environ())
-	case "apply", "check":
-		return fmt.Errorf("%s is not available in the bootstrap build; Alpine resource management is not implemented", strings.Join(args, " "))
+		return runPlanWithRuntime(args[1:], stdout, workingDir, os.Environ(), runtime)
+	case "apply":
+		workingDir, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		return runApplyWithRuntime(args[1:], stdout, workingDir, os.Environ(), runtime)
+	case "check":
+		workingDir, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		return runCheckWithRuntime(args[1:], stdout, workingDir, os.Environ(), runtime)
 	default:
 		return fmt.Errorf("unknown command %q; run %s help", args[0], product.CLIName)
 	}
 }
 
 func runPlan(args []string, stdout io.Writer, workingDir string, environ []string) error {
+	return runPlanWithRuntime(args, stdout, workingDir, environ, defaultOnlineRuntime())
+}
+
+func runPlanWithRuntime(args []string, stdout io.Writer, workingDir string, environ []string, runtime onlineRuntime) error {
 	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var sources repeatedFlag
@@ -94,9 +120,6 @@ func runPlan(args []string, stdout io.Writer, workingDir string, environ []strin
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("plan does not accept positional arguments")
-	}
-	if !*offline {
-		return fmt.Errorf("online planning is not implemented yet; use apf plan --offline")
 	}
 	if *format != "text" && *format != "json" {
 		return fmt.Errorf("unsupported plan format %q; use text or json", *format)
@@ -117,6 +140,20 @@ func runPlan(args []string, stdout io.Writer, workingDir string, environ []strin
 	resolvedVariableFiles := make([]string, len(variableFiles))
 	for i, path := range variableFiles {
 		resolvedVariableFiles[i] = resolvePath(workingDir, path)
+	}
+	if !*offline {
+		loader := onlineConfigLoader{
+			workingDir:    workingDir,
+			environ:       append([]string(nil), environ...),
+			sources:       resolvedSources,
+			variableFiles: resolvedVariableFiles,
+			variables:     append([]string(nil), variables...),
+		}
+		path := ""
+		if *htmlPath != "" {
+			path = resolvePath(workingDir, *htmlPath)
+		}
+		return runOnlinePlan(loader, stdout, *format, path, color, runtime)
 	}
 	external, err := coreparser.CollectExternalVariableValues(files, environ, resolvedVariableFiles, variables)
 	if err != nil {
@@ -575,15 +612,16 @@ func printUsage(w io.Writer) {
 
 Usage:
   apf validate
-  apf plan --offline [--format text|json] [--html path] [--color auto|always|never]
-  apf apply [--auto-approve] [--debug]
-  apf check
+  apf plan [--offline] [--format text|json] [--html path] [--color auto|always|never]
+  apf apply [--auto-approve] [--lock-timeout duration] [--debug] [--color auto|always|never]
+  apf check [--format text|json] [--color auto|always|never]
   apf fmt
   apf component inspect
   apf variable inspect
   apf version
 
-Validate, offline plan, and variable inspect load top-level *.apf.hcl files
-and support repeated -f, -var-file, and -var inputs. Fmt validates before writing.
-This bootstrap build does not implement Alpine resource management yet.`)
+Validate, plan, apply, check, and variable inspect load top-level *.apf.hcl
+files and support repeated -f, -var-file, and -var inputs. Online commands use
+root SSH, validate Alpine 3.24 facts before backend access, and re-plan apply
+under a renewable per-host lease. Fmt validates before writing.`)
 }

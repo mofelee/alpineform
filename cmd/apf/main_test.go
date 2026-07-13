@@ -2,11 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	corebackend "github.com/mofelee/alpineform/internal/core/backend"
+	"github.com/mofelee/alpineform/internal/core/ir"
+	corestate "github.com/mofelee/alpineform/internal/core/state"
 )
 
 func TestVersionUsesAPFProductName(t *testing.T) {
@@ -37,10 +44,10 @@ func TestHelpHasOnlyAlpineFormNames(t *testing.T) {
 	}
 }
 
-func TestResourceCommandsFailExplicitlyInBootstrap(t *testing.T) {
-	err := run([]string{"apply"}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "not available in the bootstrap build") {
-		t.Fatalf("apply error = %v", err)
+func TestApplyRejectsPositionalArguments(t *testing.T) {
+	err := runApplyWithRuntime([]string{"unexpected"}, &bytes.Buffer{}, t.TempDir(), nil, defaultOnlineRuntime())
+	if err == nil || !strings.Contains(err.Error(), "does not accept positional arguments") {
+		t.Fatalf("apply argument error = %v", err)
 	}
 }
 
@@ -365,15 +372,20 @@ host "node" {
 	}
 }
 
-func TestPlanRequiresOfflineAndDoesNotOverwriteInput(t *testing.T) {
+func TestPlanSupportsOnlineAndDoesNotOverwriteInput(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "main.apf.hcl")
 	original := []byte("host \"node\" {}\n")
 	if err := os.WriteFile(path, original, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := runPlan(nil, &bytes.Buffer{}, dir, nil); err == nil || !strings.Contains(err.Error(), "use apf plan --offline") {
+	transport := newFakeOnlineTransport("alpine")
+	var online bytes.Buffer
+	if err := runPlanWithRuntime(nil, &online, dir, nil, fakeOnlineRuntime(transport, "")); err != nil {
 		t.Fatalf("online plan error = %v", err)
+	}
+	if !strings.Contains(online.String(), "Online plan:") {
+		t.Fatalf("online plan output = %s", online.String())
 	}
 	if err := runPlan([]string{"--offline", "--html", path}, &bytes.Buffer{}, dir, nil); err == nil || !strings.Contains(err.Error(), "would overwrite configuration input") {
 		t.Fatalf("overwrite plan error = %v", err)
@@ -384,5 +396,172 @@ func TestPlanRequiresOfflineAndDoesNotOverwriteInput(t *testing.T) {
 	}
 	if !bytes.Equal(after, original) {
 		t.Fatalf("plan changed input: %q", after)
+	}
+}
+
+type fakeOnlineTransport struct {
+	osID        string
+	state       corestate.State
+	events      []string
+	stateWrites int
+}
+
+func newFakeOnlineTransport(osID string) *fakeOnlineTransport {
+	return &fakeOnlineTransport{osID: osID, state: corestate.Empty("node")}
+}
+
+func (transport *fakeOnlineTransport) Read(_ context.Context, command string) (string, error) {
+	transport.events = append(transport.events, "facts:"+command)
+	switch command {
+	case "cat /etc/os-release":
+		return "ID=" + transport.osID + "\nVERSION_ID=3.24.1\n", nil
+	case "apk --print-arch":
+		return "x86_64\n", nil
+	case "uname -m":
+		return "x86_64\n", nil
+	default:
+		return "", fmt.Errorf("unexpected fact command %q", command)
+	}
+}
+
+func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend.Command) ([]byte, error) {
+	transport.events = append(transport.events, command.Name)
+	switch command.Name {
+	case "state.read":
+		return corestate.Encode(transport.state)
+	case "state.write":
+		written, err := corestate.Decode(command.Stdin, "node")
+		if err != nil {
+			return nil, err
+		}
+		transport.state = written
+		transport.stateWrites++
+		return nil, nil
+	case "lock.acquire":
+		return []byte("acquired\n"), nil
+	case "lock.release":
+		return []byte("released\n"), nil
+	default:
+		return nil, fmt.Errorf("unexpected backend command %q", command.Name)
+	}
+}
+
+func fakeOnlineRuntime(transport *fakeOnlineTransport, input string) onlineRuntime {
+	return onlineRuntime{
+		Context: context.Background(),
+		Stdin:   strings.NewReader(input),
+		NewRunner: func(ir.HostSpec) (onlineRunner, error) {
+			return transport, nil
+		},
+		Provider: unavailableProvider{},
+	}
+}
+
+func writeOnlineHostConfig(t *testing.T, dir string) {
+	t.Helper()
+	content := `
+host "node" {
+  ssh { host = "alpine-alias" }
+  platform {
+    architecture = "amd64"
+    version      = "3.24.1"
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.apf.hcl"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOnlinePlanDiscoversFactsBeforeReadingState(t *testing.T) {
+	dir := t.TempDir()
+	writeOnlineHostConfig(t, dir)
+	transport := newFakeOnlineTransport("alpine")
+	var output bytes.Buffer
+	if err := runPlanWithRuntime([]string{"--format", "json"}, &output, dir, nil, fakeOnlineRuntime(transport, "")); err != nil {
+		t.Fatal(err)
+	}
+	wantEvents := []string{
+		"facts:cat /etc/os-release",
+		"facts:apk --print-arch",
+		"facts:uname -m",
+		"state.read",
+	}
+	if !reflect.DeepEqual(transport.events, wantEvents) {
+		t.Fatalf("online plan events = %#v, want %#v", transport.events, wantEvents)
+	}
+	if !strings.Contains(output.String(), `"mode": "online"`) || !strings.Contains(output.String(), `"hosts":`) || transport.stateWrites != 0 {
+		t.Fatalf("online plan output = %s, writes=%d", output.String(), transport.stateWrites)
+	}
+}
+
+func TestOnlinePlanRejectsUnsupportedTargetBeforeBackendAccess(t *testing.T) {
+	dir := t.TempDir()
+	writeOnlineHostConfig(t, dir)
+	transport := newFakeOnlineTransport("debian")
+	err := runPlanWithRuntime(nil, &bytes.Buffer{}, dir, nil, fakeOnlineRuntime(transport, ""))
+	if err == nil || !strings.Contains(err.Error(), "unsupported target OS") {
+		t.Fatalf("unsupported target error = %v", err)
+	}
+	if !reflect.DeepEqual(transport.events, []string{"facts:cat /etc/os-release"}) || transport.stateWrites != 0 {
+		t.Fatalf("unsupported target events = %#v, writes=%d", transport.events, transport.stateWrites)
+	}
+}
+
+func TestApplyRebuildsUnderLockAndPersistsFactsAfterApproval(t *testing.T) {
+	dir := t.TempDir()
+	writeOnlineHostConfig(t, dir)
+	transport := newFakeOnlineTransport("alpine")
+	var output bytes.Buffer
+	err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &output, dir, nil, fakeOnlineRuntime(transport, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEvents := []string{
+		"facts:cat /etc/os-release", "facts:apk --print-arch", "facts:uname -m", "state.read",
+		"lock.acquire",
+		"facts:cat /etc/os-release", "facts:apk --print-arch", "facts:uname -m", "state.read",
+		"state.write", "lock.release",
+	}
+	if !reflect.DeepEqual(transport.events, wantEvents) {
+		t.Fatalf("apply events = %#v, want %#v", transport.events, wantEvents)
+	}
+	if transport.stateWrites != 1 || transport.state.Serial != 1 || transport.state.Facts == nil || transport.state.Facts.Version != "3.24.1" {
+		t.Fatalf("applied state = %#v, writes=%d", transport.state, transport.stateWrites)
+	}
+	if !strings.Contains(output.String(), "Preview before lock:") || !strings.Contains(output.String(), "Locked execution plan:") || !strings.Contains(output.String(), "Apply complete: 1 host(s).") {
+		t.Fatalf("apply output = %s", output.String())
+	}
+}
+
+func TestApplyRequiresPreviewAndLockedApproval(t *testing.T) {
+	dir := t.TempDir()
+	writeOnlineHostConfig(t, dir)
+	transport := newFakeOnlineTransport("alpine")
+	var output bytes.Buffer
+	err := runApplyWithRuntime([]string{"--lock-timeout", "0"}, &output, dir, nil, fakeOnlineRuntime(transport, "yes\nno\n"))
+	if err == nil || !strings.Contains(err.Error(), "not approved") {
+		t.Fatalf("locked approval error = %v", err)
+	}
+	if strings.Count(output.String(), "Approve this plan?") != 2 || transport.stateWrites != 0 {
+		t.Fatalf("approval output = %s, writes=%d", output.String(), transport.stateWrites)
+	}
+	if len(transport.events) == 0 || transport.events[len(transport.events)-1] != "lock.release" {
+		t.Fatalf("approval rejection events = %#v", transport.events)
+	}
+}
+
+func TestCheckReportsOrphanedStateAsDrift(t *testing.T) {
+	dir := t.TempDir()
+	writeOnlineHostConfig(t, dir)
+	transport := newFakeOnlineTransport("alpine")
+	transport.state.Resources["host.node.file.orphan"] = corestate.Resource{Host: "node", Kind: "file", Ownership: "managed"}
+	var output bytes.Buffer
+	err := runCheckWithRuntime(nil, &output, dir, nil, fakeOnlineRuntime(transport, ""))
+	if err == nil || !strings.Contains(err.Error(), "drift or unapplied changes") {
+		t.Fatalf("drift check error = %v", err)
+	}
+	if !strings.Contains(output.String(), "forget host.node.file.orphan") || transport.stateWrites != 0 {
+		t.Fatalf("drift output = %s, writes=%d", output.String(), transport.stateWrites)
 	}
 }
