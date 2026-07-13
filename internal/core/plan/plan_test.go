@@ -142,6 +142,39 @@ func TestOnlinePlanRendersEveryActionWithoutProtectedValues(t *testing.T) {
 	}
 }
 
+func TestAuthoritativeAPKPlanShowsCompleteRepositoryReplacement(t *testing.T) {
+	node := graph.Node{
+		Address: "host.node.apk.repositories", Kind: "apk_repositories", Managed: true,
+		Summary: "authoritatively manage /etc/apk/repositories",
+		Desired: map[string]any{
+			"ownership": "authoritative",
+			"lines":     []string{"https://new.example/alpine/v3.24/main", "https://new.example/alpine/v3.24/community"},
+		},
+	}
+	step := engine.Step{
+		Address: node.Address, Action: engine.ActionUpdate, Summary: node.Summary, Node: node,
+		Observed: engine.ObservedResource{Exists: true, Values: map[string]any{
+			"lines": []string{"# external comment", "https://old.example/alpine/v3.24/main"},
+		}},
+	}
+	document := NewOnline(engine.Plan{Hosts: []engine.HostPlan{{Host: ir.HostSpec{Name: "node"}, Steps: []engine.Step{step}}}}, Options{})
+	var output bytes.Buffer
+	PrintText(&output, document, TextOptions{})
+	text := output.String()
+	for _, want := range []string{
+		"--- observed /etc/apk/repositories",
+		"- # external comment",
+		"- https://old.example/alpine/v3.24/main",
+		"+++ desired /etc/apk/repositories",
+		"+ https://new.example/alpine/v3.24/main",
+		"+ https://new.example/alpine/v3.24/community",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("authoritative repository plan missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func assertGolden(t *testing.T, name string, got []byte) {
 	t.Helper()
 	path := filepath.Join("testdata", name)

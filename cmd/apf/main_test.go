@@ -457,10 +457,14 @@ type fakeOnlineTransport struct {
 	membershipExists        bool
 	authorizedKeyExists     bool
 	authorizedKeyMetadataOK bool
+	apkRepositories         map[string]string
+	apkKeyDigests           map[string]string
+	apkUpdateFingerprint    string
+	apkUpdateCount          int
 }
 
 func newFakeOnlineTransport(osID string) *fakeOnlineTransport {
-	return &fakeOnlineTransport{osID: osID, state: corestate.Empty("node"), groupGIDs: map[string]string{}}
+	return &fakeOnlineTransport{osID: osID, state: corestate.Empty("node"), groupGIDs: map[string]string{}, apkRepositories: map[string]string{}, apkKeyDigests: map[string]string{}}
 }
 
 func (transport *fakeOnlineTransport) Read(_ context.Context, command string) (string, error) {
@@ -613,9 +617,51 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 		transport.authorizedKeyExists = false
 		transport.authorizedKeyMetadataOK = false
 		return nil, nil
+	case "inspect.apk_repository":
+		name := fakeAPKRepositoryName(command.Arguments[1])
+		line, exists := transport.apkRepositories[name]
+		if !exists {
+			return []byte("missing\n"), nil
+		}
+		return []byte("repository\n" + line + "\n"), nil
+	case "apply.apk_repository":
+		name := fakeAPKRepositoryName(command.Arguments[1])
+		transport.apkRepositories[name] = command.Arguments[3]
+		return nil, nil
+	case "delete.apk_repository":
+		name := fakeAPKRepositoryName(command.Arguments[1])
+		delete(transport.apkRepositories, name)
+		return nil, nil
+	case "inspect.apk_key":
+		filename := filepath.Base(command.Arguments[0])
+		digest, exists := transport.apkKeyDigests[filename]
+		if !exists {
+			return []byte("missing\n"), nil
+		}
+		return []byte("key\n" + digest + "\n"), nil
+	case "apply.apk_key":
+		filename := filepath.Base(command.Arguments[0])
+		transport.apkKeyDigests[filename] = command.Arguments[1]
+		return nil, nil
+	case "delete.apk_key":
+		delete(transport.apkKeyDigests, filepath.Base(command.Arguments[0]))
+		return nil, nil
+	case "inspect.apk_update":
+		if transport.apkUpdateFingerprint == "" {
+			return []byte("missing\n"), nil
+		}
+		return []byte("marker\n" + transport.apkUpdateFingerprint + "\n"), nil
+	case "apply.apk_update":
+		transport.apkUpdateFingerprint = command.Arguments[1]
+		transport.apkUpdateCount++
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected backend command %q", command.Name)
 	}
+}
+
+func fakeAPKRepositoryName(beginMarker string) string {
+	return strings.TrimPrefix(beginMarker, "# BEGIN ALPINEFORM REPOSITORY ")
 }
 
 func fakeOnlineRuntime(transport *fakeOnlineTransport, input string) onlineRuntime {
@@ -1288,5 +1334,155 @@ host "node" {
 	}
 	if !reflect.DeepEqual(deleteEvents, []string{"delete.authorized_key", "delete.membership"}) || transport.membershipExists || transport.authorizedKeyExists || len(transport.state.Resources) != 3 {
 		t.Fatalf("managed child removal = events=%#v transport=%#v state=%#v", deleteEvents, transport, transport.state)
+	}
+}
+
+func TestNativeAPKRepositoryWorkflowAggregatesUpdateAndForgetsRemovedDeclaration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.apf.hcl")
+	writeConfig := func(mainEnsure string, includeCommunity bool) {
+		t.Helper()
+		community := ""
+		if includeCommunity {
+			community = `
+    repository "community" {
+      url = "https://dl-cdn.alpinelinux.org/alpine"
+    }
+`
+		}
+		content := fmt.Sprintf(`
+host "node" {
+  platform { version = "3.24.1" }
+  apk {
+    repository "main" {
+      url    = "https://dl-cdn.alpinelinux.org/alpine"
+      ensure = %q
+    }
+%s  }
+}
+`, mainEnsure, community)
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport := newFakeOnlineTransport("alpine")
+	runtime := fakeNativeRuntime(transport, "")
+	writeConfig("present", true)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if transport.apkUpdateCount != 1 || len(transport.apkRepositories) != 2 {
+		t.Fatalf("initial APK result = repositories=%#v updates=%d", transport.apkRepositories, transport.apkUpdateCount)
+	}
+	if err := runCheckWithRuntime(nil, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("APK no-op check = %v", err)
+	}
+	if transport.apkUpdateCount != 1 {
+		t.Fatalf("no-op ran apk update: %d", transport.apkUpdateCount)
+	}
+
+	transport.apkRepositories["main"] = "https://drift.example/alpine/v3.24/main"
+	var drift bytes.Buffer
+	if err := runCheckWithRuntime(nil, &drift, dir, nil, runtime); err == nil || !strings.Contains(drift.String(), `update host.node.apk.repository["main"]`) || !strings.Contains(drift.String(), "update host.node.apk.update") {
+		t.Fatalf("APK drift check error = %v, output = %s", err, drift.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("APK drift repair = %v", err)
+	}
+	if transport.apkUpdateCount != 2 || transport.apkRepositories["main"] != "https://dl-cdn.alpinelinux.org/alpine/v3.24/main" {
+		t.Fatalf("APK drift repair result = repositories=%#v updates=%d", transport.apkRepositories, transport.apkUpdateCount)
+	}
+
+	writeConfig("present", false)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("APK declaration forget = %v", err)
+	}
+	communityAddress := `host.node.apk.repository["community"]`
+	if _, exists := transport.apkRepositories["community"]; !exists || transport.apkUpdateCount != 2 {
+		t.Fatalf("removed declaration changed remote APK state: repositories=%#v updates=%d", transport.apkRepositories, transport.apkUpdateCount)
+	}
+	if _, exists := transport.state.Resources[communityAddress]; exists {
+		t.Fatalf("removed APK declaration remained in state: %#v", transport.state.Resources)
+	}
+
+	writeConfig("absent", false)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("explicit APK repository removal = %v", err)
+	}
+	if _, exists := transport.apkRepositories["main"]; exists || transport.apkUpdateCount != 3 {
+		t.Fatalf("explicit APK removal result = repositories=%#v updates=%d", transport.apkRepositories, transport.apkUpdateCount)
+	}
+}
+
+func TestNativeAPKKeyWorkflowVerifiesDriftAndRequiresExplicitAbsence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.apf.hcl")
+	keyContent := []byte("test-only-public-apk-key\n")
+	if err := os.WriteFile(filepath.Join(dir, "vendor.rsa.pub"), keyContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(keyContent))
+	writeConfig := func(mode string) {
+		t.Helper()
+		keyBlock := ""
+		switch mode {
+		case "present":
+			keyBlock = fmt.Sprintf(`
+    key "vendor.rsa.pub" {
+      source = "vendor.rsa.pub"
+      sha256 = %q
+    }
+`, digest)
+		case "absent":
+			keyBlock = `
+    key "vendor.rsa.pub" { ensure = "absent" }
+`
+		}
+		content := fmt.Sprintf(`
+host "node" {
+  platform { version = "3.24.1" }
+  apk {
+%s  }
+}
+`, keyBlock)
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport := newFakeOnlineTransport("alpine")
+	runtime := fakeNativeRuntime(transport, "")
+	writeConfig("present")
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if transport.apkKeyDigests["vendor.rsa.pub"] != digest || transport.apkUpdateCount != 1 {
+		t.Fatalf("initial APK key result = keys=%#v updates=%d", transport.apkKeyDigests, transport.apkUpdateCount)
+	}
+	transport.apkKeyDigests["vendor.rsa.pub"] = strings.Repeat("b", 64)
+	var drift bytes.Buffer
+	if err := runCheckWithRuntime(nil, &drift, dir, nil, runtime); err == nil || !strings.Contains(drift.String(), `update host.node.apk.key["vendor.rsa.pub"]`) || !strings.Contains(drift.String(), "update host.node.apk.update") {
+		t.Fatalf("APK key drift check error = %v, output = %s", err, drift.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if transport.apkKeyDigests["vendor.rsa.pub"] != digest || transport.apkUpdateCount != 2 {
+		t.Fatalf("APK key repair = keys=%#v updates=%d", transport.apkKeyDigests, transport.apkUpdateCount)
+	}
+
+	writeConfig("removed")
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("APK key declaration forget = %v", err)
+	}
+	if _, exists := transport.apkKeyDigests["vendor.rsa.pub"]; !exists || transport.apkUpdateCount != 2 {
+		t.Fatalf("removed key declaration changed remote state: keys=%#v updates=%d", transport.apkKeyDigests, transport.apkUpdateCount)
+	}
+
+	writeConfig("absent")
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("explicit APK key removal = %v", err)
+	}
+	if _, exists := transport.apkKeyDigests["vendor.rsa.pub"]; exists || transport.apkUpdateCount != 3 {
+		t.Fatalf("explicit APK key removal result = keys=%#v updates=%d", transport.apkKeyDigests, transport.apkUpdateCount)
 	}
 }

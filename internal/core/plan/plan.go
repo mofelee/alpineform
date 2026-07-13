@@ -120,10 +120,14 @@ func NewOnline(actionPlan engine.Plan, options Options) Document {
 			if step.Node.Sensitive || step.Node.Ephemeral || resourceProtected(step.Prior) {
 				desired = map[string]any{"protected": true}
 			}
+			summary := step.Summary
+			if step.Node.Kind == "apk_repositories" && stringMapValue(step.Node.Desired, "ownership") == "authoritative" && step.Action != engine.ActionNoOp {
+				summary = authoritativeRepositoriesDiff(summary, stringSliceMapValue(step.Observed.Values, "lines"), stringSliceMapValue(step.Node.Desired, "lines"))
+			}
 			document.Changes = append(document.Changes, Change{
 				Address: step.Address,
 				Action:  step.Action,
-				Summary: step.Summary,
+				Summary: summary,
 				Source:  step.Node.Source,
 				Desired: desired,
 			})
@@ -199,7 +203,7 @@ func PrintText(w io.Writer, document Document, options TextOptions) {
 			}
 			fmt.Fprintf(w, "  %s %s\n", symbol, change.Address)
 			if change.Summary != "" {
-				fmt.Fprintf(w, "    %s\n", change.Summary)
+				fmt.Fprintf(w, "    %s\n", strings.ReplaceAll(change.Summary, "\n", "\n    "))
 			}
 		}
 	}
@@ -226,7 +230,7 @@ func printOnlineText(w io.Writer, document Document, options TextOptions) {
 			}
 			fmt.Fprintf(w, "  %s %s\n", action, change.Address)
 			if change.Summary != "" {
-				fmt.Fprintf(w, "    %s\n", change.Summary)
+				fmt.Fprintf(w, "    %s\n", strings.ReplaceAll(change.Summary, "\n", "\n    "))
 			}
 		}
 	}
@@ -298,6 +302,46 @@ func cloneValue(value any) any {
 	}
 }
 
+func authoritativeRepositoriesDiff(summary string, before, after []string) string {
+	var builder strings.Builder
+	builder.WriteString(summary)
+	builder.WriteString("\n--- observed /etc/apk/repositories")
+	builder.WriteString("\n+++ desired /etc/apk/repositories")
+	for _, line := range before {
+		builder.WriteString("\n- ")
+		builder.WriteString(line)
+	}
+	for _, line := range after {
+		builder.WriteString("\n+ ")
+		builder.WriteString(line)
+	}
+	return builder.String()
+}
+
+func stringMapValue(input map[string]any, name string) string {
+	value, _ := input[name].(string)
+	return value
+}
+
+func stringSliceMapValue(input map[string]any, name string) []string {
+	value, ok := input[name].([]string)
+	if ok {
+		return append([]string(nil), value...)
+	}
+	generic, ok := input[name].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(generic))
+	for _, item := range generic {
+		text, ok := item.(string)
+		if ok {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
 func SourceText(source ir.SourceRef) string {
 	parts := []string{}
 	if source.File != "" {
@@ -325,6 +369,7 @@ const planHTML = `<!doctype html>
     .summary { padding: 12px 0 20px; border-bottom: 1px solid #cdd5cf; }
     table { width: 100%; border-collapse: collapse; margin-top: 20px; background: #fff; }
     th, td { padding: 9px 10px; border: 1px solid #d8ded9; text-align: left; vertical-align: top; }
+    td:nth-child(3) { white-space: pre-wrap; }
     th { background: #edf2ee; }
     code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
   </style>

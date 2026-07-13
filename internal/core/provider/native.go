@@ -33,6 +33,12 @@ func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.Obs
 		return inspectMembership(ctx, runner, node)
 	case "authorized_key":
 		return inspectAuthorizedKey(ctx, runner, node)
+	case "apk_key":
+		return inspectAPKKey(ctx, runner, node)
+	case "apk_repository", "apk_repositories":
+		return inspectAPKRepository(ctx, runner, node)
+	case "apk_update":
+		return inspectAPKUpdate(ctx, runner, node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", node.Kind)
 	}
@@ -56,6 +62,12 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 		return applyMembership(ctx, runner, step.Node)
 	case "authorized_key":
 		return applyAuthorizedKey(ctx, runner, step.Node)
+	case "apk_key":
+		return applyAPKKey(ctx, runner, step.Node)
+	case "apk_repository", "apk_repositories":
+		return applyAPKRepository(ctx, runner, step.Node)
+	case "apk_update":
+		return applyAPKUpdate(ctx, runner, step.Node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", step.Node.Kind)
 	}
@@ -83,6 +95,12 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 		return deleteMembership(ctx, runner, step)
 	case "authorized_key":
 		return deleteAuthorizedKey(ctx, runner, step)
+	case "apk_key":
+		return deleteAPKKey(ctx, runner, step)
+	case "apk_repository":
+		return deleteAPKRepository(ctx, runner, step)
+	case "apk_repositories", "apk_update":
+		return fmt.Errorf("resource kind %q can only be forgotten when its declaration is removed", kind)
 	default:
 		return fmt.Errorf("no Alpine provider is registered for resource kind %q", kind)
 	}

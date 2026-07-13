@@ -50,12 +50,42 @@ type HostSpec struct {
 	State       StateSpec               `json:"state"`
 	Platform    *PlatformSpec           `json:"platform,omitempty"`
 	Facts       *HostFacts              `json:"facts,omitempty"`
+	APK         *APKSpec                `json:"apk,omitempty"`
 	Components  []ComponentInstanceSpec `json:"components,omitempty"`
 	Files       []ManagedFileSpec       `json:"files,omitempty"`
 	Directories []ManagedDirectorySpec  `json:"directories,omitempty"`
 	Groups      []ManagedGroupSpec      `json:"groups,omitempty"`
 	Users       []ManagedUserSpec       `json:"users,omitempty"`
 	Source      SourceRef               `json:"source"`
+}
+
+type APKSpec struct {
+	Ownership    string              `json:"ownership"`
+	Repositories []APKRepositorySpec `json:"repositories,omitempty"`
+	Keys         []APKKeySpec        `json:"keys,omitempty"`
+	Source       SourceRef           `json:"source"`
+}
+
+type APKRepositorySpec struct {
+	Name      string        `json:"name"`
+	URL       string        `json:"url"`
+	Branch    string        `json:"branch"`
+	Component string        `json:"component"`
+	Tag       string        `json:"tag,omitempty"`
+	Line      string        `json:"line"`
+	Ensure    string        `json:"ensure"`
+	Lifecycle LifecycleSpec `json:"lifecycle"`
+	Source    SourceRef     `json:"source"`
+}
+
+type APKKeySpec struct {
+	Filename   string        `json:"filename"`
+	SourcePath string        `json:"source_path,omitempty"`
+	SHA256     string        `json:"sha256,omitempty"`
+	Content    []byte        `json:"-"`
+	Ensure     string        `json:"ensure"`
+	Lifecycle  LifecycleSpec `json:"lifecycle"`
+	Source     SourceRef     `json:"source"`
 }
 
 type ManagedUserSpec struct {

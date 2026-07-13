@@ -264,6 +264,7 @@ func (engine Engine) planBuilt(ctx context.Context, program *ir.Program, resourc
 func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []graph.Node, prior corestate.State) (HostPlan, error) {
 	hostPlan := HostPlan{Host: host, PriorState: prior}
 	current := map[string]bool{}
+	plannedActions := map[string]string{}
 	for _, node := range nodes {
 		current[node.Address] = true
 		observed, err := engine.Provider.Inspect(ctx, node)
@@ -275,10 +276,18 @@ func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []gra
 		}
 		priorResource, exists := prior.Resources[node.Address]
 		step := planNode(node, priorResource, exists, observed)
+		if node.Kind == "apk_update" && apkDependenciesChanged(node.DependsOn, plannedActions) {
+			if observed.Exists {
+				step.Action = ActionUpdate
+			} else {
+				step.Action = ActionCreate
+			}
+		}
 		if (step.Action == ActionDelete || step.Action == ActionDestroy) && node.Lifecycle != nil && node.Lifecycle.PreventDestroy {
 			return HostPlan{}, fmt.Errorf("%s:%d:%s: prevent_destroy blocks %s for %s", node.Source.File, node.Source.Line, node.Source.Path, step.Action, node.Address)
 		}
 		hostPlan.Steps = append(hostPlan.Steps, step)
+		plannedActions[node.Address] = step.Action
 	}
 	addresses := make([]string, 0, len(prior.Resources))
 	for address := range prior.Resources {
@@ -311,6 +320,15 @@ func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []gra
 	}
 	hostPlan.Fingerprint = planFingerprint(hostPlan)
 	return hostPlan, nil
+}
+
+func apkDependenciesChanged(dependencies []string, actions map[string]string) bool {
+	for _, dependency := range dependencies {
+		if action := actions[dependency]; action != "" && action != ActionNoOp {
+			return true
+		}
+	}
+	return false
 }
 
 func planNode(node graph.Node, prior corestate.Resource, hasPrior bool, observed ObservedResource) Step {

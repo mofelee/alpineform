@@ -2,6 +2,7 @@
 package graph
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -75,6 +76,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 				},
 			})
 		}
+		appendAPKNodes(graph, host, hostAddress)
 		for _, group := range host.Groups {
 			deleteBehavior := group.OnRemove
 			if deleteBehavior == "forget" {
@@ -280,6 +282,118 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 		return nil, err
 	}
 	return graph, nil
+}
+
+func appendAPKNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddress string) {
+	if host.APK == nil {
+		return
+	}
+	apk := host.APK
+	keyAddresses := make([]string, 0, len(apk.Keys))
+	readiness := make([]Node, 0, len(apk.Keys)+len(apk.Repositories))
+	for _, key := range apk.Keys {
+		address := apkKeyResourceAddress(host.Name, key.Filename)
+		node := Node{
+			Host: host.Name, Address: address, Kind: "apk_key", Managed: true,
+			Summary: apkKeySummary(key), Source: key.Source, Lifecycle: &key.Lifecycle,
+			Desired: map[string]any{
+				"filename":        key.Filename,
+				"sha256":          key.SHA256,
+				"ensure":          key.Ensure,
+				"delete_behavior": "",
+				"delete":          map[string]any{"filename": key.Filename},
+				"prevent_destroy": key.Lifecycle.PreventDestroy,
+			},
+			Payload:   map[string]any{"content": append([]byte(nil), key.Content...)},
+			DependsOn: []string{hostAddress}, DigestSafe: true,
+		}
+		resourceGraph.Nodes = append(resourceGraph.Nodes, node)
+		keyAddresses = append(keyAddresses, address)
+		readiness = append(readiness, node)
+	}
+	sort.Strings(keyAddresses)
+	if apk.Ownership == "authoritative" {
+		lines := make([]string, 0, len(apk.Repositories))
+		for _, repository := range apk.Repositories {
+			if repository.Ensure == "present" {
+				lines = append(lines, repository.Line)
+			}
+		}
+		node := Node{
+			Host: host.Name, Address: hostAddress + ".apk.repositories", Kind: "apk_repositories", Managed: true,
+			Summary: "authoritatively manage /etc/apk/repositories", Source: apk.Source,
+			Desired: map[string]any{
+				"ownership":       "authoritative",
+				"lines":           lines,
+				"final_newline":   len(lines) > 0,
+				"ensure":          "present",
+				"delete_behavior": "",
+			},
+			DependsOn: append([]string{hostAddress}, keyAddresses...), DigestSafe: true,
+		}
+		resourceGraph.Nodes = append(resourceGraph.Nodes, node)
+		readiness = append(readiness, node)
+	} else {
+		for _, repository := range apk.Repositories {
+			node := Node{
+				Host: host.Name, Address: apkRepositoryResourceAddress(host.Name, repository.Name), Kind: "apk_repository", Managed: true,
+				Summary: apkRepositorySummary(repository), Source: repository.Source, Lifecycle: &repository.Lifecycle,
+				Desired: map[string]any{
+					"name":            repository.Name,
+					"line":            repository.Line,
+					"ownership":       "managed",
+					"ensure":          repository.Ensure,
+					"delete_behavior": "",
+					"delete":          map[string]any{"name": repository.Name},
+					"prevent_destroy": repository.Lifecycle.PreventDestroy,
+				},
+				DependsOn: append([]string{hostAddress}, keyAddresses...), DigestSafe: true,
+			}
+			resourceGraph.Nodes = append(resourceGraph.Nodes, node)
+			readiness = append(readiness, node)
+		}
+	}
+	if len(readiness) == 0 {
+		return
+	}
+	dependencies := make([]string, 0, len(readiness))
+	for _, node := range readiness {
+		dependencies = append(dependencies, node.Address)
+	}
+	sort.Strings(dependencies)
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte("alpineform-apk-update-v1\x00"+host.Name)))
+	resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
+		Host: host.Name, Address: hostAddress + ".apk.update", Kind: "apk_update", Managed: true,
+		Summary: "refresh APK indexes after repository or key changes", Source: apk.Source,
+		Desired: map[string]any{
+			"fingerprint":     fingerprint,
+			"ensure":          "present",
+			"delete_behavior": "",
+		},
+		Payload: map[string]any{"readiness": readiness}, DependsOn: dependencies, DigestSafe: true,
+	})
+}
+
+func apkRepositorySummary(repository ir.APKRepositorySpec) string {
+	if repository.Ensure == "absent" {
+		return "remove managed APK repository " + repository.Name
+	}
+	return "manage APK repository " + repository.Line
+}
+
+func apkKeySummary(key ir.APKKeySpec) string {
+	if key.Ensure == "absent" {
+		return "remove custom APK key " + key.Filename
+	}
+	return "manage custom APK key " + key.Filename
+}
+
+func apkRepositoryResourceAddress(host, name string) string {
+	return "host." + host + ".apk.repository[" + strconv.Quote(name) + "]"
+}
+
+func apkKeyResourceAddress(host, filename string) string {
+	return "host." + host + ".apk.key[" + strconv.Quote(filename) + "]"
 }
 
 func fileSummary(file ir.ManagedFileSpec) string {

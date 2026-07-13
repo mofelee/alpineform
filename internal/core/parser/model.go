@@ -82,10 +82,18 @@ type Host struct {
 	Imports    []string
 	SSH        SSH
 	Platform   *Platform
+	APK        *APK
 	Components []ComponentInstance
 	Resources  []ResourceDeclaration
 	Asserts    []Assert
 	Source     ir.SourceRef
+}
+
+type APK struct {
+	Ownership    string
+	Repositories []ResourceDeclaration
+	Keys         []ResourceDeclaration
+	Source       ir.SourceRef
 }
 
 type SSH struct {
@@ -350,6 +358,15 @@ func parseHost(file string, block *hclsyntax.Block, ctx EvalContext) (Host, erro
 			if err != nil {
 				return Host{}, err
 			}
+		case "apk":
+			if host.APK != nil {
+				return Host{}, fmt.Errorf("%s:%d: duplicate %s.apk block", file, child.TypeRange.Start.Line, path)
+			}
+			apk, err := parseAPK(file, path+".apk", child, ctx)
+			if err != nil {
+				return Host{}, err
+			}
+			host.APK = &apk
 		case "ssh":
 			if host.SSH.Source.Path != host.Source.Path {
 				return Host{}, fmt.Errorf("%s:%d: duplicate %s.ssh block", file, child.TypeRange.Start.Line, path)
