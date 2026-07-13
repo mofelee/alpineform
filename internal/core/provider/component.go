@@ -234,6 +234,85 @@ func deleteComponentInstall(ctx context.Context, runner backend.Runner, step eng
 	return err
 }
 
+const componentCAInspectMarkerScript = `set -eu
+marker=$1
+want=$2
+if [ -f "$marker" ] && [ "$(cat "$marker")" = "$want" ]; then
+  echo updated
+else
+  echo stale
+fi
+`
+
+const componentCAUpdateScript = `set -eu
+marker=$1
+want=$2
+if ! command -v update-ca-certificates >/dev/null 2>&1; then
+  echo 'update-ca-certificates is required for CA certificate artifacts' >&2
+  exit 1
+fi
+update-ca-certificates
+parent=${marker%/*}
+mkdir -p "$parent"
+tmp=$(mktemp "$parent/.alpineform-ca.XXXXXX")
+cleanup() { rm -f "$tmp"; }
+trap cleanup EXIT HUP INT TERM
+printf '%s' "$want" >"$tmp"
+chmod 0600 "$tmp"
+mv -f "$tmp" "$marker"
+trap - EXIT HUP INT TERM
+`
+
+func inspectComponentCACertificate(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
+	observed, err := inspectComponentInstall(ctx, runner, node)
+	if err != nil || !observed.Exists {
+		return observed, err
+	}
+	marker := stringValue(node.Desired, "trust_marker")
+	digest := stringValue(node.Desired, "content_sha256")
+	if err := validateRemoteFilePath(marker); err != nil {
+		return engine.ObservedResource{}, fmt.Errorf("CA trust marker: %w", err)
+	}
+	output, err := runner.Run(ctx, backend.Command{Name: "inspect.component_ca_certificate_trust", Script: componentCAInspectMarkerScript, Arguments: []string{marker, digest}})
+	if err != nil {
+		return engine.ObservedResource{}, err
+	}
+	if strings.TrimSpace(string(output)) != "updated" {
+		observed.Values["trust_updated"] = false
+	}
+	return observed, nil
+}
+
+func applyComponentCACertificate(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
+	if _, err := applyComponentInstall(ctx, runner, node); err != nil {
+		return engine.ObservedResource{}, err
+	}
+	marker := stringValue(node.Desired, "trust_marker")
+	digest := stringValue(node.Desired, "content_sha256")
+	if err := validateRemoteFilePath(marker); err != nil {
+		return engine.ObservedResource{}, fmt.Errorf("CA trust marker: %w", err)
+	}
+	if _, err := runner.Run(ctx, backend.Command{Name: "apply.component_ca_certificate_trust", Script: componentCAUpdateScript, Arguments: []string{marker, digest}}); err != nil {
+		return engine.ObservedResource{}, err
+	}
+	return inspectComponentCACertificate(ctx, runner, node)
+}
+
+func deleteComponentCACertificate(ctx context.Context, runner backend.Runner, step engine.Step) error {
+	if err := deleteComponentInstall(ctx, runner, step); err != nil {
+		return err
+	}
+	marker := componentDeleteValue(step, "trust_marker")
+	if err := validateRemoteFilePath(marker); err != nil {
+		return fmt.Errorf("CA trust marker: %w", err)
+	}
+	if _, err := runner.Run(ctx, backend.Command{Name: "delete.component_ca_certificate_trust", Script: componentCAUpdateScript, Arguments: []string{marker, "removed"}}); err != nil {
+		return err
+	}
+	_, err := runner.Run(ctx, backend.Command{Name: "delete.component_ca_certificate_marker", Script: fileDeleteScript, Arguments: []string{marker}})
+	return err
+}
+
 func componentSourceIdentity(node graph.Node) (string, string, error) {
 	path := stringValue(node.Desired, "path")
 	if err := validateRemoteFilePath(path); err != nil {
@@ -259,14 +338,18 @@ func componentInstallIdentity(node graph.Node) (string, string, error) {
 }
 
 func componentDeletePath(step engine.Step) string {
+	return componentDeleteValue(step, "path")
+}
+
+func componentDeleteValue(step engine.Step, name string) string {
 	if step.Node.Desired != nil {
-		if path := stringValue(step.Node.Desired, "path"); path != "" {
-			return path
+		if value := stringValue(step.Node.Desired, name); value != "" {
+			return value
 		}
 	}
 	if step.Prior != nil {
-		path, _ := step.Prior.Delete["path"].(string)
-		return path
+		value, _ := step.Prior.Delete[name].(string)
+		return value
 	}
 	return ""
 }

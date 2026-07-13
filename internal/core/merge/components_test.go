@@ -98,3 +98,44 @@ host "node" {
 		})
 	}
 }
+
+func TestCompileArchiveAndCACertificateArtifacts(t *testing.T) {
+	config, err := compileConfig(t, `
+component "bundle" {
+  type = "archive"
+  source {
+    url    = "https://example.invalid/bundle.tar.gz"
+    sha256 = "`+artifactSHA+`"
+  }
+  extract { strip_components = 1 }
+  install { path = "/opt/bundle" }
+}
+component "root_ca" {
+  type = "ca_certificate"
+  source {
+    url    = "https://example.invalid/root.crt"
+    sha256 = "`+artifactSHA+`"
+  }
+  install { path = "/usr/local/share/ca-certificates/example-root.crt" }
+}
+host "node" {
+  component "bundle" { source = component.bundle }
+  component "root_ca" { source = component.root_ca }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := program.Hosts[0].Components[0]
+	certificate := program.Hosts[0].Components[1]
+	if archive.ArtifactType != "archive" || archive.Extract == nil || archive.Extract.Format != "tar.gz" || archive.Extract.StripComponents != 1 {
+		t.Fatalf("archive = %#v", archive)
+	}
+	if certificate.ArtifactType != "ca_certificate" || certificate.Install == nil || certificate.Install.Mode != "0644" {
+		t.Fatalf("certificate = %#v", certificate)
+	}
+}

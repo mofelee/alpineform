@@ -415,13 +415,17 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 	if err != nil {
 		return ir.ComponentInstanceSpec{}, err
 	}
+	extract := componentArtifactExtractSpec(template.Extract)
+	if extract != nil && extract.Format == "" {
+		extract.Format = inferComponentArtifactFormat(template.Sources)
+	}
 	return ir.ComponentInstanceSpec{
 		Name:            instance.Name,
 		Template:        instance.Template,
 		ArtifactType:    template.ArtifactType,
 		Version:         template.Version,
 		SelectedSource:  selectedSource,
-		Extract:         componentArtifactExtractSpec(template.Extract),
+		Extract:         extract,
 		Install:         componentArtifactInstallSpec(template.ArtifactType, template.Install),
 		InputNames:      inputNames,
 		ProtectedInputs: protected,

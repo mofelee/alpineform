@@ -29,12 +29,35 @@ func validateComponentArtifacts(components map[string]parser.Component) error {
 		switch component.ArtifactType {
 		case "binary", "file":
 		case "archive", "ca_certificate":
-			return fmt.Errorf("%s:%d:%s.type: artifact type %q is not available until its provider is enabled", component.Source.File, component.Source.Line, component.Source.Path, component.ArtifactType)
 		default:
 			return fmt.Errorf("%s:%d:%s.type: unsupported artifact type %q; v0.1 supports binary, file, archive, and ca_certificate", component.Source.File, component.Source.Line, component.Source.Path, component.ArtifactType)
 		}
-		if component.Extract != nil {
-			return fmt.Errorf("%s:%d:%s: extraction is not available until the archive provider is enabled", component.Extract.Source.File, component.Extract.Source.Line, component.Extract.Source.Path)
+		switch component.ArtifactType {
+		case "archive":
+			if component.Extract == nil {
+				return fmt.Errorf("%s:%d:%s.extract: archive component requires an extract block", component.Source.File, component.Source.Line, component.Source.Path)
+			}
+			format := component.Extract.Format
+			if format == "" {
+				format = inferComponentArtifactFormat(component.Sources)
+			}
+			if format != "tar.gz" {
+				return fmt.Errorf("%s:%d:%s.format: archive extraction supports only tar.gz in v0.1", component.Extract.Source.File, component.Extract.Source.Line, component.Extract.Source.Path)
+			}
+			if component.Extract.StripComponents < 0 {
+				return fmt.Errorf("%s:%d:%s.strip_components: strip_components must be non-negative", component.Extract.Source.File, component.Extract.Source.Line, component.Extract.Source.Path)
+			}
+			if component.Extract.Include != "" {
+				return fmt.Errorf("%s:%d:%s.include: archive extraction does not support include", component.Extract.Source.File, component.Extract.Source.Line, component.Extract.Source.Path)
+			}
+		case "binary":
+			if component.Extract != nil {
+				return fmt.Errorf("%s:%d:%s: binary extraction is not supported in this increment", component.Extract.Source.File, component.Extract.Source.Line, component.Extract.Source.Path)
+			}
+		default:
+			if component.Extract != nil {
+				return fmt.Errorf("%s:%d:%s: %s artifact does not support extraction", component.Extract.Source.File, component.Extract.Source.Line, component.Extract.Source.Path, component.ArtifactType)
+			}
 		}
 		if len(component.Sources) == 0 {
 			return fmt.Errorf("%s:%d:%s.source: artifact component requires at least one fixed source", component.Source.File, component.Source.Line, component.Source.Path)
@@ -64,6 +87,9 @@ func validateComponentArtifacts(components map[string]parser.Component) error {
 		if install.Mode != "" && !componentModePattern.MatchString(install.Mode) {
 			return fmt.Errorf("%s:%d:%s.mode: install mode must be a four-digit octal string", install.Source.File, install.Source.Line, install.Source.Path)
 		}
+		if component.ArtifactType == "ca_certificate" && (!strings.HasPrefix(install.Path, "/usr/local/share/ca-certificates/") || !strings.HasSuffix(install.Path, ".crt")) {
+			return fmt.Errorf("%s:%d:%s.path: CA certificate path must be a .crt file under /usr/local/share/ca-certificates", install.Source.File, install.Source.Line, install.Source.Path)
+		}
 	}
 	return nil
 }
@@ -77,6 +103,19 @@ func componentArtifactExtractSpec(extract *parser.ComponentArtifactExtract) *ir.
 		return nil
 	}
 	return &ir.ComponentArtifactExtractSpec{Format: extract.Format, StripComponents: extract.StripComponents, Include: extract.Include, Source: extract.Source}
+}
+
+func inferComponentArtifactFormat(sources map[string]parser.ComponentArtifactSource) string {
+	for _, source := range sources {
+		path := strings.ToLower(source.URL)
+		if query := strings.IndexAny(path, "?#"); query >= 0 {
+			path = path[:query]
+		}
+		if strings.HasSuffix(path, ".tar.gz") || strings.HasSuffix(path, ".tgz") {
+			return "tar.gz"
+		}
+	}
+	return ""
 }
 
 func componentArtifactInstallSpec(artifactType string, install *parser.ComponentArtifactInstall) *ir.ComponentArtifactInstallSpec {

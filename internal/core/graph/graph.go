@@ -314,16 +314,27 @@ func appendComponentArtifactNodes(resourceGraph *ResourceGraph, host ir.HostSpec
 		DependsOn: []string{componentAddress}, DigestSafe: true,
 	})
 	installAddress := componentAddress + ".artifact.install[" + strconv.Quote(install.Path) + "]"
+	desired := map[string]any{
+		"path": install.Path, "owner": install.Owner, "group": install.Group, "mode": install.Mode,
+		"content_sha256": source.SHA256, "cache_path": cachePath, "artifact_type": component.ArtifactType,
+		"version": component.Version, "ensure": "present", "delete_behavior": "destroy",
+		"delete": map[string]any{"path": install.Path}, "prevent_destroy": component.Lifecycle.PreventDestroy,
+	}
+	if component.ArtifactType == "ca_certificate" {
+		marker := "/var/lib/alpineform/ca-certificates/" + source.SHA256 + ".updated"
+		desired["trust_marker"] = marker
+		desired["trust_updated"] = true
+		desired["delete"] = map[string]any{"path": install.Path, "trust_marker": marker}
+	}
+	if component.Extract != nil {
+		desired["extract_format"] = component.Extract.Format
+		desired["strip_components"] = component.Extract.StripComponents
+	}
 	resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
 		Host: host.Name, Address: installAddress, Kind: "component_" + component.ArtifactType, Managed: true,
 		Summary: "install component " + component.Name + " " + component.ArtifactType + " at " + install.Path,
 		Source:  install.Source, Lifecycle: &component.Lifecycle,
-		Desired: map[string]any{
-			"path": install.Path, "owner": install.Owner, "group": install.Group, "mode": install.Mode,
-			"content_sha256": source.SHA256, "cache_path": cachePath, "artifact_type": component.ArtifactType,
-			"version": component.Version, "ensure": "present", "delete_behavior": "destroy",
-			"delete": map[string]any{"path": install.Path}, "prevent_destroy": component.Lifecycle.PreventDestroy,
-		},
+		Desired:   desired,
 		DependsOn: []string{sourceAddress}, DigestSafe: true,
 	})
 }
