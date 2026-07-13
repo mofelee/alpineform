@@ -321,4 +321,7 @@ host "node" {
 	if certificate.ArtifactType != "ca_certificate" || certificate.Install == nil || certificate.Install.Mode != "0644" {
 		t.Fatalf("certificate = %#v", certificate)
 	}
+	if len(certificate.Packages) != 1 || certificate.Packages[0].Name != "ca-certificates" || certificate.Packages[0].Ensure != "present" {
+		t.Fatalf("certificate packages = %#v", certificate.Packages)
+	}
 }

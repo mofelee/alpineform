@@ -101,3 +101,28 @@ func TestCompileComponentNativeResourcesUseScopedAddresses(t *testing.T) {
 		t.Fatalf("component script node = %#v", script)
 	}
 }
+
+func TestCompileCACertificateDependsOnSynthesizedPackage(t *testing.T) {
+	component := ir.ComponentInstanceSpec{
+		Name: "ca", Template: "ca", ArtifactType: "ca_certificate", Source: source(2),
+		SelectedSource: &ir.ComponentArtifactSourceSpec{URL: "https://example.invalid/root.crt", SHA256: componentArtifactSHA, Source: source(3)},
+		Install:        &ir.ComponentArtifactInstallSpec{Path: "/usr/local/share/ca-certificates/root.crt", Owner: "root", Group: "root", Mode: "0644", Source: source(4)},
+		Packages:       []ir.PackageSpec{{Name: "ca-certificates", WorldIntent: "ca-certificates", Ensure: "present", Source: source(2)}},
+	}
+	resourceGraph, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{component}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "host.node.component.ca"
+	installAddress := prefix + `.artifact.install["/usr/local/share/ca-certificates/root.crt"]`
+	var install Node
+	for _, node := range resourceGraph.Nodes {
+		if node.Address == installAddress {
+			install = node
+		}
+	}
+	want := []string{prefix + `.artifact.source["any"]`, prefix + `.packages.package["ca-certificates"]`}
+	if !reflect.DeepEqual(install.DependsOn, want) {
+		t.Fatalf("CA dependencies = %#v, want %#v", install.DependsOn, want)
+	}
+}

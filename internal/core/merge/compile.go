@@ -350,7 +350,7 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	}
 	for _, name := range resolved.Order {
 		instance := resolved.Components[name]
-		compiled, err := compileComponentInstance(config, host, facts, instance, hostContext, out.Scripts, out.APK)
+		compiled, err := compileComponentInstance(config, host, facts, instance, hostContext, out.Scripts, out.APK, out.Packages)
 		if err != nil {
 			return ir.HostSpec{}, err
 		}
@@ -362,7 +362,7 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	return out, nil
 }
 
-func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir.HostFacts, instance parser.ComponentInstance, hostContext parser.EvalContext, rootScripts map[string]ir.ScriptSpec, rootAPK *ir.APKSpec) (ir.ComponentInstanceSpec, error) {
+func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir.HostFacts, instance parser.ComponentInstance, hostContext parser.EvalContext, rootScripts map[string]ir.ScriptSpec, rootAPK *ir.APKSpec, rootPackages []ir.PackageSpec) (ir.ComponentInstanceSpec, error) {
 	template, exists := config.Components[instance.Template]
 	if !exists {
 		return ir.ComponentInstanceSpec{}, fmt.Errorf("%s:%d:%s: unknown component.%s", instance.Source.File, instance.Source.Line, instance.Source.Path, instance.Template)
@@ -447,6 +447,10 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 	componentHost.Resources = append([]parser.ResourceDeclaration(nil), template.Resources...)
 	componentHost.OpenRC = template.OpenRC
 	files, directories, groups, users, packages, services, err := compileHostNativeResources(componentHost, rootAPK, facts, inputContext)
+	if err != nil {
+		return ir.ComponentInstanceSpec{}, err
+	}
+	packages, err = ensureComponentArtifactPackages(packages, rootPackages, template)
 	if err != nil {
 		return ir.ComponentInstanceSpec{}, err
 	}

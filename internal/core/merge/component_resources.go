@@ -4,7 +4,33 @@ import (
 	"fmt"
 
 	"github.com/mofelee/alpineform/internal/core/ir"
+	"github.com/mofelee/alpineform/internal/core/parser"
 )
+
+func ensureComponentArtifactPackages(component, host []ir.PackageSpec, template parser.Component) ([]ir.PackageSpec, error) {
+	if template.ArtifactType != "ca_certificate" {
+		return component, nil
+	}
+	for _, pkg := range component {
+		if pkg.Name == "ca-certificates" {
+			if pkg.Ensure != "present" {
+				return nil, fmt.Errorf("%s:%d:%s: CA certificate component requires ca-certificates to be present", pkg.Source.File, pkg.Source.Line, pkg.Source.Path)
+			}
+			return component, nil
+		}
+	}
+	for _, pkg := range host {
+		if pkg.Name == "ca-certificates" {
+			if pkg.Ensure != "present" {
+				return nil, fmt.Errorf("%s:%d:%s: CA certificate component requires host package ca-certificates to be present", pkg.Source.File, pkg.Source.Line, pkg.Source.Path)
+			}
+			return component, nil
+		}
+	}
+	return append(component, ir.PackageSpec{
+		Name: "ca-certificates", WorldIntent: "ca-certificates", Ensure: "present", Source: template.Source,
+	}), nil
+}
 
 func validateComponentResourceCollisions(host ir.HostSpec) error {
 	type owner struct {

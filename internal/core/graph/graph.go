@@ -428,12 +428,21 @@ func appendComponentArtifactNodes(resourceGraph *ResourceGraph, host ir.HostSpec
 		desired["extract_format"] = component.Extract.Format
 		desired["strip_components"] = component.Extract.StripComponents
 	}
+	installDependencies := []string{sourceAddress}
+	if component.ArtifactType == "ca_certificate" {
+		if _, exists := managedPackage("ca-certificates", component.Packages); exists {
+			installDependencies = append(installDependencies, componentPackageAddress(componentAddress, "ca-certificates"))
+		} else if _, exists := managedPackage("ca-certificates", host.Packages); exists {
+			installDependencies = append(installDependencies, packageResourceAddress(host.Name, "ca-certificates"))
+		}
+		sort.Strings(installDependencies)
+	}
 	resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
 		Host: host.Name, Address: installAddress, Kind: "component_" + component.ArtifactType, Managed: true,
 		Summary: "install component " + component.Name + " " + component.ArtifactType + " at " + install.Path,
 		Source:  install.Source, Lifecycle: &component.Lifecycle,
 		Desired:   desired,
-		DependsOn: []string{sourceAddress}, DigestSafe: true,
+		DependsOn: installDependencies, DigestSafe: true,
 	})
 }
 
