@@ -8,6 +8,7 @@ type Command struct {
 	Script      string
 	Stdin       []byte
 	RedactStdin bool
+	Parameters  map[string]string
 }
 
 type Runner interface {

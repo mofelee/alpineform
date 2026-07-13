@@ -1,15 +1,32 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	corestate "github.com/mofelee/alpineform/internal/core/state"
 )
+
+type localShellRunner struct{}
+
+func (localShellRunner) Run(ctx context.Context, command Command) ([]byte, error) {
+	process := exec.CommandContext(ctx, "sh", "-c", command.Script)
+	process.Stdin = bytes.NewReader(command.Stdin)
+	output, err := process.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", err, output)
+	}
+	return output, nil
+}
 
 type recordingRunner struct {
 	output   []byte
@@ -113,5 +130,36 @@ func TestStateStoreRejectsInvalidPathBeforeRunner(t *testing.T) {
 	}
 	if len(runner.commands) != 0 {
 		t.Fatalf("runner was called: %#v", runner.commands)
+	}
+}
+
+func TestStateStoreAtomicScriptRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "state.json")
+	now := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	store := StateStore{Runner: localShellRunner{}, Path: path, Now: func() time.Time { return now }}
+	written, err := store.Write(context.Background(), "node", corestate.Empty("node"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := store.Read(context.Background(), "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Serial != written.Serial || read.UpdatedAt != written.UpdatedAt {
+		t.Fatalf("round trip = %#v, written = %#v", read, written)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("state mode = %o, want 600", got)
+	}
+	temporary, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".state.json.tmp.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temporary) != 0 {
+		t.Fatalf("temporary state files remain: %#v", temporary)
 	}
 }
