@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -167,13 +168,14 @@ func compileComponentTemplates(components map[string]parser.Component) map[strin
 				Source:      input.Source,
 			}
 		}
+		scripts := compileScriptMetadata(component.Scripts, "component."+name)
 		sources := make(map[string]ir.ComponentArtifactSourceSpec, len(component.Sources))
 		for architecture, source := range component.Sources {
 			sources[architecture] = componentArtifactSourceSpec(source)
 		}
 		out[name] = ir.ComponentTemplateSpec{
 			Name: name, Description: component.Description, ArtifactType: component.ArtifactType, Version: component.Version,
-			Inputs: inputs, Sources: sources, Extract: componentArtifactExtractSpec(component.Extract),
+			Inputs: inputs, Scripts: scripts, Sources: sources, Extract: componentArtifactExtractSpec(component.Extract),
 			Install: componentArtifactInstallSpec(component.ArtifactType, component.Install), Source: component.Source,
 		}
 	}
@@ -181,12 +183,7 @@ func compileComponentTemplates(components map[string]parser.Component) map[strin
 }
 
 func compileScripts(scripts map[string]parser.Script) map[string]ir.ScriptSpec {
-	out := make(map[string]ir.ScriptSpec, len(scripts))
-	for _, name := range sortedScriptNames(scripts) {
-		script := scripts[name]
-		out[name] = ir.ScriptSpec{Name: name, Description: script.Description, Source: script.Source}
-	}
-	return out
+	return compileScriptMetadata(scripts, "")
 }
 
 func resolveProfiles(config *parser.Config) (map[string]resolvedProfile, error) {
@@ -287,6 +284,12 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 		State:  ir.StateSpec{Path: product.DefaultStatePath, LockPath: product.DefaultLockPath},
 		Source: host.Source,
 	}
+	out.Scripts, err = compileEvaluatedScripts(config.Scripts, hostContext, func(name string) string {
+		return "script[" + strconv.Quote(name) + "]"
+	})
+	if err != nil {
+		return ir.HostSpec{}, err
+	}
 	if facts != nil {
 		copied := *facts
 		out.Facts = &copied
@@ -343,7 +346,7 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	}
 	for _, name := range resolved.Order {
 		instance := resolved.Components[name]
-		compiled, err := compileComponentInstance(config, host, facts, instance, hostContext)
+		compiled, err := compileComponentInstance(config, host, facts, instance, hostContext, out.Scripts)
 		if err != nil {
 			return ir.HostSpec{}, err
 		}
@@ -352,7 +355,7 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	return out, nil
 }
 
-func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir.HostFacts, instance parser.ComponentInstance, hostContext parser.EvalContext) (ir.ComponentInstanceSpec, error) {
+func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir.HostFacts, instance parser.ComponentInstance, hostContext parser.EvalContext, rootScripts map[string]ir.ScriptSpec) (ir.ComponentInstanceSpec, error) {
 	template, exists := config.Components[instance.Template]
 	if !exists {
 		return ir.ComponentInstanceSpec{}, fmt.Errorf("%s:%d:%s: unknown component.%s", instance.Source.File, instance.Source.Line, instance.Source.Path, instance.Template)
@@ -419,6 +422,20 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 	if extract != nil && extract.Format == "" {
 		extract.Format = inferComponentArtifactFormat(template.Sources)
 	}
+	scripts, err := compileEvaluatedScripts(template.Scripts, inputContext, func(name string) string {
+		return "component." + instance.Name + ".script[" + strconv.Quote(name) + "]"
+	})
+	if err != nil {
+		return ir.ComponentInstanceSpec{}, err
+	}
+	install := componentArtifactInstallSpec(template.ArtifactType, template.Install)
+	if install != nil && install.OnChange != nil {
+		resolvedReference, err := resolveScriptReference(*install.OnChange, scripts, rootScripts)
+		if err != nil {
+			return ir.ComponentInstanceSpec{}, err
+		}
+		install.OnChange = &resolvedReference
+	}
 	return ir.ComponentInstanceSpec{
 		Name:            instance.Name,
 		Template:        instance.Template,
@@ -426,7 +443,8 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 		Version:         template.Version,
 		SelectedSource:  selectedSource,
 		Extract:         extract,
-		Install:         componentArtifactInstallSpec(template.ArtifactType, template.Install),
+		Install:         install,
+		Scripts:         scripts,
 		InputNames:      inputNames,
 		ProtectedInputs: protected,
 		DependsOn:       dependencies,

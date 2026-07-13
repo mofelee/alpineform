@@ -30,6 +30,7 @@ type Component struct {
 	ArtifactType string
 	Version      string
 	Inputs       map[string]ComponentInput
+	Scripts      map[string]Script
 	Sources      map[string]ComponentArtifactSource
 	Extract      *ComponentArtifactExtract
 	Install      *ComponentArtifactInstall
@@ -52,11 +53,12 @@ type ComponentArtifactExtract struct {
 }
 
 type ComponentArtifactInstall struct {
-	Path   string
-	Owner  string
-	Group  string
-	Mode   string
-	Source ir.SourceRef
+	Path     string
+	Owner    string
+	Group    string
+	Mode     string
+	OnChange *ScriptReference
+	Source   ir.SourceRef
 }
 
 type ComponentInput struct {
@@ -147,7 +149,22 @@ type SSH struct {
 type Script struct {
 	Name        string
 	Description string
+	Attributes  map[string]ResourceAttribute
+	Sensitive   bool
 	Source      ir.SourceRef
+}
+
+type ScriptReferenceScope string
+
+const (
+	ScriptReferenceAuto   ScriptReferenceScope = "auto"
+	ScriptReferenceGlobal ScriptReferenceScope = "global"
+)
+
+type ScriptReference struct {
+	Name   string
+	Scope  ScriptReferenceScope
+	Source ir.SourceRef
 }
 
 type Assert struct {
@@ -263,7 +280,7 @@ func parseComponent(file string, block *hclsyntax.Block, ctx EvalContext) (Compo
 	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "description", "type", "version"); err != nil {
 		return Component{}, err
 	}
-	component := Component{Name: name, Inputs: map[string]ComponentInput{}, Sources: map[string]ComponentArtifactSource{}, Source: source}
+	component := Component{Name: name, Inputs: map[string]ComponentInput{}, Scripts: map[string]Script{}, Sources: map[string]ComponentArtifactSource{}, Source: source}
 	if attr, exists := block.Body.Attributes["description"]; exists {
 		component.Description, err = evalStringAttribute(file, path, "description", attr, ctx, false)
 		if err != nil {
@@ -293,6 +310,15 @@ func parseComponent(file string, block *hclsyntax.Block, ctx EvalContext) (Compo
 				return Component{}, duplicateDeclarationError("component input", input.Name, input.Source, previous.Source)
 			}
 			component.Inputs[input.Name] = input
+		case "script":
+			script, err := parseScriptAt(file, path, child, ctx)
+			if err != nil {
+				return Component{}, err
+			}
+			if previous, exists := component.Scripts[script.Name]; exists {
+				return Component{}, duplicateDeclarationError("component script", script.Name, script.Source, previous.Source)
+			}
+			component.Scripts[script.Name] = script
 		case "source":
 			artifactSource, err := parseComponentArtifactSource(file, path, child, ctx)
 			if err != nil {
@@ -681,21 +707,55 @@ func parseLifecycle(file, path string, block *hclsyntax.Block, ctx EvalContext) 
 }
 
 func parseScript(file string, block *hclsyntax.Block, ctx EvalContext) (Script, error) {
-	name, path, source, err := declarationIdentity(file, "script", block)
+	return parseScriptAt(file, "", block, ctx)
+}
+
+func parseScriptAt(file, parentPath string, block *hclsyntax.Block, ctx EvalContext) (Script, error) {
+	var name, path string
+	var source ir.SourceRef
+	var err error
+	if parentPath == "" {
+		name, path, source, err = declarationIdentity(file, "script", block)
+	} else {
+		name, path, source, err = declarationIdentityAt(file, parentPath+".script", "script", block)
+	}
 	if err != nil {
 		return Script{}, err
 	}
 	if len(block.Body.Blocks) != 0 {
 		return Script{}, fmt.Errorf("%s:%d: %s does not support nested blocks yet", file, block.Body.Blocks[0].TypeRange.Start.Line, path)
 	}
-	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "description"); err != nil {
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "description", "commands", "interpreter", "content", "outputs", "sensitive"); err != nil {
 		return Script{}, err
 	}
-	script := Script{Name: name, Source: source}
+	script := Script{Name: name, Attributes: map[string]ResourceAttribute{}, Source: source}
 	if attr, exists := block.Body.Attributes["description"]; exists {
 		script.Description, err = evalStringAttribute(file, path, "description", attr, ctx, false)
 		if err != nil {
 			return Script{}, err
+		}
+	}
+	if attr, exists := block.Body.Attributes["sensitive"]; exists {
+		script.Sensitive, err = evalBoolAttribute(file, path, "sensitive", attr, ctx)
+		if err != nil {
+			return Script{}, err
+		}
+	}
+	for _, attributeName := range []string{"commands", "interpreter", "content", "outputs"} {
+		if attr, exists := block.Body.Attributes[attributeName]; exists {
+			script.Attributes[attributeName] = ResourceAttribute{
+				Expression: attr.Expr,
+				Source:     ir.SourceRef{File: file, Line: attr.NameRange.Start.Line, Path: path + "." + attributeName},
+			}
+		}
+	}
+	if parentPath == "" {
+		for _, attribute := range script.Attributes {
+			for _, traversal := range attribute.Expression.Variables() {
+				if root, ok := traversal[0].(hcl.TraverseRoot); ok && root.Name == "input" {
+					return Script{}, fmt.Errorf("%s:%d:%s: top-level script cannot reference component input.*", file, traversal.SourceRange().Start.Line, path)
+				}
+			}
 		}
 	}
 	return script, nil

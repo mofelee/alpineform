@@ -692,6 +692,69 @@ func TestProtectedProviderErrorsNeverExposeDetails(t *testing.T) {
 	}
 }
 
+func TestComponentScriptTriggerDedupAndNoOpExecution(t *testing.T) {
+	first := graph.Node{Host: "node", Address: "host.node.first", Kind: "file", Managed: true, Desired: map[string]any{"value": "first"}, Source: ir.SourceRef{File: "main.apf.hcl", Line: 1}}
+	second := graph.Node{Host: "node", Address: "host.node.second", Kind: "file", Managed: true, Desired: map[string]any{"value": "second"}, Source: ir.SourceRef{File: "main.apf.hcl", Line: 2}}
+	scriptDesired := map[string]any{"name": "refresh", "script_digest": "digest", "outputs": []string{}, "ensure": "present"}
+	script := graph.Node{
+		Host: "node", Address: `host.node.script["refresh"]`, Kind: "component_script", Managed: true, Desired: scriptDesired,
+		DependsOn: []string{first.Address, second.Address}, TriggeredBy: []string{first.Address, second.Address}, Source: ir.SourceRef{File: "main.apf.hcl", Line: 3},
+	}
+	backend := newMemoryBackend()
+	provider := newMemoryProvider()
+	provider.set(script.Address, ObservedResource{Exists: true, Values: scriptDesired, Digest: corestate.Digest(scriptDesired)})
+	actionEngine := Engine{Backend: backend, Provider: provider}
+	apply := func() {
+		t.Helper()
+		_, err := actionEngine.Apply(context.Background(), staticBuild(testHost(), first, second, script), ApplyOptions{
+			ReviewPreview: func(context.Context, Plan) error { return nil },
+			ReviewLocked:  func(context.Context, Plan, Plan, bool) error { return nil },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply()
+	provider.mu.Lock()
+	firstApplied := append([]Step(nil), provider.applied...)
+	provider.mu.Unlock()
+	scriptRuns := 0
+	for _, step := range firstApplied {
+		if step.Address == script.Address {
+			scriptRuns++
+			if !reflect.DeepEqual(step.TriggeredBy, []string{first.Address, second.Address}) {
+				t.Fatalf("script triggers = %#v", step.TriggeredBy)
+			}
+		}
+	}
+	if scriptRuns != 1 {
+		t.Fatalf("script runs = %d, applied = %#v", scriptRuns, firstApplied)
+	}
+	before, _ := provider.counts()
+	apply()
+	after, _ := provider.counts()
+	if after != before {
+		t.Fatalf("no-op apply executed %d additional resources", after-before)
+	}
+}
+
+func TestComponentScriptFailureWritesNoSuccessfulState(t *testing.T) {
+	node := graph.Node{Host: "node", Address: `host.node.script["fail"]`, Kind: "component_script", Managed: true, Desired: map[string]any{"name": "fail"}, Source: ir.SourceRef{File: "main.apf.hcl", Line: 1}}
+	backend := newMemoryBackend()
+	actionEngine := Engine{Backend: backend, Provider: failingProvider{applyError: errors.New("script failed")}}
+	_, err := actionEngine.Apply(context.Background(), staticBuild(testHost(), node), ApplyOptions{
+		ReviewPreview: func(context.Context, Plan) error { return nil },
+		ReviewLocked:  func(context.Context, Plan, Plan, bool) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "script failed") {
+		t.Fatalf("script failure = %v", err)
+	}
+	state, writes := backend.snapshot("node")
+	if writes != 0 || len(state.Resources) != 0 {
+		t.Fatalf("failed script state = %#v, writes = %d", state, writes)
+	}
+}
+
 func TestPlanRejectsNilBuildInputs(t *testing.T) {
 	engine := Engine{Backend: newMemoryBackend(), Provider: newMemoryProvider()}
 	if _, err := engine.Plan(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "build callback") {

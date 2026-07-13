@@ -282,12 +282,93 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 			})
 			appendComponentArtifactNodes(graph, host, component, address)
 		}
+		appendComponentScriptNodes(graph, host)
 	}
 	sort.SliceStable(graph.Nodes, func(i, j int) bool { return graph.Nodes[i].Address < graph.Nodes[j].Address })
 	if err := graph.Validate(); err != nil {
 		return nil, err
 	}
 	return graph, nil
+}
+
+type componentScriptAggregation struct {
+	Script       ir.ScriptSpec
+	Address      string
+	TriggeredBy  []string
+	TriggerPaths map[string]string
+}
+
+func appendComponentScriptNodes(resourceGraph *ResourceGraph, host ir.HostSpec) {
+	aggregated := map[string]*componentScriptAggregation{}
+	for _, component := range host.Components {
+		if component.Install == nil || component.Install.OnChange == nil {
+			continue
+		}
+		reference := *component.Install.OnChange
+		var script ir.ScriptSpec
+		address := ""
+		if reference.Scope == "root" {
+			script = host.Scripts[reference.Name]
+			address = "host." + host.Name + ".script[" + strconv.Quote(reference.Name) + "]"
+		} else {
+			script = component.Scripts[reference.Name]
+			address = "host." + host.Name + ".component." + component.Name + ".script[" + strconv.Quote(reference.Name) + "]"
+		}
+		key := reference.DeclarationID
+		entry := aggregated[key]
+		if entry == nil {
+			entry = &componentScriptAggregation{Script: script, Address: address, TriggerPaths: map[string]string{}}
+			aggregated[key] = entry
+		}
+		trigger := "host." + host.Name + ".component." + component.Name + ".artifact.install[" + strconv.Quote(component.Install.Path) + "]"
+		entry.TriggeredBy = append(entry.TriggeredBy, trigger)
+		entry.TriggerPaths[trigger] = component.Install.Path
+	}
+	keys := make([]string, 0, len(aggregated))
+	for key := range aggregated {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		entry := aggregated[key]
+		entry.TriggeredBy = sortedUniqueStrings(entry.TriggeredBy)
+		markerHash := sha256.Sum256([]byte(host.Name + "\x00" + key))
+		marker := "/var/lib/alpineform/scripts/" + fmt.Sprintf("%x", markerHash[:]) + ".outputs"
+		resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
+			Host: host.Name, Address: entry.Address, Kind: "component_script", Managed: true,
+			Summary: "run changed component script " + entry.Script.Name, Source: entry.Script.Source,
+			Desired: map[string]any{
+				"name": entry.Script.Name, "declaration_id": entry.Script.DeclarationID,
+				"script_digest": entry.Script.ScriptDigest, "outputs": append([]string(nil), entry.Script.Outputs...),
+				"marker_path": marker, "ensure": "present", "delete_behavior": "",
+			},
+			Payload: map[string]any{
+				"interpreter": append([]string(nil), entry.Script.Interpreter...), "commands": cloneCommandMatrix(entry.Script.Commands),
+				"content": entry.Script.Content, "outputs": append([]string(nil), entry.Script.Outputs...), "trigger_paths": entry.TriggerPaths,
+			},
+			DependsOn: entry.TriggeredBy, TriggeredBy: entry.TriggeredBy,
+			Sensitive: entry.Script.Sensitive, DigestSafe: true,
+		})
+	}
+}
+
+func sortedUniqueStrings(values []string) []string {
+	sort.Strings(values)
+	out := values[:0]
+	for _, value := range values {
+		if len(out) == 0 || out[len(out)-1] != value {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func cloneCommandMatrix(commands [][]string) [][]string {
+	out := make([][]string, 0, len(commands))
+	for _, command := range commands {
+		out = append(out, append([]string(nil), command...))
+	}
+	return out
 }
 
 func appendComponentArtifactNodes(resourceGraph *ResourceGraph, host ir.HostSpec, component ir.ComponentInstanceSpec, componentAddress string) {

@@ -25,6 +25,7 @@ type ComponentTemplateSpec struct {
 	ArtifactType string                                 `json:"artifact_type,omitempty"`
 	Version      string                                 `json:"version,omitempty"`
 	Inputs       map[string]ComponentInputSpec          `json:"inputs,omitempty"`
+	Scripts      map[string]ScriptSpec                  `json:"scripts,omitempty"`
 	Sources      map[string]ComponentArtifactSourceSpec `json:"sources,omitempty"`
 	Extract      *ComponentArtifactExtractSpec          `json:"extract,omitempty"`
 	Install      *ComponentArtifactInstallSpec          `json:"install,omitempty"`
@@ -46,11 +47,12 @@ type ComponentArtifactExtractSpec struct {
 }
 
 type ComponentArtifactInstallSpec struct {
-	Path   string    `json:"path"`
-	Owner  string    `json:"owner"`
-	Group  string    `json:"group"`
-	Mode   string    `json:"mode"`
-	Source SourceRef `json:"source"`
+	Path     string               `json:"path"`
+	Owner    string               `json:"owner"`
+	Group    string               `json:"group"`
+	Mode     string               `json:"mode"`
+	OnChange *ScriptReferenceSpec `json:"on_change,omitempty"`
+	Source   SourceRef            `json:"source"`
 }
 
 type ComponentInputSpec struct {
@@ -66,9 +68,24 @@ type ComponentInputSpec struct {
 }
 
 type ScriptSpec struct {
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	Source      SourceRef `json:"source"`
+	Name          string     `json:"name"`
+	Description   string     `json:"description,omitempty"`
+	DeclarationID string     `json:"declaration_id,omitempty"`
+	Interpreter   []string   `json:"-"`
+	Outputs       []string   `json:"outputs,omitempty"`
+	Commands      [][]string `json:"-"`
+	Content       string     `json:"-"`
+	ScriptDigest  string     `json:"script_digest,omitempty"`
+	Sensitive     bool       `json:"sensitive,omitempty"`
+	Executable    bool       `json:"executable,omitempty"`
+	Source        SourceRef  `json:"source"`
+}
+
+type ScriptReferenceSpec struct {
+	Name          string    `json:"name"`
+	Scope         string    `json:"scope"`
+	DeclarationID string    `json:"declaration_id,omitempty"`
+	Source        SourceRef `json:"source"`
 }
 
 type HostSpec struct {
@@ -82,6 +99,7 @@ type HostSpec struct {
 	System      *SystemSpec             `json:"system,omitempty"`
 	Kernel      *KernelSpec             `json:"kernel,omitempty"`
 	Components  []ComponentInstanceSpec `json:"components,omitempty"`
+	Scripts     map[string]ScriptSpec   `json:"scripts,omitempty"`
 	Files       []ManagedFileSpec       `json:"files,omitempty"`
 	Directories []ManagedDirectorySpec  `json:"directories,omitempty"`
 	Groups      []ManagedGroupSpec      `json:"groups,omitempty"`
@@ -300,6 +318,7 @@ type ComponentInstanceSpec struct {
 	SelectedSource  *ComponentArtifactSourceSpec  `json:"selected_source,omitempty"`
 	Extract         *ComponentArtifactExtractSpec `json:"extract,omitempty"`
 	Install         *ComponentArtifactInstallSpec `json:"install,omitempty"`
+	Scripts         map[string]ScriptSpec         `json:"scripts,omitempty"`
 	InputNames      []string                      `json:"input_names,omitempty"`
 	ProtectedInputs []string                      `json:"protected_inputs,omitempty"`
 	DependsOn       []string                      `json:"depends_on,omitempty"`

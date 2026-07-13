@@ -1,6 +1,7 @@
 package merge
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -36,6 +37,108 @@ host "node" {
 	component := program.Hosts[0].Components[0]
 	if component.SelectedSource == nil || component.SelectedSource.Architecture != "amd64" || component.SelectedSource.URL != "https://example.invalid/tool-amd64" || component.Install == nil || component.Install.Mode != "0755" {
 		t.Fatalf("compiled artifact = %#v", component)
+	}
+}
+
+func TestCompileScriptsResolveReferencesAndRedactPayloads(t *testing.T) {
+	secret := "not-a-real-script-secret"
+	config, err := compileConfig(t, `
+variable "token" {
+  type      = string
+  default   = "`+secret+`"
+  sensitive = true
+}
+script "refresh" {
+  commands = [["/usr/local/bin/refresh", var.token]]
+  outputs  = ["/run/refreshed"]
+}
+component "first" {
+  type = "file"
+  source {
+    url    = "https://example.invalid/first"
+    sha256 = "`+artifactSHA+`"
+  }
+  install {
+    path      = "/etc/first"
+    on_change = global.script.refresh
+  }
+}
+component "second" {
+  type = "file"
+  source {
+    url    = "https://example.invalid/second"
+    sha256 = "`+artifactSHA+`"
+  }
+  install {
+    path      = "/etc/second"
+    on_change = script.refresh
+  }
+}
+host "node" {
+  component "first" { source = component.first }
+  component "second" { source = component.second }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := program.Hosts[0].Scripts["refresh"]
+	if !root.Executable || !root.Sensitive || len(root.Commands) != 1 || root.Commands[0][1] != secret || root.DeclarationID != `script["refresh"]` {
+		t.Fatalf("root script = %#v", root)
+	}
+	for _, component := range program.Hosts[0].Components {
+		if component.Install == nil || component.Install.OnChange == nil || component.Install.OnChange.Scope != "root" || component.Install.OnChange.DeclarationID != root.DeclarationID {
+			t.Fatalf("component reference = %#v", component.Install)
+		}
+	}
+	data, err := json.Marshal(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secret) {
+		t.Fatalf("program JSON leaked script payload: %s", data)
+	}
+}
+
+func TestCompileComponentLocalScriptUsesInputContext(t *testing.T) {
+	config, err := compileConfig(t, `
+component "worker" {
+  input "service" {
+    type    = string
+    default = "worker"
+  }
+  script "reload" {
+    content = "rc-service ${input.service} reload"
+  }
+  type = "file"
+  source {
+    url    = "https://example.invalid/worker"
+    sha256 = "`+artifactSHA+`"
+  }
+  install {
+    path      = "/etc/worker"
+    on_change = script.reload
+  }
+}
+host "node" {
+  component "worker" { source = component.worker }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	component := program.Hosts[0].Components[0]
+	script := component.Scripts["reload"]
+	if script.Content != "rc-service worker reload" || script.DeclarationID != `component.worker.script["reload"]` || component.Install.OnChange.Scope != "component" || component.Install.OnChange.DeclarationID != script.DeclarationID {
+		t.Fatalf("component script = %#v, reference = %#v", script, component.Install.OnChange)
 	}
 }
 

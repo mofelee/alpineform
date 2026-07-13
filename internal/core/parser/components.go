@@ -84,7 +84,7 @@ func parseComponentArtifactInstall(file, componentPath string, block *hclsyntax.
 	if len(block.Labels) != 0 || len(block.Body.Blocks) != 0 {
 		return ComponentArtifactInstall{}, fmt.Errorf("%s:%d:%s must be an unlabeled attribute-only block", file, block.TypeRange.Start.Line, path)
 	}
-	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "path", "owner", "group", "mode"); err != nil {
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "path", "owner", "group", "mode", "on_change"); err != nil {
 		return ComponentArtifactInstall{}, err
 	}
 	install := ComponentArtifactInstall{Source: ir.SourceRef{File: file, Line: block.TypeRange.Start.Line, Path: path}}
@@ -96,6 +96,13 @@ func parseComponentArtifactInstall(file, componentPath string, block *hclsyntax.
 				return ComponentArtifactInstall{}, err
 			}
 		}
+	}
+	if attr, exists := block.Body.Attributes["on_change"]; exists {
+		reference, err := parseScriptReference(file, path+".on_change", attr.Expr)
+		if err != nil {
+			return ComponentArtifactInstall{}, err
+		}
+		install.OnChange = &reference
 	}
 	return install, nil
 }

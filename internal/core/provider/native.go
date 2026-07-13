@@ -61,6 +61,8 @@ func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.Obs
 		return inspectComponentCACertificate(ctx, runner, node)
 	case "component_archive":
 		return inspectComponentArchive(ctx, runner, node)
+	case "component_script":
+		return inspectComponentScript(ctx, runner, node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", node.Kind)
 	}
@@ -112,6 +114,8 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 		return applyComponentCACertificate(ctx, runner, step.Node)
 	case "component_archive":
 		return applyComponentArchive(ctx, runner, step.Node)
+	case "component_script":
+		return applyComponentScript(ctx, runner, step)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", step.Node.Kind)
 	}
@@ -163,6 +167,8 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 		return deleteComponentCACertificate(ctx, runner, step)
 	case "component_archive":
 		return deleteComponentArchive(ctx, runner, step)
+	case "component_script":
+		return fmt.Errorf("component scripts can only be forgotten when their declaration is removed")
 	default:
 		return fmt.Errorf("no Alpine provider is registered for resource kind %q", kind)
 	}

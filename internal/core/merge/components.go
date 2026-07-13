@@ -137,7 +137,11 @@ func componentArtifactInstallSpec(artifactType string, install *parser.Component
 			mode = "0644"
 		}
 	}
-	return &ir.ComponentArtifactInstallSpec{Path: install.Path, Owner: owner, Group: group, Mode: mode, Source: install.Source}
+	var onChange *ir.ScriptReferenceSpec
+	if install.OnChange != nil {
+		onChange = &ir.ScriptReferenceSpec{Name: install.OnChange.Name, Scope: string(install.OnChange.Scope), Source: install.OnChange.Source}
+	}
+	return &ir.ComponentArtifactInstallSpec{Path: install.Path, Owner: owner, Group: group, Mode: mode, OnChange: onChange, Source: install.Source}
 }
 
 func selectComponentArtifactSource(template parser.Component, host parser.Host, facts *ir.HostFacts, instance parser.ComponentInstance) (*ir.ComponentArtifactSourceSpec, error) {
