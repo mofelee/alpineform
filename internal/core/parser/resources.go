@@ -76,7 +76,7 @@ var hostResourceCollections = map[string]resourceCollectionSchema{
 	"services": {
 		block:      "services",
 		resource:   ResourceService,
-		attributes: attributeSet("enabled", "runlevel", "state", "package", "user", "group"),
+		attributes: attributeSet("enabled", "runlevel", "state", "operation", "package", "user", "group"),
 	},
 }
 

@@ -18,7 +18,7 @@ func TestCompileOrdersServiceAfterInitConfPackageAndAccount(t *testing.T) {
 			{Path: "/etc/conf.d/worker", Ensure: "present", Source: source(6)},
 		},
 		Services: []ir.ServiceSpec{{
-			Name: "worker", Enabled: true, Runlevel: "default", State: "running", Package: "worker-daemon", User: "worker", Group: "worker", Source: source(7),
+			Name: "worker", Enabled: true, Runlevel: "default", State: "running", Operation: "restarted", Package: "worker-daemon", User: "worker", Group: "worker", Source: source(7),
 		}},
 	}}}
 	compiled, err := Compile(program)
@@ -40,7 +40,11 @@ func TestCompileOrdersServiceAfterInitConfPackageAndAccount(t *testing.T) {
 		`host.node.packages.package["worker-daemon"]`,
 		`host.node.users.user["worker"]`,
 	}
-	if service.Kind != "service" || !reflect.DeepEqual(service.DependsOn, wantDependencies) || service.Desired["delete_behavior"] != "" {
+	wantTriggers := []string{
+		`host.node.files.file["/etc/conf.d/worker"]`,
+		`host.node.files.file["/etc/init.d/worker"]`,
+	}
+	if service.Kind != "service" || !reflect.DeepEqual(service.DependsOn, wantDependencies) || !reflect.DeepEqual(service.TriggeredBy, wantTriggers) || service.Desired["operation"] != "restarted" || service.Desired["delete_behavior"] != "" {
 		t.Fatalf("service node = %#v", service)
 	}
 	ordered, err := compiled.Schedule()

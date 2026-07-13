@@ -2,7 +2,6 @@ package parser
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -15,6 +14,7 @@ host "node" {
       enabled  = false
       runlevel = "boot"
       state    = "stopped"
+      operation = "restarted"
       package  = "worker-daemon"
       user     = "worker"
       group    = "worker"
@@ -33,7 +33,7 @@ host "node" {
 	}
 }
 
-func TestParseServiceRejectsOperationBeforeProviderSurfaceExists(t *testing.T) {
+func TestParseServiceAcceptsOperation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "main.apf.hcl")
 	writeConfig(t, path, `
 host "node" {
@@ -42,8 +42,11 @@ host "node" {
   }
 }
 `)
-	_, err := ParseFiles([]string{path})
-	if err == nil || !strings.Contains(err.Error(), "unsupported attribute") {
-		t.Fatalf("ParseFiles() error = %v", err)
+	config, err := ParseFiles([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := config.Hosts["node"].Resources[0].Attributes["operation"]; !exists {
+		t.Fatalf("parsed service operation = %#v", config.Hosts["node"].Resources[0])
 	}
 }

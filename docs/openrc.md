@@ -26,6 +26,7 @@ host "edge" {
       enabled  = true
       runlevel = "default"
       state    = "running"
+      operation = "restarted"
     }
   }
 }
@@ -86,6 +87,18 @@ host "edge" {
 `running`. Runtime state is either `running` or `stopped`. Missing,
 inactive, started, stopped, and crashed services are classified during
 inspection; a missing or crashed service cannot satisfy a running declaration.
+Changing a managed runlevel removes the service from its previously managed
+runlevel before applying the new membership; unrelated runlevel memberships
+are not treated as authoritative.
+
+Optional `operation = "restarted"` or `"reloaded"` runs once after one or
+more matching managed init/conf files actually change. Init and conf changes in
+the same apply are aggregated into one service operation, while a no-op or a
+runlevel-only repair performs no restart/reload. Operations require
+`state = "running"` and at least one managed `/etc/init.d/<name>` or
+`/etc/conf.d/<name>` trigger. OpenRC always supports restart. Reload is allowed
+only for raw init scripts; generated scripts reject it during validation, and a
+raw script without a reload command fails apply with an explicit error.
 
 The optional `package`, `user`, and `group` fields must name resources declared
 present on the same host and make the service depend on them. A generated

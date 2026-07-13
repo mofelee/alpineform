@@ -44,11 +44,12 @@ type Summary struct {
 }
 
 type GraphNode struct {
-	Address   string       `json:"address"`
-	Kind      string       `json:"kind"`
-	Managed   bool         `json:"managed"`
-	DependsOn []string     `json:"depends_on,omitempty"`
-	Source    ir.SourceRef `json:"source"`
+	Address     string       `json:"address"`
+	Kind        string       `json:"kind"`
+	Managed     bool         `json:"managed"`
+	DependsOn   []string     `json:"depends_on,omitempty"`
+	TriggeredBy []string     `json:"triggered_by,omitempty"`
+	Source      ir.SourceRef `json:"source"`
 }
 
 type Change struct {
@@ -78,11 +79,12 @@ func New(resourceGraph *graph.ResourceGraph, options Options) Document {
 	sort.Strings(document.Hosts)
 	for _, node := range nodes {
 		document.Graph = append(document.Graph, GraphNode{
-			Address:   node.Address,
-			Kind:      node.Kind,
-			Managed:   node.Managed,
-			DependsOn: append([]string(nil), node.DependsOn...),
-			Source:    node.Source,
+			Address:     node.Address,
+			Kind:        node.Kind,
+			Managed:     node.Managed,
+			DependsOn:   append([]string(nil), node.DependsOn...),
+			TriggeredBy: append([]string(nil), node.TriggeredBy...),
+			Source:      node.Source,
 		})
 		if !node.Managed {
 			continue
@@ -136,11 +138,12 @@ func NewOnline(actionPlan engine.Plan, options Options) Document {
 				kind = step.Prior.Kind
 			}
 			document.Graph = append(document.Graph, GraphNode{
-				Address:   step.Address,
-				Kind:      kind,
-				Managed:   true,
-				DependsOn: append([]string(nil), step.Node.DependsOn...),
-				Source:    step.Node.Source,
+				Address:     step.Address,
+				Kind:        kind,
+				Managed:     true,
+				DependsOn:   append([]string(nil), step.Node.DependsOn...),
+				TriggeredBy: append([]string(nil), step.Node.TriggeredBy...),
+				Source:      step.Node.Source,
 			})
 			document.addAction(step.Action)
 		}

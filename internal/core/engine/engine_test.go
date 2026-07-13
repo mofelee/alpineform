@@ -250,6 +250,42 @@ func TestPlanNodeActionModel(t *testing.T) {
 	}
 }
 
+func TestPlanAggregatesChangedTriggersIntoOneDependentStep(t *testing.T) {
+	first := graph.Node{Host: "node", Address: "host.node.file.init", Kind: "file", Managed: true, Desired: map[string]any{"value": "init"}}
+	second := graph.Node{Host: "node", Address: "host.node.file.conf", Kind: "file", Managed: true, Desired: map[string]any{"value": "conf"}}
+	service := graph.Node{
+		Host: "node", Address: "host.node.service.worker", Kind: "service", Managed: true,
+		Desired:   map[string]any{"state": "running", "operation": "restarted"},
+		DependsOn: []string{first.Address, second.Address}, TriggeredBy: []string{first.Address, second.Address},
+	}
+	backend := newMemoryBackend()
+	backend.states["node"] = corestate.State{
+		Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node",
+		Resources: map[string]corestate.Resource{
+			first.Address:   {DesiredDigest: corestate.Digest(first.Desired)},
+			second.Address:  {DesiredDigest: corestate.Digest(second.Desired)},
+			service.Address: {DesiredDigest: corestate.Digest(service.Desired)},
+		},
+	}
+	provider := newMemoryProvider()
+	provider.set(first.Address, ObservedResource{Exists: true, Digest: "drifted-init"})
+	provider.set(second.Address, ObservedResource{Exists: true, Digest: "drifted-conf"})
+	provider.set(service.Address, ObservedResource{Exists: true, Digest: corestate.Digest(service.Desired)})
+	plan, err := (Engine{Backend: backend, Provider: provider}).Plan(context.Background(), staticBuild(testHost(), first, second, service))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var serviceSteps []Step
+	for _, step := range plan.Hosts[0].Steps {
+		if step.Address == service.Address {
+			serviceSteps = append(serviceSteps, step)
+		}
+	}
+	if len(serviceSteps) != 1 || serviceSteps[0].Action != ActionUpdate || !reflect.DeepEqual(serviceSteps[0].TriggeredBy, []string{first.Address, second.Address}) {
+		t.Fatalf("triggered service steps = %#v", serviceSteps)
+	}
+}
+
 func TestPlanOrphanActionsAndPreventDestroy(t *testing.T) {
 	backend := newMemoryBackend()
 	backend.states["node"] = corestate.State{Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node", Resources: map[string]corestate.Resource{

@@ -45,12 +45,25 @@ func TestServiceProviderUsesSafeOpenRCArgumentsAndForgetsOnly(t *testing.T) {
 	if _, err := applyService(context.Background(), runner, engine.Step{Node: node}); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.commands) != 2 || runner.commands[0].Name != "apply.service" || strings.Contains(runner.commands[0].Script, "worker") || strings.Join(runner.commands[0].Arguments, ",") != "worker,default,false,stopped" || !strings.Contains(runner.commands[0].Script, "rc-update") || !strings.Contains(runner.commands[0].Script, "rc-service") {
+	if len(runner.commands) != 2 || runner.commands[0].Name != "apply.service" || strings.Contains(runner.commands[0].Script, "worker") || strings.Join(runner.commands[0].Arguments, ",") != "worker,default,false,stopped,," || !strings.Contains(runner.commands[0].Script, "rc-update") || !strings.Contains(runner.commands[0].Script, "rc-service") {
 		t.Fatalf("service commands = %#v", runner.commands)
 	}
 	provider := Native{NewRunner: func(string) (backend.Runner, error) { return runner, nil }}
 	if err := provider.Delete(context.Background(), engine.Step{Action: engine.ActionDestroy, Prior: &corestate.Resource{Kind: "service"}}); err == nil || !strings.Contains(err.Error(), "only be forgotten") {
 		t.Fatalf("service orphan destroy error = %v", err)
+	}
+}
+
+func TestServiceProviderRunsOneRequestedOperationForChangedFiles(t *testing.T) {
+	node := testServiceNode("worker", true, "running")
+	node.Desired["operation"] = "restarted"
+	runner := &commandRunner{outputs: map[string][]byte{"inspect.service": []byte("service\ntrue\nstarted\n0\n")}}
+	step := engine.Step{Action: engine.ActionUpdate, Node: node, TriggeredBy: []string{"init", "conf"}, Prior: &corestate.Resource{Observed: map[string]any{"runlevel": "boot"}}}
+	if _, err := applyService(context.Background(), runner, step); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.commands) != 2 || strings.Join(runner.commands[0].Arguments, ",") != "worker,default,true,running,restarted,boot" || !strings.Contains(runner.commands[0].Script, "does not support or failed operation") || !strings.Contains(runner.commands[0].Script, "previous_runlevel") {
+		t.Fatalf("triggered service commands = %#v", runner.commands)
 	}
 }
 

@@ -43,6 +43,8 @@ func TestValidateRejectsDuplicateUnknownAndCyclicDependencies(t *testing.T) {
 	}{
 		{name: "duplicate", nodes: []Node{{Address: "node.a", Source: source(1)}, {Address: "node.a", Source: source(2)}}, want: `duplicate resource address "node.a"`},
 		{name: "unknown", nodes: []Node{{Address: "node.a", DependsOn: []string{"node.missing"}, Source: source(1)}}, want: `depends on unknown address "node.missing"`},
+		{name: "unknown trigger", nodes: []Node{{Address: "node.a", TriggeredBy: []string{"node.missing"}, Source: source(1)}}, want: `triggered by unknown address "node.missing"`},
+		{name: "unordered trigger", nodes: []Node{{Address: "node.a", Source: source(1)}, {Address: "node.b", TriggeredBy: []string{"node.a"}, Source: source(2)}}, want: `trigger "node.a" must also be a dependency`},
 		{name: "cycle", nodes: []Node{{Address: "node.a", DependsOn: []string{"node.b"}, Source: source(1)}, {Address: "node.b", DependsOn: []string{"node.a"}, Source: source(2)}}, want: "resource dependency cycle involves: node.a, node.b"},
 	}
 	for _, test := range tests {

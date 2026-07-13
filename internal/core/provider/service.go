@@ -54,10 +54,15 @@ name=$1
 runlevel=$2
 enabled=$3
 state=$4
+operation=$5
+previous_runlevel=$6
 init=/etc/init.d/$name
 if [ -L "$init" ] || [ ! -f "$init" ] || [ ! -x "$init" ]; then
   echo 'OpenRC service requires a regular executable init file' >&2
   exit 1
+fi
+if [ -n "$previous_runlevel" ] && [ "$previous_runlevel" != "$runlevel" ] && [ -e "/etc/runlevels/$previous_runlevel/$name" ]; then
+  rc-update del "$name" "$previous_runlevel" >/dev/null
 fi
 if [ "$enabled" = true ]; then
   if [ ! -e "/etc/runlevels/$runlevel/$name" ]; then rc-update add "$name" "$runlevel" >/dev/null; fi
@@ -65,8 +70,23 @@ else
   if [ -e "/etc/runlevels/$runlevel/$name" ]; then rc-update del "$name" "$runlevel" >/dev/null; fi
 fi
 case "$state" in
-  running) rc-service "$name" start >/dev/null ;;
-  stopped) rc-service "$name" stop >/dev/null ;;
+  running)
+    command=start
+    case "$operation" in
+      restarted) command=restart ;;
+      reloaded) command=reload ;;
+      '') ;;
+      *) echo 'unsupported OpenRC service operation' >&2; exit 1 ;;
+    esac
+    if ! rc-service "$name" "$command" >/dev/null; then
+      echo "OpenRC service $name does not support or failed operation $command" >&2
+      exit 1
+    fi
+    ;;
+  stopped)
+    if [ -n "$operation" ]; then echo 'OpenRC service operation requires running state' >&2; exit 1; fi
+    rc-service "$name" stop >/dev/null
+    ;;
   *) echo 'unsupported OpenRC runtime state' >&2; exit 1 ;;
 esac
 `
@@ -119,9 +139,23 @@ func applyService(ctx context.Context, runner backend.Runner, step engine.Step) 
 		return engine.ObservedResource{}, fmt.Errorf("OpenRC service %q has unsupported runtime state %q", name, state)
 	}
 	enabled := boolValue(step.Node.Desired, "enabled")
+	previousRunlevel := ""
+	if step.Prior != nil {
+		previousRunlevel, _ = step.Prior.Observed["runlevel"].(string)
+		if previousRunlevel != "" && !providerOpenRCNamePattern.MatchString(previousRunlevel) {
+			return engine.ObservedResource{}, fmt.Errorf("OpenRC service %q has invalid prior runlevel identity", name)
+		}
+	}
+	operation := ""
+	if step.Action == engine.ActionUpdate && len(step.TriggeredBy) > 0 {
+		operation = stringValue(step.Node.Desired, "operation")
+		if operation != "restarted" && operation != "reloaded" {
+			return engine.ObservedResource{}, fmt.Errorf("OpenRC service %q has unsupported operation %q", name, operation)
+		}
+	}
 	if _, err := runner.Run(ctx, backend.Command{
 		Name: "apply.service", Script: serviceApplyScript,
-		Arguments: []string{name, runlevel, strconv.FormatBool(enabled), state},
+		Arguments: []string{name, runlevel, strconv.FormatBool(enabled), state, operation, previousRunlevel},
 	}); err != nil {
 		return engine.ObservedResource{}, err
 	}

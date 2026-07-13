@@ -18,19 +18,20 @@ type ResourceGraph struct {
 }
 
 type Node struct {
-	Host       string            `json:"host,omitempty"`
-	Address    string            `json:"address"`
-	Kind       string            `json:"kind"`
-	Managed    bool              `json:"managed"`
-	Summary    string            `json:"summary,omitempty"`
-	Source     ir.SourceRef      `json:"source"`
-	Lifecycle  *ir.LifecycleSpec `json:"lifecycle,omitempty"`
-	Desired    map[string]any    `json:"desired,omitempty"`
-	Payload    map[string]any    `json:"-"`
-	DependsOn  []string          `json:"depends_on,omitempty"`
-	Sensitive  bool              `json:"-"`
-	Ephemeral  bool              `json:"-"`
-	DigestSafe bool              `json:"-"`
+	Host        string            `json:"host,omitempty"`
+	Address     string            `json:"address"`
+	Kind        string            `json:"kind"`
+	Managed     bool              `json:"managed"`
+	Summary     string            `json:"summary,omitempty"`
+	Source      ir.SourceRef      `json:"source"`
+	Lifecycle   *ir.LifecycleSpec `json:"lifecycle,omitempty"`
+	Desired     map[string]any    `json:"desired,omitempty"`
+	Payload     map[string]any    `json:"-"`
+	DependsOn   []string          `json:"depends_on,omitempty"`
+	TriggeredBy []string          `json:"triggered_by,omitempty"`
+	Sensitive   bool              `json:"-"`
+	Ephemeral   bool              `json:"-"`
+	DigestSafe  bool              `json:"-"`
 }
 
 func (node Node) MarshalJSON() ([]byte, error) {
@@ -289,9 +290,14 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 func appendServiceNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddress string) {
 	for _, service := range host.Services {
 		dependencies := []string{hostAddress}
+		triggers := []string{}
 		for _, file := range host.Files {
 			if file.Ensure == "present" && (file.Path == "/etc/init.d/"+service.Name || file.Path == "/etc/conf.d/"+service.Name) {
-				dependencies = append(dependencies, fileResourceAddress(host.Name, file.Path))
+				address := fileResourceAddress(host.Name, file.Path)
+				dependencies = append(dependencies, address)
+				if service.Operation != "" {
+					triggers = append(triggers, address)
+				}
 			}
 		}
 		if service.Package != "" {
@@ -309,6 +315,7 @@ func appendServiceNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddr
 			}
 		}
 		sort.Strings(dependencies)
+		sort.Strings(triggers)
 		resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
 			Host: host.Name, Address: serviceResourceAddress(host.Name, service.Name), Kind: "service", Managed: true,
 			Summary: serviceSummary(service), Source: service.Source, Lifecycle: &service.Lifecycle,
@@ -317,13 +324,14 @@ func appendServiceNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddr
 				"enabled":         service.Enabled,
 				"runlevel":        service.Runlevel,
 				"state":           service.State,
+				"operation":       service.Operation,
 				"package":         service.Package,
 				"user":            service.User,
 				"group":           service.Group,
 				"delete_behavior": "",
 				"prevent_destroy": service.Lifecycle.PreventDestroy,
 			},
-			DependsOn: dependencies, DigestSafe: true,
+			DependsOn: dependencies, TriggeredBy: triggers, DigestSafe: true,
 		})
 	}
 }
@@ -767,9 +775,26 @@ func (graph *ResourceGraph) Validate() error {
 				return fmt.Errorf("%s:%d:%s: resource %q depends on unknown address %q", node.Source.File, node.Source.Line, node.Source.Path, node.Address, dependency)
 			}
 		}
+		for _, trigger := range node.TriggeredBy {
+			if _, exists := byAddress[trigger]; !exists {
+				return fmt.Errorf("%s:%d:%s: resource %q is triggered by unknown address %q", node.Source.File, node.Source.Line, node.Source.Path, node.Address, trigger)
+			}
+			if !containsAddress(node.DependsOn, trigger) {
+				return fmt.Errorf("%s:%d:%s: resource %q trigger %q must also be a dependency", node.Source.File, node.Source.Line, node.Source.Path, node.Address, trigger)
+			}
+		}
 	}
 	_, err := graph.Schedule()
 	return err
+}
+
+func containsAddress(addresses []string, wanted string) bool {
+	for _, address := range addresses {
+		if address == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (graph *ResourceGraph) Schedule() ([]Node, error) {

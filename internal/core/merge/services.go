@@ -28,6 +28,16 @@ func compileService(declaration parser.ResourceDeclaration, host parser.Host, fa
 	if state != "running" && state != "stopped" {
 		return ir.ServiceSpec{}, resourceAttributeError(declaration, "state", "must be \"running\" or \"stopped\"")
 	}
+	operation, err := resourceStringDefault(declaration, "operation", "", host, facts, ctx)
+	if err != nil {
+		return ir.ServiceSpec{}, err
+	}
+	if operation != "" && operation != "restarted" && operation != "reloaded" {
+		return ir.ServiceSpec{}, resourceAttributeError(declaration, "operation", "must be \"restarted\" or \"reloaded\"")
+	}
+	if operation != "" && state != "running" {
+		return ir.ServiceSpec{}, resourceAttributeError(declaration, "operation", "requires state = \"running\"")
+	}
 	dependencies := map[string]string{}
 	for _, attribute := range []string{"package", "user", "group"} {
 		value, err := resourceStringDefault(declaration, attribute, "", host, facts, ctx)
@@ -46,13 +56,13 @@ func compileService(declaration parser.ResourceDeclaration, host parser.Host, fa
 		dependencies[attribute] = value
 	}
 	return ir.ServiceSpec{
-		Name: name, Enabled: enabled, Runlevel: runlevel, State: state,
+		Name: name, Enabled: enabled, Runlevel: runlevel, State: state, Operation: operation,
 		Package: dependencies["package"], User: dependencies["user"], Group: dependencies["group"],
 		Lifecycle: ir.LifecycleSpec{PreventDestroy: declaration.Lifecycle.PreventDestroy, Source: declaration.Lifecycle.Source}, Source: declaration.Source,
 	}, nil
 }
 
-func resolveAndValidateServiceDependencies(services []ir.ServiceSpec, openrc []ir.OpenRCServiceSpec, packages []ir.PackageSpec, users []ir.ManagedUserSpec, groups []ir.ManagedGroupSpec) error {
+func resolveAndValidateServiceDependencies(services []ir.ServiceSpec, openrc []ir.OpenRCServiceSpec, files []ir.ManagedFileSpec, packages []ir.PackageSpec, users []ir.ManagedUserSpec, groups []ir.ManagedGroupSpec) error {
 	for index := range services {
 		service := &services[index]
 		if service.User == "" {
@@ -87,6 +97,25 @@ func resolveAndValidateServiceDependencies(services []ir.ServiceSpec, openrc []i
 			group, found := managedGroupForReference(service.Group, groups)
 			if !found || group.Ensure != "present" {
 				return resourceError(service.Source, "service %q references group %q that is not declared present", service.Name, service.Group)
+			}
+		}
+		if service.Operation != "" {
+			managedTrigger := false
+			for _, file := range files {
+				if file.Ensure == "present" && (file.Path == "/etc/init.d/"+service.Name || file.Path == "/etc/conf.d/"+service.Name) {
+					managedTrigger = true
+					break
+				}
+			}
+			if !managedTrigger {
+				return resourceError(service.Source, "service %q operation %q requires a managed init or conf file", service.Name, service.Operation)
+			}
+			if service.Operation == "reloaded" {
+				for _, generated := range openrc {
+					if generated.Name == service.Name {
+						return resourceError(service.Source, "generated OpenRC service %q does not support reload; manage a raw init script with an explicit reload command", service.Name)
+					}
+				}
 			}
 		}
 	}

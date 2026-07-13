@@ -86,13 +86,14 @@ type HostPlan struct {
 }
 
 type Step struct {
-	Host     string
-	Address  string
-	Action   string
-	Summary  string
-	Node     graph.Node
-	Prior    *corestate.Resource
-	Observed ObservedResource
+	Host        string
+	Address     string
+	Action      string
+	Summary     string
+	Node        graph.Node
+	Prior       *corestate.Resource
+	Observed    ObservedResource
+	TriggeredBy []string
 }
 
 func (step Step) MarshalJSON() ([]byte, error) {
@@ -283,6 +284,14 @@ func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []gra
 				step.Action = ActionCreate
 			}
 		}
+		step.TriggeredBy = changedRemoteTriggers(node.TriggeredBy, plannedActions)
+		if len(step.TriggeredBy) > 0 && (step.Action == ActionNoOp || step.Action == ActionAdopt) {
+			if observed.Exists {
+				step.Action = ActionUpdate
+			} else {
+				step.Action = ActionCreate
+			}
+		}
 		if (step.Action == ActionDelete || step.Action == ActionDestroy) && node.Lifecycle != nil && node.Lifecycle.PreventDestroy {
 			return HostPlan{}, fmt.Errorf("%s:%d:%s: prevent_destroy blocks %s for %s", node.Source.File, node.Source.Line, node.Source.Path, step.Action, node.Address)
 		}
@@ -329,6 +338,17 @@ func apkDependenciesChanged(dependencies []string, actions map[string]string) bo
 		}
 	}
 	return false
+}
+
+func changedRemoteTriggers(triggers []string, actions map[string]string) []string {
+	changed := make([]string, 0, len(triggers))
+	for _, trigger := range triggers {
+		switch actions[trigger] {
+		case ActionCreate, ActionUpdate, ActionDelete, ActionDestroy:
+			changed = append(changed, trigger)
+		}
+	}
+	return changed
 }
 
 func planNode(node graph.Node, prior corestate.Resource, hasPrior bool, observed ObservedResource) Step {

@@ -67,6 +67,7 @@ type ServiceSpec struct {
 	Enabled   bool          `json:"enabled"`
 	Runlevel  string        `json:"runlevel"`
 	State     string        `json:"state"`
+	Operation string        `json:"operation,omitempty"`
 	Package   string        `json:"package,omitempty"`
 	User      string        `json:"user,omitempty"`
 	Group     string        `json:"group,omitempty"`

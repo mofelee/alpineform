@@ -25,9 +25,10 @@ host "alpine_openrc" {
 
   services {
     service "example-worker" {
-      enabled  = true
-      runlevel = "default"
-      state    = "running"
+      enabled   = true
+      runlevel  = "default"
+      state     = "running"
+      operation = "restarted"
     }
   }
 }

@@ -311,7 +311,7 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 			return ir.HostSpec{}, err
 		}
 	}
-	if err := resolveAndValidateServiceDependencies(out.Services, out.OpenRC, out.Packages, out.Users, out.Groups); err != nil {
+	if err := resolveAndValidateServiceDependencies(out.Services, out.OpenRC, out.Files, out.Packages, out.Users, out.Groups); err != nil {
 		return ir.HostSpec{}, err
 	}
 	for _, name := range resolved.Order {

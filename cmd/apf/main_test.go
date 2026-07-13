@@ -469,6 +469,8 @@ type fakeOnlineTransport struct {
 	serviceRunlevel         string
 	serviceRuntime          string
 	serviceApplyCount       int
+	serviceOperationCount   int
+	serviceLastOperation    string
 }
 
 func newFakeOnlineTransport(osID string) *fakeOnlineTransport {
@@ -715,6 +717,10 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 			transport.serviceRuntime = "stopped"
 		}
 		transport.serviceApplyCount++
+		if command.Arguments[4] != "" {
+			transport.serviceOperationCount++
+			transport.serviceLastOperation = command.Arguments[4]
+		}
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected backend command %q", command.Name)
@@ -1614,19 +1620,24 @@ host "node" {
 func TestNativeOpenRCServiceWorkflowOrdersRepairsAndForgets(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "main.apf.hcl")
-	writeConfig := func(includeService bool, enabled bool, runlevel, state string) {
+	writeConfig := func(includeService bool, enabled bool, runlevel, state, operation, version string) {
 		t.Helper()
 		service := ""
 		if includeService {
+			operationAttribute := ""
+			if operation != "" {
+				operationAttribute = fmt.Sprintf("      operation = %q\n", operation)
+			}
 			service = fmt.Sprintf(`
   services {
     service "worker" {
       enabled  = %t
       runlevel = %q
       state    = %q
+%s
     }
   }
-`, enabled, runlevel, state)
+`, enabled, runlevel, state, operationAttribute)
 		}
 		content := fmt.Sprintf(`
 host "node" {
@@ -1635,12 +1646,13 @@ host "node" {
       content = <<-EOT
         #!/sbin/openrc-run
         command='/bin/true'
+        # %s
       EOT
       mode = "0755"
     }
   }
 %s}
-`, service)
+`, version, service)
 		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -1648,7 +1660,7 @@ host "node" {
 
 	transport := newFakeOnlineTransport("alpine")
 	runtime := fakeNativeRuntime(transport, "")
-	writeConfig(true, true, "default", "running")
+	writeConfig(true, true, "default", "running", "restarted", "v1")
 	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
 		t.Fatal(err)
 	}
@@ -1664,6 +1676,14 @@ host "node" {
 		t.Fatalf("no-op triggered service operation: %d", transport.serviceApplyCount)
 	}
 
+	writeConfig(true, true, "default", "running", "restarted", "v2")
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("service init change apply = %v", err)
+	}
+	if transport.serviceApplyCount != 2 || transport.serviceOperationCount != 1 || transport.serviceLastOperation != "restarted" {
+		t.Fatalf("service init change operation result = %#v", transport)
+	}
+
 	transport.serviceRunlevel = "boot"
 	transport.serviceRuntime = "crashed"
 	var drift bytes.Buffer
@@ -1673,23 +1693,23 @@ host "node" {
 	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
 		t.Fatalf("service drift repair = %v", err)
 	}
-	if !transport.serviceEnabled || transport.serviceRunlevel != "default" || transport.serviceRuntime != "started" || transport.serviceApplyCount != 2 {
+	if !transport.serviceEnabled || transport.serviceRunlevel != "default" || transport.serviceRuntime != "started" || transport.serviceApplyCount != 3 || transport.serviceOperationCount != 1 {
 		t.Fatalf("service drift repair result = %#v", transport)
 	}
 
-	writeConfig(true, false, "default", "stopped")
+	writeConfig(true, false, "default", "stopped", "", "v2")
 	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
 		t.Fatalf("stopped disabled service apply = %v", err)
 	}
-	if transport.serviceEnabled || transport.serviceRuntime != "stopped" || transport.serviceApplyCount != 3 {
+	if transport.serviceEnabled || transport.serviceRuntime != "stopped" || transport.serviceApplyCount != 4 || transport.serviceOperationCount != 1 {
 		t.Fatalf("stopped disabled service result = %#v", transport)
 	}
 
-	writeConfig(false, false, "default", "stopped")
+	writeConfig(false, false, "default", "stopped", "", "v2")
 	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
 		t.Fatalf("service declaration forget = %v", err)
 	}
-	if transport.serviceEnabled || transport.serviceRuntime != "stopped" || transport.serviceApplyCount != 3 {
+	if transport.serviceEnabled || transport.serviceRuntime != "stopped" || transport.serviceApplyCount != 4 || transport.serviceOperationCount != 1 {
 		t.Fatalf("service forget changed remote state = %#v", transport)
 	}
 	if _, exists := transport.state.Resources[`host.node.services.service["worker"]`]; exists {
