@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -9,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hashicorp/hcl/v2/hclwrite"
 	coreparser "github.com/mofelee/alpineform/internal/core/parser"
 	"github.com/mofelee/alpineform/internal/product"
 	"github.com/mofelee/alpineform/internal/version"
@@ -39,11 +42,164 @@ func run(args []string, stdout io.Writer) error {
 			return err
 		}
 		return runValidate(args[1:], stdout, workingDir, os.Environ())
-	case "plan", "apply", "check", "fmt", "component", "variable":
+	case "fmt":
+		workingDir, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		return runFmt(args[1:], stdout, workingDir)
+	case "variable":
+		workingDir, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		return runVariable(args[1:], stdout, workingDir, os.Environ())
+	case "plan", "apply", "check", "component":
 		return fmt.Errorf("%s is not available in the bootstrap build; Alpine resource management is not implemented", strings.Join(args, " "))
 	default:
 		return fmt.Errorf("unknown command %q; run %s help", args[0], product.CLIName)
 	}
+}
+
+func runFmt(args []string, stdout io.Writer, workingDir string) error {
+	fs := flag.NewFlagSet("fmt", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var sources repeatedFlag
+	fs.Var(&sources, "f", "configuration file or directory; may be repeated")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("fmt arguments: %w", err)
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("fmt does not accept positional arguments")
+	}
+	resolvedSources := make([]string, len(sources))
+	for i, source := range sources {
+		resolvedSources[i] = resolvePath(workingDir, source)
+	}
+	files, err := coreparser.DiscoverConfigFiles(workingDir, resolvedSources)
+	if err != nil {
+		return err
+	}
+	if _, err := coreparser.ParseFilesWithOptions(files, coreparser.ParseOptions{AllowMissingVariables: true}); err != nil {
+		return err
+	}
+	changed := 0
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		formatted := hclwrite.Format(data)
+		if bytes.Equal(data, formatted) {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, formatted, info.Mode().Perm()); err != nil {
+			return err
+		}
+		changed++
+	}
+	fmt.Fprintf(stdout, "formatted %d file(s)\n", changed)
+	return nil
+}
+
+func runVariable(args []string, stdout io.Writer, workingDir string, environ []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("variable subcommand is required")
+	}
+	if args[0] != "inspect" {
+		return fmt.Errorf("unknown variable subcommand %q", args[0])
+	}
+	return runVariableInspect(args[1:], stdout, workingDir, environ)
+}
+
+type variableInspectOutput struct {
+	Variables []variableInspectVariable `json:"variables"`
+}
+
+type variableInspectVariable struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Default     any    `json:"default,omitempty"`
+	Nullable    bool   `json:"nullable"`
+	Sensitive   bool   `json:"sensitive"`
+	Ephemeral   bool   `json:"ephemeral"`
+	Deprecated  string `json:"deprecated,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+func runVariableInspect(args []string, stdout io.Writer, workingDir string, environ []string) error {
+	fs := flag.NewFlagSet("variable inspect", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var sources repeatedFlag
+	var variableFiles repeatedFlag
+	var variables repeatedFlag
+	fs.Var(&sources, "f", "configuration file or directory; may be repeated")
+	fs.Var(&variableFiles, "var-file", "explicit .apfvars or .apfvars.json file; may be repeated")
+	fs.Var(&variables, "var", "variable value as name=value; may be repeated")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("variable inspect arguments: %w", err)
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("variable inspect does not accept positional arguments")
+	}
+	resolvedSources := make([]string, len(sources))
+	for i, source := range sources {
+		resolvedSources[i] = resolvePath(workingDir, source)
+	}
+	files, err := coreparser.DiscoverConfigFiles(workingDir, resolvedSources)
+	if err != nil {
+		return err
+	}
+	resolvedVariableFiles := make([]string, len(variableFiles))
+	for i, path := range variableFiles {
+		resolvedVariableFiles[i] = resolvePath(workingDir, path)
+	}
+	external, err := coreparser.CollectExternalVariableValues(files, environ, resolvedVariableFiles, variables)
+	if err != nil {
+		return err
+	}
+	config, err := coreparser.ParseFilesWithOptions(files, coreparser.ParseOptions{
+		VariableValues:        external,
+		AllowMissingVariables: true,
+	})
+	if err != nil {
+		return err
+	}
+	output := variableInspectOutput{Variables: make([]variableInspectVariable, 0, len(config.Variables))}
+	for _, name := range sortedVariableNames(config.Variables) {
+		variable := config.Variables[name]
+		output.Variables = append(output.Variables, variableInspectVariable{
+			Name:        variable.Name,
+			Type:        variable.Type,
+			Default:     inspectDefault(variable),
+			Nullable:    variable.Nullable,
+			Sensitive:   variable.Sensitive,
+			Ephemeral:   variable.Ephemeral,
+			Deprecated:  variable.Deprecated,
+			Description: variable.Description,
+		})
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	encoder.SetEscapeHTML(false)
+	return encoder.Encode(output)
+}
+
+func inspectDefault(variable coreparser.Variable) any {
+	if variable.Default == nil {
+		return nil
+	}
+	if variable.Sensitive {
+		return "<sensitive>"
+	}
+	if variable.Ephemeral {
+		return "<ephemeral>"
+	}
+	return json.RawMessage(variable.Default.CanonicalString())
 }
 
 type repeatedFlag []string
@@ -131,7 +287,7 @@ Usage:
   apf variable inspect
   apf version
 
-Validate loads top-level *.apf.hcl files and supports repeated -f, -var-file,
-and -var inputs.
+Validate and variable inspect load top-level *.apf.hcl files and support
+repeated -f, -var-file, and -var inputs. Fmt validates before writing.
 This bootstrap build does not implement Alpine resource management yet.`)
 }

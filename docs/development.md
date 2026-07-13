@@ -21,7 +21,10 @@ parser -> merge -> IR -> graph -> plan -> engine -> provider -> backend
 The bootstrap implements source discovery, typed variables, locals, input
 precedence, product constants, version metadata, and state envelope validation.
 `apf validate` checks the implemented language subset. Resource commands return
-an explicit bootstrap error. No Alpine or Debian resource schema is public yet.
+an explicit bootstrap error. `apf variable inspect` emits stable JSON and
+redacts sensitive and ephemeral defaults. `apf fmt` validates every selected
+file before writing any formatted content and is idempotent. No Alpine or
+Debian resource schema is public yet.
 
 ## Product names
 

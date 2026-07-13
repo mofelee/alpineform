@@ -20,6 +20,8 @@ Configuration files use the `*.apf.hcl` suffix. Variable inputs use
 make build
 ./apf version
 ./apf validate -f examples/variables.apf.hcl
+./apf variable inspect -f examples/variables.apf.hcl
+./apf fmt -f examples/variables.apf.hcl
 make check
 ```
 

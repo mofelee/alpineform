@@ -165,7 +165,7 @@ func validateLocalReferences(cfg *Config, def localDefinition, allowVariables bo
 				return fmt.Errorf("unknown variable var.%s", name)
 			}
 			if _, exists := cfg.VariableValues[name]; !exists {
-				return fmt.Errorf("unknown variable var.%s", name)
+				return errLocalRequiresVariables
 			}
 		}
 	}

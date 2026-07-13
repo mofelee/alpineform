@@ -172,3 +172,12 @@ func TestParseVariableFileRequiresAlpineFormSuffix(t *testing.T) {
 		t.Fatalf("ParseVariableFile() error = %v", err)
 	}
 }
+
+func TestAllowMissingVariablesStillRejectsUnknownLocalReference(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unknown.apf.hcl")
+	writeConfig(t, path, `locals { selected = var.missing }`)
+	_, err := ParseFilesWithOptions([]string{path}, ParseOptions{AllowMissingVariables: true})
+	if err == nil || !strings.Contains(err.Error(), "unknown variable var.missing") {
+		t.Fatalf("ParseFilesWithOptions() error = %v", err)
+	}
+}
