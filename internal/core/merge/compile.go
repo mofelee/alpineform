@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/mofelee/alpineform/internal/core/ir"
 	"github.com/mofelee/alpineform/internal/core/parser"
+	"github.com/mofelee/alpineform/internal/product"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -19,7 +20,15 @@ type resolvedProfile struct {
 	Asserts    []parser.Assert
 }
 
+type CompileOptions struct {
+	HostFacts map[string]ir.HostFacts
+}
+
 func Compile(config *parser.Config) (*ir.Program, error) {
+	return CompileWithOptions(config, CompileOptions{})
+}
+
+func CompileWithOptions(config *parser.Config, options CompileOptions) (*ir.Program, error) {
 	if err := validateComponentDefaults(config.Components); err != nil {
 		return nil, err
 	}
@@ -42,8 +51,17 @@ func Compile(config *parser.Config) (*ir.Program, error) {
 	if err != nil {
 		return nil, err
 	}
+	for hostName := range options.HostFacts {
+		if _, exists := config.Hosts[hostName]; !exists {
+			return nil, fmt.Errorf("detected facts were provided for unknown host %q", hostName)
+		}
+	}
 	for _, hostName := range sortedHostNames(config.Hosts) {
-		host, err := compileHost(config, profiles, config.Hosts[hostName], baseContext)
+		var facts *ir.HostFacts
+		if detected, exists := options.HostFacts[hostName]; exists {
+			facts = &detected
+		}
+		host, err := compileHost(config, profiles, config.Hosts[hostName], facts, baseContext)
 		if err != nil {
 			return nil, err
 		}
@@ -184,7 +202,12 @@ func resolveProfiles(config *parser.Config) (map[string]resolvedProfile, error) 
 	return resolved, nil
 }
 
-func compileHost(config *parser.Config, profiles map[string]resolvedProfile, host parser.Host, baseContext parser.EvalContext) (ir.HostSpec, error) {
+func compileHost(config *parser.Config, profiles map[string]resolvedProfile, host parser.Host, facts *ir.HostFacts, baseContext parser.EvalContext) (ir.HostSpec, error) {
+	if facts != nil {
+		if err := validateDetectedFacts(host, *facts); err != nil {
+			return ir.HostSpec{}, err
+		}
+	}
 	resolved := resolvedProfile{Components: map[string]parser.ComponentInstance{}}
 	for _, profileName := range host.Imports {
 		profile, exists := profiles[profileName]
@@ -200,22 +223,26 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 		return ir.HostSpec{}, err
 	}
 
-	hostContext, err := hostEvalContext(baseContext, host)
+	hostContext, err := hostEvalContext(baseContext, host, facts)
 	if err != nil {
 		return ir.HostSpec{}, err
 	}
 	for _, assertion := range resolved.Asserts {
-		if err := evaluateHostAssert(assertion, host, hostContext, "profile imported by host "+host.Name); err != nil {
+		if err := evaluateHostAssert(assertion, host, facts, hostContext, "profile imported by host "+host.Name); err != nil {
 			return ir.HostSpec{}, err
 		}
 	}
 	for _, assertion := range host.Asserts {
-		if err := evaluateHostAssert(assertion, host, hostContext, "host "+host.Name); err != nil {
+		if err := evaluateHostAssert(assertion, host, facts, hostContext, "host "+host.Name); err != nil {
 			return ir.HostSpec{}, err
 		}
 	}
 
 	out := ir.HostSpec{Name: host.Name, Source: host.Source}
+	if facts != nil {
+		copied := *facts
+		out.Facts = &copied
+	}
 	if host.Platform != nil {
 		out.Platform = &ir.PlatformSpec{
 			Architecture:       host.Platform.Architecture,
@@ -228,7 +255,7 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	}
 	for _, name := range resolved.Order {
 		instance := resolved.Components[name]
-		compiled, err := compileComponentInstance(config, host, instance, hostContext)
+		compiled, err := compileComponentInstance(config, host, facts, instance, hostContext)
 		if err != nil {
 			return ir.HostSpec{}, err
 		}
@@ -237,7 +264,7 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	return out, nil
 }
 
-func compileComponentInstance(config *parser.Config, host parser.Host, instance parser.ComponentInstance, hostContext parser.EvalContext) (ir.ComponentInstanceSpec, error) {
+func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir.HostFacts, instance parser.ComponentInstance, hostContext parser.EvalContext) (ir.ComponentInstanceSpec, error) {
 	template, exists := config.Components[instance.Template]
 	if !exists {
 		return ir.ComponentInstanceSpec{}, fmt.Errorf("%s:%d:%s: unknown component.%s", instance.Source.File, instance.Source.Line, instance.Source.Path, instance.Template)
@@ -276,7 +303,7 @@ func compileComponentInstance(config *parser.Config, host parser.Host, instance 
 	}
 	for _, name := range sortedInputNames(template.Inputs) {
 		input := template.Inputs[name]
-		if err := requireExpressionPlatform(input.Validations, host); err != nil {
+		if err := requireExpressionPlatform(input.Validations, host, facts); err != nil {
 			return ir.ComponentInstanceSpec{}, err
 		}
 		if err := evaluateInputValidations(input, values[name], inputContext, template.Name); err != nil {
@@ -284,7 +311,7 @@ func compileComponentInstance(config *parser.Config, host parser.Host, instance 
 		}
 	}
 	for _, assertion := range template.Asserts {
-		if err := evaluateHostAssert(assertion, host, inputContext, fmt.Sprintf("component.%s instance %s on host %s", template.Name, instance.Name, host.Name)); err != nil {
+		if err := evaluateHostAssert(assertion, host, facts, inputContext, fmt.Sprintf("component.%s instance %s on host %s", template.Name, instance.Name, host.Name)); err != nil {
 			return ir.ComponentInstanceSpec{}, err
 		}
 	}
@@ -357,29 +384,31 @@ func evaluateAssert(assertion parser.Assert, ctx parser.EvalContext, scope strin
 	return nil
 }
 
-func evaluateHostAssert(assertion parser.Assert, host parser.Host, ctx parser.EvalContext, scope string) error {
-	if err := requirePlatformForExpression(assertion.Condition, assertion.ConditionSource, host); err != nil {
+func evaluateHostAssert(assertion parser.Assert, host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext, scope string) error {
+	if err := requirePlatformForExpression(assertion.Condition, assertion.ConditionSource, host, facts); err != nil {
 		return err
 	}
 	return evaluateAssert(assertion, ctx, scope)
 }
 
-func requireExpressionPlatform(validations []parser.ComponentInputValidation, host parser.Host) error {
+func requireExpressionPlatform(validations []parser.ComponentInputValidation, host parser.Host, facts *ir.HostFacts) error {
 	for _, validation := range validations {
-		if err := requirePlatformForExpression(validation.Condition, validation.ConditionSource, host); err != nil {
+		if err := requirePlatformForExpression(validation.Condition, validation.ConditionSource, host, facts); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func requirePlatformForExpression(expr hcl.Expression, source ir.SourceRef, host parser.Host) error {
+func requirePlatformForExpression(expr hcl.Expression, source ir.SourceRef, host parser.Host, facts *ir.HostFacts) error {
 	architectureRequired := expressionReferencesPlatform(expr, "architecture") || expressionReferencesPlatform(expr, "native_architecture")
 	versionRequired := expressionReferencesPlatform(expr, "version") || expressionReferencesPlatform(expr, "branch")
-	if architectureRequired && (host.Platform == nil || host.Platform.Architecture == "") {
+	architectureAvailable := facts != nil && facts.Architecture != ""
+	versionAvailable := facts != nil && facts.Version != ""
+	if architectureRequired && !architectureAvailable && (host.Platform == nil || host.Platform.Architecture == "") {
 		return fmt.Errorf("%s:%d:%s: expression requires host %q to declare platform.architecture for offline evaluation", source.File, source.Line, source.Path, host.Name)
 	}
-	if versionRequired && (host.Platform == nil || host.Platform.Version == "") {
+	if versionRequired && !versionAvailable && (host.Platform == nil || host.Platform.Version == "") {
 		return fmt.Errorf("%s:%d:%s: expression requires host %q to declare platform.version for offline evaluation", source.File, source.Line, source.Path, host.Name)
 	}
 	return nil
@@ -393,7 +422,7 @@ func configEvalContext(config *parser.Config) (parser.EvalContext, error) {
 	return parser.EvalContext{Locals: config.Locals, Variables: map[string]cty.Value{"var": variables}}, nil
 }
 
-func hostEvalContext(base parser.EvalContext, host parser.Host) (parser.EvalContext, error) {
+func hostEvalContext(base parser.EvalContext, host parser.Host, facts *ir.HostFacts) (parser.EvalContext, error) {
 	ctx := base
 	ctx.Variables = cloneCtyMap(base.Variables)
 	platform := map[string]cty.Value{
@@ -410,10 +439,48 @@ func hostEvalContext(base parser.EvalContext, host parser.Host) (parser.EvalCont
 		platform["libc"] = cty.StringVal(host.Platform.Libc)
 		platform["native_architecture"] = cty.StringVal(host.Platform.NativeArchitecture)
 	}
+	if facts != nil {
+		platform["architecture"] = cty.StringVal(facts.Architecture)
+		platform["version"] = cty.StringVal(facts.Version)
+		platform["branch"] = cty.StringVal(strings.TrimPrefix(facts.Branch, "v"))
+		platform["libc"] = cty.StringVal(facts.Libc)
+		platform["native_architecture"] = cty.StringVal(facts.NativeArchitecture)
+	}
 	self := cty.ObjectVal(map[string]cty.Value{"platform": cty.ObjectVal(platform)})
 	ctx.Variables["self"] = self
 	ctx.Variables["target"] = self
 	return ctx, nil
+}
+
+func validateDetectedFacts(host parser.Host, facts ir.HostFacts) error {
+	if facts.OSID != product.TargetOSID || facts.Branch != product.SupportedBranch || facts.Libc != product.TargetLibc {
+		return fmt.Errorf("detected facts for host %q are not a supported Alpine %s %s target", host.Name, product.SupportedBranch, product.TargetLibc)
+	}
+	if facts.Version != "3.24" && !strings.HasPrefix(facts.Version, "3.24.") {
+		return fmt.Errorf("detected facts for host %q contain unsupported exact version %q", host.Name, facts.Version)
+	}
+	switch facts.Architecture {
+	case "amd64":
+		if facts.NativeArchitecture != "x86_64" {
+			return fmt.Errorf("detected facts for host %q mismatch amd64 with native architecture %q", host.Name, facts.NativeArchitecture)
+		}
+	case "arm64":
+		if facts.NativeArchitecture != "aarch64" {
+			return fmt.Errorf("detected facts for host %q mismatch arm64 with native architecture %q", host.Name, facts.NativeArchitecture)
+		}
+	default:
+		return fmt.Errorf("detected facts for host %q contain unsupported architecture %q", host.Name, facts.Architecture)
+	}
+	if host.Platform == nil {
+		return nil
+	}
+	if host.Platform.Architecture != "" && host.Platform.Architecture != facts.Architecture {
+		return fmt.Errorf("%s:%d:%s.architecture: host %q declares %q, but detected architecture is %q", host.Platform.Source.File, host.Platform.Source.Line, host.Platform.Source.Path, host.Name, host.Platform.Architecture, facts.Architecture)
+	}
+	if host.Platform.Version != "" && host.Platform.Version != facts.Version {
+		return fmt.Errorf("%s:%d:%s.version: host %q declares %q, but detected exact version is %q", host.Platform.Source.File, host.Platform.Source.Line, host.Platform.Source.Path, host.Name, host.Platform.Version, facts.Version)
+	}
+	return nil
 }
 
 func inputEvalContext(base parser.EvalContext, values map[string]parser.Value) (parser.EvalContext, error) {

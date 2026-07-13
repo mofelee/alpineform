@@ -20,6 +20,9 @@ func TestProductContractNames(t *testing.T) {
 		"DefaultStatePath":   {DefaultStatePath, "/var/lib/alpineform/state.json"},
 		"DefaultLockPath":    {DefaultLockPath, "/run/lock/alpineform/lock"},
 		"DefaultInstallDir":  {DefaultInstallDir, "/usr/local/share/alpineform"},
+		"TargetOSID":         {TargetOSID, "alpine"},
+		"SupportedBranch":    {SupportedBranch, "v3.24"},
+		"TargetLibc":         {TargetLibc, "musl"},
 	}
 	for name, test := range tests {
 		if test.got != test.want {

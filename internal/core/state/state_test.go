@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mofelee/alpineform/internal/core/ir"
 )
 
 func TestDecodeEmptyReturnsCurrentAlpineFormState(t *testing.T) {
@@ -42,6 +44,7 @@ func TestDecodeRejectsForeignNewerAndWrongHostState(t *testing.T) {
 
 func TestStateRoundTripAndRevision(t *testing.T) {
 	input := Empty("server1")
+	input.Facts = &ir.HostFacts{OSID: "alpine", Version: "3.24.1", Branch: "v3.24", Architecture: "amd64", NativeArchitecture: "x86_64", KernelArchitecture: "x86_64", Libc: "musl", DetectedAt: "2026-07-13T07:00:00Z"}
 	input.Resources["file.example"] = Resource{Kind: "file"}
 	now := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
 	prepared, err := PrepareWrite(input, "server1", now)
@@ -64,5 +67,8 @@ func TestStateRoundTripAndRevision(t *testing.T) {
 	}
 	if decoded.Serial != prepared.Serial || decoded.Product != Product {
 		t.Fatalf("round trip = %#v", decoded)
+	}
+	if decoded.Facts == nil || *decoded.Facts != *input.Facts {
+		t.Fatalf("round-trip facts = %#v, want %#v", decoded.Facts, input.Facts)
 	}
 }

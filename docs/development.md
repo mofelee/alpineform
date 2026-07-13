@@ -53,6 +53,9 @@ Protected desired values are replaced before graph, plan, JSON, or HTML
 serialization. `--color auto` honors `NO_COLOR` and non-terminal output;
 `--color always` affects text only.
 
+Target facts use a read-only engine capability that is separate from future
+state and lock backends. See [facts.md](facts.md).
+
 ## Product names
 
 | Surface | Value |

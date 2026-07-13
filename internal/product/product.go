@@ -15,6 +15,9 @@ const (
 	DefaultStatePath   = "/var/lib/alpineform/state.json"
 	DefaultLockPath    = "/run/lock/alpineform/lock"
 	DefaultInstallDir  = "/usr/local/share/alpineform"
+	TargetOSID         = "alpine"
+	SupportedBranch    = "v3.24"
+	TargetLibc         = "musl"
 )
 
 func UserAgent(version string) string {

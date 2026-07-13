@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mofelee/alpineform/internal/core/ir"
 	"github.com/mofelee/alpineform/internal/core/parser"
 )
 
@@ -380,6 +381,7 @@ component "app" {
     sensitive = true
   }
 }
+
 host "node" {
   component "app" {
     source = component.app
@@ -393,5 +395,71 @@ host "node" {
 	_, err = Compile(config)
 	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "invalid protected input") {
 		t.Fatalf("Compile() error = %v", err)
+	}
+}
+
+func TestCompileWithDetectedFactsProvidesSecondPhaseContext(t *testing.T) {
+	config, err := compileConfig(t, `
+host "node" {
+  assert {
+    condition     = target.platform.architecture == "amd64" && target.platform.version == "3.24.1" && target.platform.branch == "3.24" && target.platform.libc == "musl"
+    error_message = "unexpected detected platform"
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Compile(config); err == nil || !strings.Contains(err.Error(), "declare platform.architecture") {
+		t.Fatalf("offline Compile() error = %v", err)
+	}
+	facts := ir.HostFacts{OSID: "alpine", Version: "3.24.1", Branch: "v3.24", Architecture: "amd64", NativeArchitecture: "x86_64", KernelArchitecture: "x86_64", Libc: "musl", DetectedAt: "2026-07-13T07:00:00Z"}
+	program, err := CompileWithOptions(config, CompileOptions{HostFacts: map[string]ir.HostFacts{"node": facts}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(program.Hosts) != 1 || program.Hosts[0].Facts == nil || *program.Hosts[0].Facts != facts {
+		t.Fatalf("compiled facts = %#v", program.Hosts)
+	}
+}
+
+func TestCompileWithDetectedFactsRejectsBeforePlanning(t *testing.T) {
+	config, err := compileConfig(t, `
+host "node" {
+  platform {
+    architecture = "amd64"
+    version      = "3.24.1"
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := ir.HostFacts{OSID: "alpine", Version: "3.24.1", Branch: "v3.24", Architecture: "amd64", NativeArchitecture: "x86_64", KernelArchitecture: "x86_64", Libc: "musl", DetectedAt: "2026-07-13T07:00:00Z"}
+	tests := []struct {
+		name string
+		host string
+		edit func(*ir.HostFacts)
+		want string
+	}{
+		{name: "unknown host", host: "missing", want: `facts were provided for unknown host "missing"`},
+		{name: "foreign OS", host: "node", edit: func(facts *ir.HostFacts) { facts.OSID = "debian" }, want: "not a supported Alpine"},
+		{name: "unsupported version", host: "node", edit: func(facts *ir.HostFacts) { facts.Version = "3.23.4" }, want: "unsupported exact version"},
+		{name: "invalid architecture", host: "node", edit: func(facts *ir.HostFacts) { facts.Architecture = "ppc64le" }, want: "unsupported architecture"},
+		{name: "native mismatch", host: "node", edit: func(facts *ir.HostFacts) { facts.NativeArchitecture = "aarch64" }, want: "mismatch amd64"},
+		{name: "declared architecture mismatch", host: "node", edit: func(facts *ir.HostFacts) { facts.Architecture = "arm64"; facts.NativeArchitecture = "aarch64" }, want: `declares "amd64", but detected architecture is "arm64"`},
+		{name: "declared version mismatch", host: "node", edit: func(facts *ir.HostFacts) { facts.Version = "3.24.2" }, want: `declares "3.24.1", but detected exact version is "3.24.2"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			facts := base
+			if test.edit != nil {
+				test.edit(&facts)
+			}
+			_, err := CompileWithOptions(config, CompileOptions{HostFacts: map[string]ir.HostFacts{test.host: facts}})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("CompileWithOptions() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }

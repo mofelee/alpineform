@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/mofelee/alpineform/internal/core/ir"
 )
 
 const (
@@ -18,6 +20,7 @@ type State struct {
 	Host          string              `json:"host"`
 	Serial        uint64              `json:"serial"`
 	UpdatedAt     string              `json:"updated_at,omitempty"`
+	Facts         *ir.HostFacts       `json:"facts,omitempty"`
 	Resources     map[string]Resource `json:"resources"`
 }
 

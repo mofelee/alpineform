@@ -47,8 +47,20 @@ type ScriptSpec struct {
 type HostSpec struct {
 	Name       string                  `json:"name"`
 	Platform   *PlatformSpec           `json:"platform,omitempty"`
+	Facts      *HostFacts              `json:"facts,omitempty"`
 	Components []ComponentInstanceSpec `json:"components,omitempty"`
 	Source     SourceRef               `json:"source"`
+}
+
+type HostFacts struct {
+	OSID               string `json:"os_id"`
+	Version            string `json:"version"`
+	Branch             string `json:"branch"`
+	Architecture       string `json:"architecture"`
+	NativeArchitecture string `json:"native_architecture"`
+	KernelArchitecture string `json:"kernel_architecture"`
+	Libc               string `json:"libc"`
+	DetectedAt         string `json:"detected_at"`
 }
 
 type PlatformSpec struct {
