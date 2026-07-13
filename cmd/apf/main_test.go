@@ -475,12 +475,19 @@ type fakeOnlineTransport struct {
 	hostnameRuntime         string
 	timezoneLocaltime       string
 	timezoneFile            string
+	kernelModuleClass       map[string]string
+	kernelModulePersisted   map[string]bool
+	sysctlRuntime           map[string]string
+	sysctlPersisted         map[string]string
+	sysctlPathKeys          map[string]string
+	sysctlRuntimeApplyCount int
 }
 
 func newFakeOnlineTransport(osID string) *fakeOnlineTransport {
 	return &fakeOnlineTransport{
 		osID: osID, state: corestate.Empty("node"), groupGIDs: map[string]string{},
 		apkRepositories: map[string]string{}, apkKeyDigests: map[string]string{}, apkPackages: map[string]bool{}, apkWorld: map[string]bool{},
+		kernelModuleClass: map[string]string{}, kernelModulePersisted: map[string]bool{}, sysctlRuntime: map[string]string{}, sysctlPersisted: map[string]string{}, sysctlPathKeys: map[string]string{},
 	}
 }
 
@@ -743,6 +750,41 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 		}
 		transport.timezoneLocaltime = command.Arguments[0]
 		transport.timezoneFile = command.Arguments[0]
+		return nil, nil
+	case "inspect.kernel_module":
+		name := command.Arguments[0]
+		class := transport.kernelModuleClass[name]
+		if class == "" {
+			class = "missing"
+		}
+		return []byte(fmt.Sprintf("module\n%s\n%t\n", class, transport.kernelModulePersisted[name])), nil
+	case "apply.kernel_module":
+		name := command.Arguments[0]
+		transport.kernelModuleClass[name] = "loaded"
+		transport.kernelModulePersisted[name] = true
+		return nil, nil
+	case "inspect.sysctl":
+		key := command.Arguments[0]
+		value := command.Arguments[1]
+		applyRuntime := command.Arguments[3] == "true"
+		runtimeMatches := !applyRuntime || transport.sysctlRuntime[key] == value
+		_, pathExists := transport.sysctlPersisted[key]
+		return []byte(fmt.Sprintf("sysctl\n%t\n%t\n%s\n%t\n", runtimeMatches, transport.sysctlPersisted[key] == value, transport.sysctlRuntime[key], pathExists)), nil
+	case "apply.sysctl":
+		key := command.Arguments[0]
+		transport.sysctlPersisted[key] = command.Arguments[1]
+		transport.sysctlPathKeys[command.Arguments[2]] = key
+		return nil, nil
+	case "apply.sysctl_runtime":
+		for index := 0; index < len(command.Arguments); index += 2 {
+			transport.sysctlRuntime[command.Arguments[index]] = command.Arguments[index+1]
+		}
+		transport.sysctlRuntimeApplyCount++
+		return nil, nil
+	case "delete.sysctl":
+		key := transport.sysctlPathKeys[command.Arguments[0]]
+		delete(transport.sysctlPersisted, key)
+		delete(transport.sysctlPathKeys, command.Arguments[0])
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected backend command %q", command.Name)
@@ -1795,5 +1837,72 @@ func TestNativeSystemWorkflowInstallsRepairsAndForgets(t *testing.T) {
 	}
 	if transport.hostnameRuntime != "edge.example" || transport.timezoneLocaltime != "Asia/Shanghai" || !transport.apkPackages["tzdata"] || !transport.apkWorld["tzdata"] || len(transport.state.Resources) != 0 {
 		t.Fatalf("system forget changed remote state = %#v", transport)
+	}
+}
+
+func TestNativeKernelWorkflowAggregatesRuntimeAndUsesSafeRemoval(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.apf.hcl")
+	writeConfig := func(includeKernel bool) {
+		t.Helper()
+		kernel := ""
+		if includeKernel {
+			kernel = `
+  kernel {
+    module "loop" {}
+    sysctl "net.ipv4.ip_forward" {
+      value = "1"
+    }
+    sysctl "vm.swappiness" {
+      value = "10"
+    }
+  }
+`
+		}
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("host \"node\" {\n%s}\n", kernel)), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	transport := newFakeOnlineTransport("alpine")
+	runtime := fakeNativeRuntime(transport, "")
+	writeConfig(true)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	moduleApply := slices.Index(transport.events, "apply.kernel_module")
+	firstSysctlApply := slices.Index(transport.events, "apply.sysctl")
+	runtimeApply := slices.Index(transport.events, "apply.sysctl_runtime")
+	if transport.kernelModuleClass["loop"] != "loaded" || !transport.kernelModulePersisted["loop"] || transport.sysctlPersisted["net.ipv4.ip_forward"] != "1" || transport.sysctlRuntime["vm.swappiness"] != "10" || transport.sysctlRuntimeApplyCount != 1 || moduleApply < 0 || firstSysctlApply <= moduleApply || runtimeApply <= firstSysctlApply {
+		t.Fatalf("initial kernel result = events=%#v transport=%#v", transport.events, transport)
+	}
+	if err := runCheckWithRuntime(nil, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("kernel no-op check = %v", err)
+	}
+	if transport.sysctlRuntimeApplyCount != 1 {
+		t.Fatalf("kernel no-op applied runtime sysctl: %d", transport.sysctlRuntimeApplyCount)
+	}
+
+	transport.sysctlRuntime["net.ipv4.ip_forward"] = "0"
+	transport.sysctlRuntime["vm.swappiness"] = "60"
+	transport.sysctlPersisted["net.ipv4.ip_forward"] = "0"
+	transport.sysctlPersisted["vm.swappiness"] = "60"
+	var drift bytes.Buffer
+	if err := runCheckWithRuntime(nil, &drift, dir, nil, runtime); err == nil || strings.Count(drift.String(), "update host.node.kernel.sysctl[") != 2 || !strings.Contains(drift.String(), "update host.node.kernel.sysctl_runtime") {
+		t.Fatalf("kernel drift check error = %v, output = %s", err, drift.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("kernel drift repair = %v", err)
+	}
+	if transport.sysctlRuntimeApplyCount != 2 || transport.sysctlRuntime["net.ipv4.ip_forward"] != "1" || transport.sysctlRuntime["vm.swappiness"] != "10" {
+		t.Fatalf("kernel drift repair result = %#v", transport)
+	}
+
+	writeConfig(false)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("kernel declaration removal = %v", err)
+	}
+	if transport.kernelModuleClass["loop"] != "loaded" || !transport.kernelModulePersisted["loop"] || len(transport.sysctlPersisted) != 0 || transport.sysctlRuntime["net.ipv4.ip_forward"] != "1" || len(transport.state.Resources) != 0 {
+		t.Fatalf("kernel removal result = %#v", transport)
 	}
 }

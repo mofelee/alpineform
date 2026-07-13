@@ -53,6 +53,7 @@ type HostSpec struct {
 	APK         *APKSpec                `json:"apk,omitempty"`
 	OpenRC      []OpenRCServiceSpec     `json:"openrc,omitempty"`
 	System      *SystemSpec             `json:"system,omitempty"`
+	Kernel      *KernelSpec             `json:"kernel,omitempty"`
 	Components  []ComponentInstanceSpec `json:"components,omitempty"`
 	Files       []ManagedFileSpec       `json:"files,omitempty"`
 	Directories []ManagedDirectorySpec  `json:"directories,omitempty"`
@@ -61,6 +62,26 @@ type HostSpec struct {
 	Packages    []PackageSpec           `json:"packages,omitempty"`
 	Services    []ServiceSpec           `json:"services,omitempty"`
 	Source      SourceRef               `json:"source"`
+}
+
+type KernelSpec struct {
+	Modules []KernelModuleSpec `json:"modules,omitempty"`
+	Sysctls []SysctlSpec       `json:"sysctls,omitempty"`
+	Source  SourceRef          `json:"source"`
+}
+
+type KernelModuleSpec struct {
+	Name      string        `json:"name"`
+	Lifecycle LifecycleSpec `json:"lifecycle"`
+	Source    SourceRef     `json:"source"`
+}
+
+type SysctlSpec struct {
+	Key          string        `json:"key"`
+	Value        string        `json:"value"`
+	ApplyRuntime bool          `json:"apply_runtime"`
+	Lifecycle    LifecycleSpec `json:"lifecycle"`
+	Source       SourceRef     `json:"source"`
 }
 
 type SystemSpec struct {

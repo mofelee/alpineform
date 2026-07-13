@@ -302,6 +302,12 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 			return ir.HostSpec{}, err
 		}
 	}
+	if host.Kernel != nil {
+		out.Kernel, err = compileKernel(*host.Kernel, host, facts, hostContext)
+		if err != nil {
+			return ir.HostSpec{}, err
+		}
+	}
 	out.Files, out.Directories, out.Groups, out.Users, out.Packages, out.Services, err = compileHostNativeResources(host, out.APK, facts, hostContext)
 	if err != nil {
 		return ir.HostSpec{}, err

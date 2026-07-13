@@ -80,6 +80,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 		appendAPKNodes(graph, host, hostAddress)
 		appendPackageNodes(graph, host, hostAddress)
 		appendSystemNodes(graph, host, hostAddress)
+		appendKernelNodes(graph, host, hostAddress)
 		for _, group := range host.Groups {
 			deleteBehavior := group.OnRemove
 			if deleteBehavior == "forget" {
@@ -286,6 +287,61 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 		return nil, err
 	}
 	return graph, nil
+}
+
+func appendKernelNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddress string) {
+	if host.Kernel == nil {
+		return
+	}
+	moduleAddresses := make([]string, 0, len(host.Kernel.Modules))
+	for _, module := range host.Kernel.Modules {
+		address := kernelModuleResourceAddress(host.Name, module.Name)
+		moduleAddresses = append(moduleAddresses, address)
+		resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
+			Host: host.Name, Address: address, Kind: "kernel_module", Managed: true,
+			Summary: "load and persist kernel module " + module.Name, Source: module.Source, Lifecycle: &module.Lifecycle,
+			Desired: map[string]any{
+				"name": module.Name, "persist": true, "delete_behavior": "", "prevent_destroy": module.Lifecycle.PreventDestroy,
+			},
+			DependsOn: []string{hostAddress}, DigestSafe: true,
+		})
+	}
+	sort.Strings(moduleAddresses)
+	runtimeAddresses := []string{}
+	runtimeEntries := []string{}
+	for _, sysctl := range host.Kernel.Sysctls {
+		address := sysctlResourceAddress(host.Name, sysctl.Key)
+		resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
+			Host: host.Name, Address: address, Kind: "sysctl", Managed: true,
+			Summary: "persist sysctl " + sysctl.Key + " = " + sysctl.Value, Source: sysctl.Source, Lifecycle: &sysctl.Lifecycle,
+			Desired: map[string]any{
+				"key": sysctl.Key, "value": sysctl.Value, "apply_runtime": sysctl.ApplyRuntime,
+				"delete_behavior": "delete", "delete": map[string]any{"key": sysctl.Key}, "prevent_destroy": sysctl.Lifecycle.PreventDestroy,
+			},
+			DependsOn: append([]string{hostAddress}, moduleAddresses...), DigestSafe: true,
+		})
+		if sysctl.ApplyRuntime {
+			runtimeAddresses = append(runtimeAddresses, address)
+			runtimeEntries = append(runtimeEntries, sysctl.Key, sysctl.Value)
+		}
+	}
+	if len(runtimeAddresses) == 0 {
+		return
+	}
+	resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
+		Host: host.Name, Address: hostAddress + ".kernel.sysctl_runtime", Kind: "sysctl_runtime", Managed: true,
+		Summary: "apply changed sysctl runtime values once", Source: host.Kernel.Source,
+		Desired:   map[string]any{"entries": runtimeEntries, "delete_behavior": ""},
+		DependsOn: append([]string(nil), runtimeAddresses...), TriggeredBy: append([]string(nil), runtimeAddresses...), DigestSafe: true,
+	})
+}
+
+func kernelModuleResourceAddress(host, name string) string {
+	return "host." + host + ".kernel.module[" + strconv.Quote(name) + "]"
+}
+
+func sysctlResourceAddress(host, key string) string {
+	return "host." + host + ".kernel.sysctl[" + strconv.Quote(key) + "]"
 }
 
 func appendSystemNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddress string) {

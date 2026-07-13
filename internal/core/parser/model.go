@@ -85,6 +85,7 @@ type Host struct {
 	APK        *APK
 	OpenRC     *OpenRC
 	System     *System
+	Kernel     *Kernel
 	Components []ComponentInstance
 	Resources  []ResourceDeclaration
 	Asserts    []Assert
@@ -397,6 +398,15 @@ func parseHost(file string, block *hclsyntax.Block, ctx EvalContext) (Host, erro
 				return Host{}, err
 			}
 			host.System = &system
+		case "kernel":
+			if host.Kernel != nil {
+				return Host{}, fmt.Errorf("%s:%d: duplicate %s.kernel block", file, child.TypeRange.Start.Line, path)
+			}
+			kernel, err := parseKernel(file, path+".kernel", child, ctx)
+			if err != nil {
+				return Host{}, err
+			}
+			host.Kernel = &kernel
 		case "ssh":
 			if host.SSH.Source.Path != host.Source.Path {
 				return Host{}, fmt.Errorf("%s:%d: duplicate %s.ssh block", file, child.TypeRange.Start.Line, path)

@@ -89,6 +89,7 @@ Managed APK repository and key behavior is described in [apk.md](apk.md).
 Bounded OpenRC init generation and runtime convergence are described in
 [openrc.md](openrc.md).
 Alpine hostname and timezone behavior is described in [system.md](system.md).
+Alpine kernel module and sysctl behavior is described in [kernel.md](kernel.md).
 
 ## Product names
 
