@@ -1,0 +1,6 @@
+Offline plan:
+  Configuration graph: 2 node(s), 1 managed resource(s).
+  + host.node.file.example
+    manage example file
+
+Summary: 1 to create, 0 to update, 0 to delete.

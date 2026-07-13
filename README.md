@@ -23,6 +23,7 @@ make build
 ./apf variable inspect -f examples/variables.apf.hcl
 ./apf validate -f examples/model.apf.hcl
 ./apf component inspect -f examples/model.apf.hcl web_app
+./apf plan --offline -f examples/model.apf.hcl --format json --html plan.html
 ./apf fmt -f examples/variables.apf.hcl
 make check
 ```
@@ -35,6 +36,10 @@ The current model accepts reusable profiles, typed component metadata,
 component instances, assertions, lifecycle metadata, and offline Alpine
 platform declarations. It does not yet turn those declarations into remote
 resource changes.
+
+Offline plans include a deterministic structural graph. Host, platform, and
+component declarations are marked unmanaged until their Alpine providers are
+implemented, so the plan does not misrepresent metadata as a remote change.
 
 ## License
 

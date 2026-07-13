@@ -16,7 +16,7 @@ LDFLAGS := -s -w \
 	-X $(VERSION_PACKAGE).Commit=$(COMMIT) \
 	-X $(VERSION_PACKAGE).Date=$(BUILD_DATE)
 
-.PHONY: build install test test-unit vet format-check vulncheck check clean
+.PHONY: build install test test-unit vet format-check vulncheck update-golden check clean
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) $(PACKAGE)
@@ -40,6 +40,9 @@ format-check:
 
 vulncheck:
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+
+update-golden:
+	UPDATE_GOLDEN=1 go test ./internal/core/plan
 
 check: test-unit vet format-check
 

@@ -40,6 +40,19 @@ Platform architecture is normalized to `amd64` or `arm64`. Alpine branch,
 compilation requires architecture or version only when an expression actually
 references the corresponding platform fact.
 
+## Offline plan
+
+`apf plan --offline` renders text or JSON and can atomically write a standalone
+HTML report. The `alpineform.plan.alpha1` JSON contract has no generation
+timestamp, so identical inputs and argument order produce identical output.
+Its graph contains structural `managed=false` nodes for hosts, platform facts,
+and component instances. Only future provider-backed `managed=true` nodes
+become changes in the plan summary.
+
+Protected desired values are replaced before graph, plan, JSON, or HTML
+serialization. `--color auto` honors `NO_COLOR` and non-terminal output;
+`--color always` affects text only.
+
 ## Product names
 
 | Surface | Value |

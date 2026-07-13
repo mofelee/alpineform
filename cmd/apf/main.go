@@ -12,8 +12,10 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	coregraph "github.com/mofelee/alpineform/internal/core/graph"
 	coremerge "github.com/mofelee/alpineform/internal/core/merge"
 	coreparser "github.com/mofelee/alpineform/internal/core/parser"
+	coreplan "github.com/mofelee/alpineform/internal/core/plan"
 	"github.com/mofelee/alpineform/internal/product"
 	"github.com/mofelee/alpineform/internal/version"
 )
@@ -61,11 +63,168 @@ func run(args []string, stdout io.Writer) error {
 			return err
 		}
 		return runComponent(args[1:], stdout, workingDir)
-	case "plan", "apply", "check":
+	case "plan":
+		workingDir, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		return runPlan(args[1:], stdout, workingDir, os.Environ())
+	case "apply", "check":
 		return fmt.Errorf("%s is not available in the bootstrap build; Alpine resource management is not implemented", strings.Join(args, " "))
 	default:
 		return fmt.Errorf("unknown command %q; run %s help", args[0], product.CLIName)
 	}
+}
+
+func runPlan(args []string, stdout io.Writer, workingDir string, environ []string) error {
+	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var sources repeatedFlag
+	var variableFiles repeatedFlag
+	var variables repeatedFlag
+	fs.Var(&sources, "f", "configuration file or directory; may be repeated")
+	fs.Var(&variableFiles, "var-file", "explicit .apfvars or .apfvars.json file; may be repeated")
+	fs.Var(&variables, "var", "variable value as name=value; may be repeated")
+	offline := fs.Bool("offline", false, "compile without target access")
+	format := fs.String("format", "text", "output format: text or json")
+	htmlPath := fs.String("html", "", "write a standalone HTML plan")
+	colorMode := fs.String("color", "auto", "color mode: auto, always, or never")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("plan arguments: %w", err)
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("plan does not accept positional arguments")
+	}
+	if !*offline {
+		return fmt.Errorf("online planning is not implemented yet; use apf plan --offline")
+	}
+	if *format != "text" && *format != "json" {
+		return fmt.Errorf("unsupported plan format %q; use text or json", *format)
+	}
+	color, err := resolveColor(*colorMode, stdout, environ)
+	if err != nil {
+		return err
+	}
+
+	resolvedSources := make([]string, len(sources))
+	for i, source := range sources {
+		resolvedSources[i] = resolvePath(workingDir, source)
+	}
+	files, err := coreparser.DiscoverConfigFiles(discoveryWorkingDir(workingDir), resolvedSources)
+	if err != nil {
+		return err
+	}
+	resolvedVariableFiles := make([]string, len(variableFiles))
+	for i, path := range variableFiles {
+		resolvedVariableFiles[i] = resolvePath(workingDir, path)
+	}
+	external, err := coreparser.CollectExternalVariableValues(files, environ, resolvedVariableFiles, variables)
+	if err != nil {
+		return err
+	}
+	config, err := coreparser.ParseFilesWithOptions(files, coreparser.ParseOptions{VariableValues: external})
+	if err != nil {
+		return err
+	}
+	program, err := coremerge.Compile(config)
+	if err != nil {
+		return err
+	}
+	resourceGraph, err := coregraph.Compile(program)
+	if err != nil {
+		return err
+	}
+	hosts := make([]string, 0, len(program.Hosts))
+	for _, host := range program.Hosts {
+		hosts = append(hosts, host.Name)
+	}
+	document := coreplan.New(resourceGraph, coreplan.Options{Files: files, Hosts: hosts})
+	if *htmlPath != "" {
+		path := resolvePath(workingDir, *htmlPath)
+		if err := ensureOutputDoesNotReplaceInput(path, files); err != nil {
+			return err
+		}
+		if err := writePlanHTML(path, document); err != nil {
+			return err
+		}
+	}
+	if *format == "json" {
+		return coreplan.PrintJSON(stdout, document)
+	}
+	coreplan.PrintText(stdout, document, coreplan.TextOptions{Color: color})
+	return nil
+}
+
+func resolveColor(mode string, output io.Writer, environ []string) (bool, error) {
+	switch mode {
+	case "always":
+		return true, nil
+	case "never":
+		return false, nil
+	case "auto":
+	default:
+		return false, fmt.Errorf("unsupported color mode %q; use auto, always, or never", mode)
+	}
+	for _, item := range environ {
+		if item == "NO_COLOR" || strings.HasPrefix(item, "NO_COLOR=") || item == "TERM=dumb" {
+			return false, nil
+		}
+	}
+	file, ok := output.(*os.File)
+	if !ok {
+		return false, nil
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false, nil
+	}
+	return info.Mode()&os.ModeCharDevice != 0, nil
+}
+
+func ensureOutputDoesNotReplaceInput(output string, inputs []string) error {
+	outputPath, err := filepath.Abs(filepath.Clean(output))
+	if err != nil {
+		return err
+	}
+	for _, input := range inputs {
+		inputPath, err := filepath.Abs(filepath.Clean(input))
+		if err != nil {
+			return err
+		}
+		if outputPath == inputPath {
+			return fmt.Errorf("HTML plan output %s would overwrite configuration input", output)
+		}
+	}
+	return nil
+}
+
+func writePlanHTML(path string, document coreplan.Document) error {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0755); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(directory, ".apf-plan-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		_ = os.Remove(temporaryName)
+	}()
+	if err := temporary.Chmod(0644); err != nil {
+		return err
+	}
+	if err := coreplan.PrintHTML(temporary, document); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryName, path); err != nil {
+		return err
+	}
+	return nil
 }
 
 func runFmt(args []string, stdout io.Writer, workingDir string) error {
@@ -83,7 +242,7 @@ func runFmt(args []string, stdout io.Writer, workingDir string) error {
 	for i, source := range sources {
 		resolvedSources[i] = resolvePath(workingDir, source)
 	}
-	files, err := coreparser.DiscoverConfigFiles(workingDir, resolvedSources)
+	files, err := coreparser.DiscoverConfigFiles(discoveryWorkingDir(workingDir), resolvedSources)
 	if err != nil {
 		return err
 	}
@@ -159,7 +318,7 @@ func runComponentInspect(args []string, stdout io.Writer, workingDir string) err
 	for i, source := range sources {
 		resolvedSources[i] = resolvePath(workingDir, source)
 	}
-	files, err := coreparser.DiscoverConfigFiles(workingDir, resolvedSources)
+	files, err := coreparser.DiscoverConfigFiles(discoveryWorkingDir(workingDir), resolvedSources)
 	if err != nil {
 		return err
 	}
@@ -248,7 +407,7 @@ func runVariableInspect(args []string, stdout io.Writer, workingDir string, envi
 	for i, source := range sources {
 		resolvedSources[i] = resolvePath(workingDir, source)
 	}
-	files, err := coreparser.DiscoverConfigFiles(workingDir, resolvedSources)
+	files, err := coreparser.DiscoverConfigFiles(discoveryWorkingDir(workingDir), resolvedSources)
 	if err != nil {
 		return err
 	}
@@ -331,7 +490,7 @@ func runValidate(args []string, stdout io.Writer, workingDir string, environ []s
 	for i, source := range sources {
 		resolvedSources[i] = resolvePath(workingDir, source)
 	}
-	files, err := coreparser.DiscoverConfigFiles(workingDir, resolvedSources)
+	files, err := coreparser.DiscoverConfigFiles(discoveryWorkingDir(workingDir), resolvedSources)
 	if err != nil {
 		return err
 	}
@@ -363,7 +522,34 @@ func resolvePath(workingDir, path string) string {
 	if path == "" || filepath.IsAbs(path) {
 		return path
 	}
+	if sameDirectory(workingDir, currentWorkingDirectory()) {
+		return path
+	}
 	return filepath.Join(workingDir, path)
+}
+
+func discoveryWorkingDir(workingDir string) string {
+	if sameDirectory(workingDir, currentWorkingDirectory()) {
+		return "."
+	}
+	return workingDir
+}
+
+func currentWorkingDirectory() string {
+	current, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return current
+}
+
+func sameDirectory(left, right string) bool {
+	if left == "" || right == "" {
+		return false
+	}
+	leftAbs, leftErr := filepath.Abs(filepath.Clean(left))
+	rightAbs, rightErr := filepath.Abs(filepath.Clean(right))
+	return leftErr == nil && rightErr == nil && leftAbs == rightAbs
 }
 
 func sortedVariableNames(variables map[string]coreparser.Variable) []string {
@@ -389,7 +575,7 @@ func printUsage(w io.Writer) {
 
 Usage:
   apf validate
-  apf plan [--offline] [--format text|json] [--html path]
+  apf plan --offline [--format text|json] [--html path] [--color auto|always|never]
   apf apply [--auto-approve] [--debug]
   apf check
   apf fmt
@@ -397,7 +583,7 @@ Usage:
   apf variable inspect
   apf version
 
-Validate and variable inspect load top-level *.apf.hcl files and support
-repeated -f, -var-file, and -var inputs. Fmt validates before writing.
+Validate, offline plan, and variable inspect load top-level *.apf.hcl files
+and support repeated -f, -var-file, and -var inputs. Fmt validates before writing.
 This bootstrap build does not implement Alpine resource management yet.`)
 }

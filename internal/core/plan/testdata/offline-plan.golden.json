@@ -1,0 +1,60 @@
+{
+  "format_version": "alpineform.plan.alpha1",
+  "mode": "offline",
+  "command": {
+    "files": [
+      "model.apf.hcl"
+    ]
+  },
+  "hosts": [
+    "node"
+  ],
+  "summary": {
+    "create": 1,
+    "update": 0,
+    "delete": 0,
+    "no_op": 0,
+    "managed_resources": 1,
+    "graph_nodes": 2
+  },
+  "graph": [
+    {
+      "address": "host.node",
+      "kind": "host",
+      "managed": false,
+      "source": {
+        "file": "model.apf.hcl",
+        "line": 1,
+        "path": "host[\"node\"]"
+      }
+    },
+    {
+      "address": "host.node.file.example",
+      "kind": "file",
+      "managed": true,
+      "depends_on": [
+        "host.node"
+      ],
+      "source": {
+        "file": "model.apf.hcl",
+        "line": 8,
+        "path": "host[\"node\"].file[\"example\"]"
+      }
+    }
+  ],
+  "changes": [
+    {
+      "address": "host.node.file.example",
+      "action": "create",
+      "summary": "manage example file",
+      "source": {
+        "file": "model.apf.hcl",
+        "line": 8,
+        "path": "host[\"node\"].file[\"example\"]"
+      },
+      "desired": {
+        "protected": true
+      }
+    }
+  ]
+}

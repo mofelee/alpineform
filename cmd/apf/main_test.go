@@ -252,6 +252,7 @@ component "app" {
     ephemeral = true
   }
 }
+
 `), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -269,5 +270,103 @@ component "app" {
 		if !strings.Contains(text, want) {
 			t.Fatalf("component inspect missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestOfflinePlanIsStableRedactedAndWritesHTML(t *testing.T) {
+	dir := t.TempDir()
+	config := `
+component "app" {
+  input "token" {
+    type      = string
+    default   = "not-a-real-plan-secret"
+    sensitive = true
+    ephemeral = true
+  }
+}
+host "node" {
+  platform {
+    architecture = "amd64"
+    version      = "3.24.1"
+  }
+  component "app" { source = component.app }
+}
+`
+	configPath := filepath.Join(dir, "main.apf.hcl")
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	htmlPath := filepath.Join(dir, "out", "plan.html")
+	args := []string{"--offline", "--format", "json", "--html", htmlPath}
+	var first bytes.Buffer
+	if err := runPlan(args, &first, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	var second bytes.Buffer
+	if err := runPlan(args, &second, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if first.String() != second.String() {
+		t.Fatalf("offline JSON plan drifted:\n%s\n%s", first.String(), second.String())
+	}
+	if strings.Contains(first.String(), "not-a-real-plan-secret") || strings.Contains(first.String(), "\x1b[") {
+		t.Fatalf("JSON plan leaked protected/color content:\n%s", first.String())
+	}
+	var document struct {
+		FormatVersion string `json:"format_version"`
+		Summary       struct {
+			Managed int `json:"managed_resources"`
+			Nodes   int `json:"graph_nodes"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(first.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.FormatVersion != "alpineform.plan.alpha1" || document.Summary.Managed != 0 || document.Summary.Nodes != 3 {
+		t.Fatalf("offline document = %#v", document)
+	}
+	htmlData, err := os.ReadFile(htmlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(htmlData), "not-a-real-plan-secret") || !strings.Contains(string(htmlData), "AlpineForm offline plan") || !strings.Contains(string(htmlData), "host.node.component.app") {
+		t.Fatalf("HTML plan = %s", htmlData)
+	}
+
+	var colored bytes.Buffer
+	if err := runPlan([]string{"--offline", "--color", "always"}, &colored, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(colored.String(), "\x1b[") || strings.Contains(colored.String(), "not-a-real-plan-secret") {
+		t.Fatalf("colored text plan = %q", colored.String())
+	}
+	var plain bytes.Buffer
+	if err := runPlan([]string{"--offline", "--color", "auto"}, &plain, dir, []string{"NO_COLOR="}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain.String(), "\x1b[") {
+		t.Fatalf("NO_COLOR plan contains ANSI: %q", plain.String())
+	}
+}
+
+func TestPlanRequiresOfflineAndDoesNotOverwriteInput(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.apf.hcl")
+	original := []byte("host \"node\" {}\n")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runPlan(nil, &bytes.Buffer{}, dir, nil); err == nil || !strings.Contains(err.Error(), "use apf plan --offline") {
+		t.Fatalf("online plan error = %v", err)
+	}
+	if err := runPlan([]string{"--offline", "--html", path}, &bytes.Buffer{}, dir, nil); err == nil || !strings.Contains(err.Error(), "would overwrite configuration input") {
+		t.Fatalf("overwrite plan error = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, original) {
+		t.Fatalf("plan changed input: %q", after)
 	}
 }
