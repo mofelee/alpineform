@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/mofelee/alpineform/internal/core/ir"
 )
 
 const artifactSHA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -139,6 +141,84 @@ host "node" {
 	script := component.Scripts["reload"]
 	if script.Content != "rc-service worker reload" || script.DeclarationID != `component.worker.script["reload"]` || component.Install.OnChange.Scope != "component" || component.Install.OnChange.DeclarationID != script.DeclarationID {
 		t.Fatalf("component script = %#v, reference = %#v", script, component.Install.OnChange)
+	}
+}
+
+func TestCompileComponentComposesNativeDomains(t *testing.T) {
+	config, err := compileConfig(t, `
+script "refresh" { commands = [["rc-service", "worker", "reload"]] }
+component "worker" {
+  input "port" {
+    type    = number
+    default = 9000
+  }
+  groups {
+    group "worker" { system = true }
+  }
+  users {
+    user "worker" {
+      group  = "worker"
+      home   = "/var/lib/worker"
+      shell  = "/sbin/nologin"
+      system = true
+    }
+  }
+  directories {
+    directory "/var/lib/worker" {
+      owner = "worker"
+      group = "worker"
+    }
+  }
+  files {
+    file "/etc/worker.conf" {
+      content   = "PORT=${input.port}\n"
+      on_change = global.script.refresh
+    }
+  }
+  packages {
+    package "busybox-extras" {}
+  }
+  openrc {
+    service "worker" {
+      command            = "/usr/local/bin/worker"
+      command_background = true
+      pidfile            = "/run/worker.pid"
+    }
+  }
+  services {
+    service "worker" {
+      enabled   = true
+      state     = "running"
+      operation = "restarted"
+      package   = "busybox-extras"
+      user      = "worker"
+      group     = "worker"
+    }
+  }
+}
+host "node" {
+  component "app" { source = component.worker }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	component := program.Hosts[0].Components[0]
+	if len(component.Groups) != 1 || len(component.Users) != 1 || len(component.Directories) != 1 || len(component.Packages) != 1 || len(component.Services) != 1 || len(component.OpenRC) != 1 {
+		t.Fatalf("component domains = %#v", component)
+	}
+	var configFile ir.ManagedFileSpec
+	for _, file := range component.Files {
+		if file.Path == "/etc/worker.conf" {
+			configFile = file
+		}
+	}
+	if configFile.Content != "PORT=9000\n" || configFile.OnChange == nil || configFile.OnChange.Scope != "root" {
+		t.Fatalf("component file = %#v", configFile)
 	}
 }
 

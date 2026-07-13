@@ -349,6 +349,9 @@ func compileFile(declaration parser.ResourceDeclaration, host parser.Host, facts
 		Lifecycle:        ir.LifecycleSpec{PreventDestroy: declaration.Lifecycle.PreventDestroy, Source: declaration.Lifecycle.Source},
 		Source:           declaration.Source,
 	}
+	if declaration.OnChange != nil {
+		file.OnChange = &ir.ScriptReferenceSpec{Name: declaration.OnChange.Name, Scope: string(declaration.OnChange.Scope), Source: declaration.OnChange.Source}
+	}
 	if ensure == "present" {
 		file.ContentBytes = int64(len(payload))
 		if !contentEphemeral {

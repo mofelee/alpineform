@@ -280,6 +280,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 					"protected_inputs": append([]string(nil), component.ProtectedInputs...),
 				},
 			})
+			appendComponentResourceNodes(graph, host, component, address)
 			appendComponentArtifactNodes(graph, host, component, address)
 		}
 		appendComponentScriptNodes(graph, host)
@@ -300,29 +301,45 @@ type componentScriptAggregation struct {
 
 func appendComponentScriptNodes(resourceGraph *ResourceGraph, host ir.HostSpec) {
 	aggregated := map[string]*componentScriptAggregation{}
-	for _, component := range host.Components {
-		if component.Install == nil || component.Install.OnChange == nil {
-			continue
-		}
-		reference := *component.Install.OnChange
+	add := func(reference ir.ScriptReferenceSpec, componentName, trigger, path string) {
 		var script ir.ScriptSpec
 		address := ""
 		if reference.Scope == "root" {
 			script = host.Scripts[reference.Name]
 			address = "host." + host.Name + ".script[" + strconv.Quote(reference.Name) + "]"
 		} else {
-			script = component.Scripts[reference.Name]
-			address = "host." + host.Name + ".component." + component.Name + ".script[" + strconv.Quote(reference.Name) + "]"
+			for _, component := range host.Components {
+				if component.Name == componentName {
+					script = component.Scripts[reference.Name]
+					break
+				}
+			}
+			address = "host." + host.Name + ".component." + componentName + ".script[" + strconv.Quote(reference.Name) + "]"
 		}
-		key := reference.DeclarationID
-		entry := aggregated[key]
+		entry := aggregated[reference.DeclarationID]
 		if entry == nil {
 			entry = &componentScriptAggregation{Script: script, Address: address, TriggerPaths: map[string]string{}}
-			aggregated[key] = entry
+			aggregated[reference.DeclarationID] = entry
 		}
-		trigger := "host." + host.Name + ".component." + component.Name + ".artifact.install[" + strconv.Quote(component.Install.Path) + "]"
 		entry.TriggeredBy = append(entry.TriggeredBy, trigger)
-		entry.TriggerPaths[trigger] = component.Install.Path
+		entry.TriggerPaths[trigger] = path
+	}
+	for _, file := range host.Files {
+		if file.OnChange != nil {
+			add(*file.OnChange, "", fileResourceAddress(host.Name, file.Path), file.Path)
+		}
+	}
+	for _, component := range host.Components {
+		componentAddress := "host." + host.Name + ".component." + component.Name
+		for _, file := range component.Files {
+			if file.OnChange != nil {
+				add(*file.OnChange, component.Name, componentFileAddress(componentAddress, file.Path), file.Path)
+			}
+		}
+		if component.Install != nil && component.Install.OnChange != nil {
+			trigger := componentAddress + ".artifact.install[" + strconv.Quote(component.Install.Path) + "]"
+			add(*component.Install.OnChange, component.Name, trigger, component.Install.Path)
+		}
 	}
 	keys := make([]string, 0, len(aggregated))
 	for key := range aggregated {

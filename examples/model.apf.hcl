@@ -14,7 +14,7 @@ assert {
 }
 
 script "reload_app" {
-  description = "Reserved reload hook metadata; execution is not implemented yet."
+  description = "Unreferenced script metadata remains valid without an execution body."
 }
 
 component "web_app" {

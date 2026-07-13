@@ -32,8 +32,8 @@ content and is idempotent. No Debian resource schema is exposed.
 
 - `variable`, `locals`, root and nested `assert`
 - `profile` imports with deterministic component-instance override order
-- typed `component` inputs and local instance dependency validation
-- metadata-only `script` declarations; execution is intentionally unavailable
+- typed `component` inputs, prebuilt artifacts, composed native domains, and local instance dependency validation
+- top-level and component-local scripts with reference-identity `on_change` aggregation and output observation
 - `host` imports and optional offline `platform.architecture` / `version`
 - `lifecycle.prevent_destroy` metadata on component instances
 - host-level file, directory, group, user, membership, authorized-key, APK repository, APK key, aggregated APK update, and package resources
@@ -49,8 +49,8 @@ references the corresponding platform fact.
 HTML report. The `alpineform.plan.alpha1` JSON contract has no generation
 timestamp, so identical inputs and argument order produce identical output.
 Its graph contains structural `managed=false` nodes for hosts, platform facts,
-and component instances. Only future provider-backed `managed=true` nodes
-become changes in the plan summary.
+and component instances. Provider-backed host and component resources are
+`managed=true` nodes and become changes in the plan summary.
 
 Protected desired values are replaced before graph, plan, JSON, or HTML
 serialization. `--color auto` honors `NO_COLOR` and non-terminal output;
@@ -90,6 +90,8 @@ Bounded OpenRC init generation and runtime convergence are described in
 [openrc.md](openrc.md).
 Alpine hostname and timezone behavior is described in [system.md](system.md).
 Alpine kernel module and sysctl behavior is described in [kernel.md](kernel.md).
+Component artifacts, composition, and change scripts are described in
+[components.md](components.md).
 
 ## Product names
 

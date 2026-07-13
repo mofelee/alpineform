@@ -38,9 +38,12 @@ See [docs/development.md](docs/development.md) for the package boundaries and
 current core scope. AlpineForm is derived from the architecture and
 selected code patterns of DebianForm v0.6.0; see [NOTICE.md](NOTICE.md).
 
-The current model accepts reusable profiles, typed component metadata,
-component instances, assertions, lifecycle metadata, and offline Alpine
-platform declarations. Host-level `files.file`, `directories.directory`,
+The current model accepts reusable profiles, typed components, verified
+prebuilt artifacts, deduplicated change scripts, assertions, lifecycle
+metadata, and offline Alpine platform declarations. Components can compose the
+same file, directory, account, package, OpenRC, and service domains under
+instance-scoped resource addresses; see [docs/components.md](docs/components.md).
+Host-level `files.file`, `directories.directory`,
 `groups.group`, `users.user`, host-level `apk`, `packages.package`, and
 `services.service` resources plus explicit `system` settings provide native convergence; see
 [docs/files.md](docs/files.md), [docs/directories.md](docs/directories.md), and
@@ -57,8 +60,8 @@ facts, state, or provider changes. `--parallel` bounds concurrent hosts;
 redacted lifecycle events.
 
 Offline plans include a deterministic structural graph. Host, platform, and
-component declarations are marked unmanaged until their Alpine providers are
-implemented, so the plan does not misrepresent metadata as a remote change.
+component declarations are structural; provider-backed component resources
+and artifacts appear as managed changes with their actual dependencies.
 
 ## License
 

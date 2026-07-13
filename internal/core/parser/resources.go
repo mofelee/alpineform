@@ -28,6 +28,7 @@ type ResourceDeclaration struct {
 	Kind       string
 	Label      string
 	Attributes map[string]ResourceAttribute
+	OnChange   *ScriptReference
 	Lifecycle  Lifecycle
 	Source     ir.SourceRef
 }
@@ -44,7 +45,7 @@ var hostResourceCollections = map[string]resourceCollectionSchema{
 		resource: ResourceFile,
 		attributes: attributeSet(
 			"content", "source", "content_version", "owner", "group", "mode",
-			"sensitive", "ensure", "on_remove",
+			"sensitive", "ensure", "on_remove", "on_change",
 		),
 	},
 	"directories": {
@@ -126,6 +127,14 @@ func parseResourceDeclaration(file, collectionPath string, block *hclsyntax.Bloc
 	for name, attribute := range block.Body.Attributes {
 		if _, allowed := schema.attributes[name]; !allowed {
 			return ResourceDeclaration{}, fmt.Errorf("%s:%d: unsupported attribute %s.%s", file, attribute.NameRange.Start.Line, path, name)
+		}
+		if name == "on_change" {
+			reference, err := parseScriptReference(file, path+".on_change", attribute.Expr)
+			if err != nil {
+				return ResourceDeclaration{}, err
+			}
+			declaration.OnChange = &reference
+			continue
 		}
 		declaration.Attributes[name] = ResourceAttribute{
 			Expression: attribute.Expr,

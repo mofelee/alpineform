@@ -66,3 +66,38 @@ func TestCompileDeduplicatesRootScriptByResolvedDeclaration(t *testing.T) {
 		t.Fatalf("script nodes = %#v", scripts)
 	}
 }
+
+func TestCompileComponentNativeResourcesUseScopedAddresses(t *testing.T) {
+	refresh := ir.ScriptSpec{Name: "refresh", DeclarationID: `script["refresh"]`, Commands: [][]string{{"refresh"}}, ScriptDigest: componentArtifactSHA, Executable: true, Source: source(9)}
+	component := ir.ComponentInstanceSpec{
+		Name: "app", Template: "worker", Source: source(2),
+		Groups:      []ir.ManagedGroupSpec{{Name: "worker", Ensure: "present", Source: source(3)}},
+		Users:       []ir.ManagedUserSpec{{Name: "worker", PrimaryGroup: "worker", Ensure: "present", Source: source(4)}},
+		Directories: []ir.ManagedDirectorySpec{{Path: "/etc/worker", Owner: "worker", Group: "worker", Mode: "0755", Ensure: "present", Source: source(5)}},
+		Files: []ir.ManagedFileSpec{
+			{Path: "/etc/worker/one", Content: "one", ContentSHA256: componentArtifactSHA, Owner: "worker", Group: "worker", Mode: "0644", Ensure: "present", OnChange: &ir.ScriptReferenceSpec{Name: "refresh", Scope: "root", DeclarationID: refresh.DeclarationID}, Source: source(6)},
+			{Path: "/etc/worker/two", Content: "two", ContentSHA256: componentArtifactSHA, Owner: "worker", Group: "worker", Mode: "0644", Ensure: "present", OnChange: &ir.ScriptReferenceSpec{Name: "refresh", Scope: "root", DeclarationID: refresh.DeclarationID}, Source: source(7)},
+		},
+		Services: []ir.ServiceSpec{{Name: "worker", Enabled: true, Runlevel: "default", State: "running", User: "worker", Group: "worker", Source: source(8)}},
+	}
+	program := &ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Scripts: map[string]ir.ScriptSpec{"refresh": refresh}, Components: []ir.ComponentInstanceSpec{component}}}}
+	resourceGraph, err := Compile(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byAddress := map[string]Node{}
+	for _, node := range resourceGraph.Nodes {
+		byAddress[node.Address] = node
+	}
+	prefix := "host.node.component.app"
+	fileAddress := prefix + `.files.file["/etc/worker/one"]`
+	file := byAddress[fileAddress]
+	wantFileDependencies := []string{prefix, prefix + `.directories.directory["/etc/worker"]`, prefix + `.groups.group["worker"]`, prefix + `.users.user["worker"]`}
+	if file.Kind != "file" || !reflect.DeepEqual(file.DependsOn, wantFileDependencies) {
+		t.Fatalf("component file node = %#v", file)
+	}
+	script := byAddress[`host.node.script["refresh"]`]
+	if script.Kind != "component_script" || len(script.TriggeredBy) != 2 {
+		t.Fatalf("component script node = %#v", script)
+	}
+}

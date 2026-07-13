@@ -326,6 +326,10 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	if err != nil {
 		return ir.HostSpec{}, err
 	}
+	out.Files, err = resolveFileScriptReferences(out.Files, nil, out.Scripts)
+	if err != nil {
+		return ir.HostSpec{}, err
+	}
 	out.Packages, err = ensureTimezonePackage(out.Packages, out.System)
 	if err != nil {
 		return ir.HostSpec{}, err
@@ -346,16 +350,19 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	}
 	for _, name := range resolved.Order {
 		instance := resolved.Components[name]
-		compiled, err := compileComponentInstance(config, host, facts, instance, hostContext, out.Scripts)
+		compiled, err := compileComponentInstance(config, host, facts, instance, hostContext, out.Scripts, out.APK)
 		if err != nil {
 			return ir.HostSpec{}, err
 		}
 		out.Components = append(out.Components, compiled)
 	}
+	if err := validateComponentResourceCollisions(out); err != nil {
+		return ir.HostSpec{}, err
+	}
 	return out, nil
 }
 
-func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir.HostFacts, instance parser.ComponentInstance, hostContext parser.EvalContext, rootScripts map[string]ir.ScriptSpec) (ir.ComponentInstanceSpec, error) {
+func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir.HostFacts, instance parser.ComponentInstance, hostContext parser.EvalContext, rootScripts map[string]ir.ScriptSpec, rootAPK *ir.APKSpec) (ir.ComponentInstanceSpec, error) {
 	template, exists := config.Components[instance.Template]
 	if !exists {
 		return ir.ComponentInstanceSpec{}, fmt.Errorf("%s:%d:%s: unknown component.%s", instance.Source.File, instance.Source.Line, instance.Source.Path, instance.Template)
@@ -436,6 +443,32 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 		}
 		install.OnChange = &resolvedReference
 	}
+	componentHost := host
+	componentHost.Resources = append([]parser.ResourceDeclaration(nil), template.Resources...)
+	componentHost.OpenRC = template.OpenRC
+	files, directories, groups, users, packages, services, err := compileHostNativeResources(componentHost, rootAPK, facts, inputContext)
+	if err != nil {
+		return ir.ComponentInstanceSpec{}, err
+	}
+	files, err = resolveFileScriptReferences(files, scripts, rootScripts)
+	if err != nil {
+		return ir.ComponentInstanceSpec{}, err
+	}
+	var openrc []ir.OpenRCServiceSpec
+	if template.OpenRC != nil {
+		var generatedFiles []ir.ManagedFileSpec
+		openrc, generatedFiles, err = compileOpenRC(*template.OpenRC, componentHost, facts, inputContext)
+		if err != nil {
+			return ir.ComponentInstanceSpec{}, err
+		}
+		files = append(files, generatedFiles...)
+		if err := validateNativeResourceRelationships(files, directories, groups, users); err != nil {
+			return ir.ComponentInstanceSpec{}, err
+		}
+	}
+	if err := resolveAndValidateServiceDependencies(services, openrc, files, packages, users, groups); err != nil {
+		return ir.ComponentInstanceSpec{}, err
+	}
 	return ir.ComponentInstanceSpec{
 		Name:            instance.Name,
 		Template:        instance.Template,
@@ -445,6 +478,13 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 		Extract:         extract,
 		Install:         install,
 		Scripts:         scripts,
+		OpenRC:          openrc,
+		Files:           files,
+		Directories:     directories,
+		Groups:          groups,
+		Users:           users,
+		Packages:        packages,
+		Services:        services,
 		InputNames:      inputNames,
 		ProtectedInputs: protected,
 		DependsOn:       dependencies,

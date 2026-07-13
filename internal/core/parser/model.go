@@ -34,6 +34,8 @@ type Component struct {
 	Sources      map[string]ComponentArtifactSource
 	Extract      *ComponentArtifactExtract
 	Install      *ComponentArtifactInstall
+	OpenRC       *OpenRC
+	Resources    []ResourceDeclaration
 	Asserts      []Assert
 	Source       ir.SourceRef
 }
@@ -319,6 +321,24 @@ func parseComponent(file string, block *hclsyntax.Block, ctx EvalContext) (Compo
 				return Component{}, duplicateDeclarationError("component script", script.Name, script.Source, previous.Source)
 			}
 			component.Scripts[script.Name] = script
+		case "files", "directories", "groups", "users", "packages", "services":
+			resources, err := parseHostResourceCollection(file, path, child, ctx)
+			if err != nil {
+				return Component{}, err
+			}
+			component.Resources, err = appendUniqueResources(component.Resources, resources)
+			if err != nil {
+				return Component{}, err
+			}
+		case "openrc":
+			if component.OpenRC != nil {
+				return Component{}, fmt.Errorf("%s:%d: duplicate %s.openrc block", file, child.TypeRange.Start.Line, path)
+			}
+			openrc, err := parseOpenRC(file, path+".openrc", child, ctx)
+			if err != nil {
+				return Component{}, err
+			}
+			component.OpenRC = &openrc
 		case "source":
 			artifactSource, err := parseComponentArtifactSource(file, path, child, ctx)
 			if err != nil {

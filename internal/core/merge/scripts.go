@@ -74,6 +74,21 @@ func resolveScriptReference(reference ir.ScriptReferenceSpec, local, root map[st
 	return ir.ScriptReferenceSpec{}, fmt.Errorf("%s:%d:%s: on_change references unknown %s", reference.Source.File, reference.Source.Line, reference.Source.Path, name)
 }
 
+func resolveFileScriptReferences(files []ir.ManagedFileSpec, local, root map[string]ir.ScriptSpec) ([]ir.ManagedFileSpec, error) {
+	out := append([]ir.ManagedFileSpec(nil), files...)
+	for index := range out {
+		if out[index].OnChange == nil {
+			continue
+		}
+		resolved, err := resolveScriptReference(*out[index].OnChange, local, root)
+		if err != nil {
+			return nil, err
+		}
+		out[index].OnChange = &resolved
+	}
+	return out, nil
+}
+
 func scriptSpecDigest(script ir.ScriptSpec) string {
 	data, _ := json.Marshal(struct {
 		Interpreter []string

@@ -260,21 +260,22 @@ type ManagedDirectorySpec struct {
 }
 
 type ManagedFileSpec struct {
-	Path             string        `json:"path"`
-	Content          string        `json:"-"`
-	ContentSHA256    string        `json:"content_sha256,omitempty"`
-	ContentBytes     int64         `json:"content_bytes,omitempty"`
-	ContentVersion   string        `json:"content_version,omitempty"`
-	ContentWriteOnly bool          `json:"content_write_only,omitempty"`
-	Owner            string        `json:"owner"`
-	Group            string        `json:"group"`
-	Mode             string        `json:"mode"`
-	Ensure           string        `json:"ensure"`
-	OnRemove         string        `json:"on_remove"`
-	Sensitive        bool          `json:"sensitive,omitempty"`
-	Ephemeral        bool          `json:"ephemeral,omitempty"`
-	Lifecycle        LifecycleSpec `json:"lifecycle"`
-	Source           SourceRef     `json:"source"`
+	Path             string               `json:"path"`
+	Content          string               `json:"-"`
+	ContentSHA256    string               `json:"content_sha256,omitempty"`
+	ContentBytes     int64                `json:"content_bytes,omitempty"`
+	ContentVersion   string               `json:"content_version,omitempty"`
+	ContentWriteOnly bool                 `json:"content_write_only,omitempty"`
+	Owner            string               `json:"owner"`
+	Group            string               `json:"group"`
+	Mode             string               `json:"mode"`
+	Ensure           string               `json:"ensure"`
+	OnRemove         string               `json:"on_remove"`
+	Sensitive        bool                 `json:"sensitive,omitempty"`
+	Ephemeral        bool                 `json:"ephemeral,omitempty"`
+	OnChange         *ScriptReferenceSpec `json:"on_change,omitempty"`
+	Lifecycle        LifecycleSpec        `json:"lifecycle"`
+	Source           SourceRef            `json:"source"`
 }
 
 type SSHSpec struct {
@@ -319,6 +320,13 @@ type ComponentInstanceSpec struct {
 	Extract         *ComponentArtifactExtractSpec `json:"extract,omitempty"`
 	Install         *ComponentArtifactInstallSpec `json:"install,omitempty"`
 	Scripts         map[string]ScriptSpec         `json:"scripts,omitempty"`
+	OpenRC          []OpenRCServiceSpec           `json:"openrc,omitempty"`
+	Files           []ManagedFileSpec             `json:"files,omitempty"`
+	Directories     []ManagedDirectorySpec        `json:"directories,omitempty"`
+	Groups          []ManagedGroupSpec            `json:"groups,omitempty"`
+	Users           []ManagedUserSpec             `json:"users,omitempty"`
+	Packages        []PackageSpec                 `json:"packages,omitempty"`
+	Services        []ServiceSpec                 `json:"services,omitempty"`
 	InputNames      []string                      `json:"input_names,omitempty"`
 	ProtectedInputs []string                      `json:"protected_inputs,omitempty"`
 	DependsOn       []string                      `json:"depends_on,omitempty"`
