@@ -51,6 +51,7 @@ type HostSpec struct {
 	Platform    *PlatformSpec           `json:"platform,omitempty"`
 	Facts       *HostFacts              `json:"facts,omitempty"`
 	APK         *APKSpec                `json:"apk,omitempty"`
+	OpenRC      []OpenRCServiceSpec     `json:"openrc,omitempty"`
 	Components  []ComponentInstanceSpec `json:"components,omitempty"`
 	Files       []ManagedFileSpec       `json:"files,omitempty"`
 	Directories []ManagedDirectorySpec  `json:"directories,omitempty"`
@@ -58,6 +59,25 @@ type HostSpec struct {
 	Users       []ManagedUserSpec       `json:"users,omitempty"`
 	Packages    []PackageSpec           `json:"packages,omitempty"`
 	Source      SourceRef               `json:"source"`
+}
+
+type OpenRCServiceSpec struct {
+	Name              string        `json:"name"`
+	Command           string        `json:"command"`
+	CommandArgs       []string      `json:"command_args,omitempty"`
+	CommandUser       string        `json:"command_user,omitempty"`
+	Directory         string        `json:"directory,omitempty"`
+	CommandBackground bool          `json:"command_background,omitempty"`
+	PIDFile           string        `json:"pidfile,omitempty"`
+	Description       string        `json:"description,omitempty"`
+	Need              []string      `json:"need,omitempty"`
+	Use               []string      `json:"use,omitempty"`
+	Want              []string      `json:"want,omitempty"`
+	After             []string      `json:"after,omitempty"`
+	Before            []string      `json:"before,omitempty"`
+	Conf              string        `json:"-"`
+	Lifecycle         LifecycleSpec `json:"lifecycle"`
+	Source            SourceRef     `json:"source"`
 }
 
 type PackageSpec struct {

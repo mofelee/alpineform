@@ -86,6 +86,7 @@ Managed directory behavior is described in [directories.md](directories.md).
 Managed group behavior is described in [groups.md](groups.md).
 Managed user behavior is described in [users.md](users.md).
 Managed APK repository and key behavior is described in [apk.md](apk.md).
+Bounded OpenRC init generation is described in [openrc.md](openrc.md).
 
 ## Product names
 

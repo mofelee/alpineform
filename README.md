@@ -44,7 +44,8 @@ platform declarations. Host-level `files.file`, `directories.directory`,
 `groups.group`, `users.user`, host-level `apk`, and `packages.package` resources provide native convergence; see
 [docs/files.md](docs/files.md), [docs/directories.md](docs/directories.md), and
 [docs/groups.md](docs/groups.md), [docs/users.md](docs/users.md), and
-[docs/apk.md](docs/apk.md).
+[docs/apk.md](docs/apk.md). Bounded OpenRC init generation is documented in
+[docs/openrc.md](docs/openrc.md).
 
 Online commands first discover and validate Alpine 3.24 facts through fixed
 read-only commands. `apply` shows a preview, acquires each host's runtime lease,

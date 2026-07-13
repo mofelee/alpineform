@@ -300,6 +300,17 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	if err != nil {
 		return ir.HostSpec{}, err
 	}
+	if host.OpenRC != nil {
+		var generatedFiles []ir.ManagedFileSpec
+		out.OpenRC, generatedFiles, err = compileOpenRC(*host.OpenRC, host, facts, hostContext)
+		if err != nil {
+			return ir.HostSpec{}, err
+		}
+		out.Files = append(out.Files, generatedFiles...)
+		if err := validateNativeResourceRelationships(out.Files, out.Directories, out.Groups, out.Users); err != nil {
+			return ir.HostSpec{}, err
+		}
+	}
 	for _, name := range resolved.Order {
 		instance := resolved.Components[name]
 		compiled, err := compileComponentInstance(config, host, facts, instance, hostContext)

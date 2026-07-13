@@ -122,6 +122,13 @@ func compileDirectory(declaration parser.ResourceDeclaration, host parser.Host, 
 }
 
 func validateNativeResourceRelationships(files []ir.ManagedFileSpec, directories []ir.ManagedDirectorySpec, groups []ir.ManagedGroupSpec, users []ir.ManagedUserSpec) error {
+	for index, file := range files {
+		for _, previous := range files[:index] {
+			if previous.Path == file.Path {
+				return resourceError(file.Source, "file path %q duplicates a file declared at %s:%d", file.Path, previous.Source.File, previous.Source.Line)
+			}
+		}
+	}
 	for index, group := range groups {
 		if group.GID == "" {
 			continue

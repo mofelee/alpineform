@@ -83,10 +83,16 @@ type Host struct {
 	SSH        SSH
 	Platform   *Platform
 	APK        *APK
+	OpenRC     *OpenRC
 	Components []ComponentInstance
 	Resources  []ResourceDeclaration
 	Asserts    []Assert
 	Source     ir.SourceRef
+}
+
+type OpenRC struct {
+	Services []ResourceDeclaration
+	Source   ir.SourceRef
 }
 
 type APK struct {
@@ -367,6 +373,15 @@ func parseHost(file string, block *hclsyntax.Block, ctx EvalContext) (Host, erro
 				return Host{}, err
 			}
 			host.APK = &apk
+		case "openrc":
+			if host.OpenRC != nil {
+				return Host{}, fmt.Errorf("%s:%d: duplicate %s.openrc block", file, child.TypeRange.Start.Line, path)
+			}
+			openrc, err := parseOpenRC(file, path+".openrc", child, ctx)
+			if err != nil {
+				return Host{}, err
+			}
+			host.OpenRC = &openrc
 		case "ssh":
 			if host.SSH.Source.Path != host.Source.Path {
 				return Host{}, fmt.Errorf("%s:%d: duplicate %s.ssh block", file, child.TypeRange.Start.Line, path)
