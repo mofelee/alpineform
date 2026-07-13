@@ -6,6 +6,16 @@ All notable user-visible changes to AlpineForm are recorded here.
 
 None.
 
+## [v0.1.0-alpha.2] - 2026-07-13
+
+### Fixed
+
+- Install the verified Cosign binary under the command name used by the release
+  workflow, allowing checksum signing, SBOM upload, provenance, and published
+  artifact verification to run.
+- Supersede the incomplete `v0.1.0-alpha.1` prerelease without moving its signed
+  tag or replacing its partial assets.
+
 ## [v0.1.0-alpha.1] - 2026-07-13
 
 ### Added
@@ -20,8 +30,9 @@ None.
   change scripts.
 - A blocking Alpine 3.24.1 x86_64 libvirt matrix with no-op, drift, repair,
   lifecycle, secret, lock, and reboot assertions.
-- Reproducible Linux and macOS archives for amd64 and arm64, checksum-verified
-  installation, SBOMs, Sigstore signing, and provenance attestations.
+- Release automation for reproducible Linux and macOS archives on amd64 and
+  arm64, checksum-verified installation, SBOMs, Sigstore signing, and provenance
+  attestations.
 
 ### Compatibility
 
@@ -30,5 +41,12 @@ None.
 - DSL, CLI, resource addresses, state schema, and plan JSON may change in a
   later prerelease with explicit release notes and migration guidance.
 
-[Unreleased]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.1...HEAD
+### Known Issues
+
+- The release workflow published archives and checksums, then failed before
+  checksum signing, SBOM generation, provenance, and post-release verification.
+  This prerelease is incomplete and must not be used.
+
+[Unreleased]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.2...HEAD
+[v0.1.0-alpha.2]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [v0.1.0-alpha.1]: https://github.com/mofelee/alpineform/releases/tag/v0.1.0-alpha.1

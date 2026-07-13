@@ -7,7 +7,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 for file in README.md LICENSE NOTICE.md CHANGELOG.md .goreleaser.yaml \
   scripts/install.sh docs/support-matrix.md docs/compatibility-policy.md \
   docs/security-model.md docs/operations-runbook.md docs/release-process.md \
-  docs/releases/v0.1.0-alpha.1.md; do
+  docs/releases/v0.1.0-alpha.1.md docs/releases/v0.1.0-alpha.2.md; do
   test -s "$ROOT_DIR/$file"
 done
 

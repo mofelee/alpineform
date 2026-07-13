@@ -58,7 +58,9 @@ jobs:
           tar -xzf "$syft_archive" syft
 
           mkdir -p "${HOME}/.local/bin"
-          install -m 0755 goreleaser cosign-linux-amd64 syft "${HOME}/.local/bin/"
+          install -m 0755 goreleaser "${HOME}/.local/bin/goreleaser"
+          install -m 0755 cosign-linux-amd64 "${HOME}/.local/bin/cosign"
+          install -m 0755 syft "${HOME}/.local/bin/syft"
           echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
       - name: Run release gates
         run: |
