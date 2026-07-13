@@ -491,6 +491,22 @@ func TestPlanOrderingIsStable(t *testing.T) {
 	}
 }
 
+func TestPlanFingerprintIgnoresOnlyFactDetectionTime(t *testing.T) {
+	firstHost := testHost()
+	secondHost := testHost()
+	firstHost.Facts.DetectedAt = "2026-07-13T08:00:00Z"
+	secondHost.Facts.DetectedAt = "2026-07-13T08:00:01Z"
+	first := planFingerprint(HostPlan{Host: firstHost})
+	second := planFingerprint(HostPlan{Host: secondHost})
+	if first != second {
+		t.Fatalf("detection time changed fingerprint: %q != %q", first, second)
+	}
+	secondHost.Facts.Version = "3.24.2"
+	if first == planFingerprint(HostPlan{Host: secondHost}) {
+		t.Fatal("semantic fact change did not change fingerprint")
+	}
+}
+
 func TestPlanPreservesDependencyOrder(t *testing.T) {
 	nodes := []graph.Node{
 		{Host: "node", Address: "host.node.a", Kind: "test", Managed: true, Desired: map[string]any{"v": 1}, DependsOn: []string{"host.node.z"}},

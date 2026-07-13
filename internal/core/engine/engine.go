@@ -320,11 +320,20 @@ func planNode(node graph.Node, prior corestate.Resource, hasPrior bool, observed
 
 func planFingerprint(plan HostPlan) string {
 	parts := make([]string, 0, len(plan.Steps)+1)
-	parts = append(parts, corestate.Digest(plan.Host.Facts))
+	parts = append(parts, factsFingerprint(plan.Host.Facts))
 	for _, step := range plan.Steps {
 		parts = append(parts, strings.Join([]string{step.Address, step.Action, corestate.Digest(step.Node.Desired), step.Observed.Digest, strconvBool(step.Observed.Exists)}, "\x00"))
 	}
 	return corestate.Digest(parts)
+}
+
+func factsFingerprint(facts *ir.HostFacts) string {
+	if facts == nil {
+		return corestate.Digest(nil)
+	}
+	semantic := *facts
+	semantic.DetectedAt = ""
+	return corestate.Digest(semantic)
 }
 
 func strconvBool(value bool) string {
