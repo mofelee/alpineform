@@ -225,6 +225,12 @@ variable "motd" {
   default = "Alpine"
 }
 host "node" {
+  groups {
+    group "app" {
+      gid    = 1500
+      system = true
+    }
+  }
   directories {
     directory "/etc/app" {
       owner = "root"
@@ -245,16 +251,20 @@ host "node" {
 		t.Fatal(err)
 	}
 	resources := config.Hosts["node"].Resources
-	if len(resources) != 2 {
+	if len(resources) != 3 {
 		t.Fatalf("resources = %#v", resources)
 	}
-	file := resources[1]
+	file := resources[2]
 	if file.Kind != ResourceFile || file.Label != "/etc/app/motd" || file.Attributes["content"].Expression == nil || !file.Lifecycle.PreventDestroy {
 		t.Fatalf("file declaration = %#v", file)
 	}
-	directory := resources[0]
+	directory := resources[1]
 	if directory.Kind != ResourceDirectory || directory.Label != "/etc/app" || directory.Attributes["mode"].Expression == nil {
 		t.Fatalf("directory declaration = %#v", directory)
+	}
+	group := resources[0]
+	if group.Kind != ResourceGroup || group.Label != "app" || group.Attributes["gid"].Expression == nil {
+		t.Fatalf("group declaration = %#v", group)
 	}
 }
 
@@ -271,6 +281,7 @@ func TestParseHostNativeResourcesRejectInvalidShapeAndDuplicates(t *testing.T) {
 		{name: "control label", content: "host \"node\" {\n  files {\n    file \"bad\\nname\" {}\n  }\n}\n", want: "contain no control characters"},
 		{name: "deferred domain", content: "host \"node\" {\n  users {\n    user \"app\" {}\n  }\n}\n", want: "unsupported block"},
 		{name: "directory unknown attribute", content: "host \"node\" {\n  directories {\n    directory \"/tmp/x\" { content = \"x\" }\n  }\n}\n", want: "unsupported attribute"},
+		{name: "group unknown attribute", content: "host \"node\" {\n  groups {\n    group \"app\" { members = [] }\n  }\n}\n", want: "unsupported attribute"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

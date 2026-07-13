@@ -53,7 +53,18 @@ type HostSpec struct {
 	Components  []ComponentInstanceSpec `json:"components,omitempty"`
 	Files       []ManagedFileSpec       `json:"files,omitempty"`
 	Directories []ManagedDirectorySpec  `json:"directories,omitempty"`
+	Groups      []ManagedGroupSpec      `json:"groups,omitempty"`
 	Source      SourceRef               `json:"source"`
+}
+
+type ManagedGroupSpec struct {
+	Name      string        `json:"name"`
+	GID       string        `json:"gid,omitempty"`
+	System    bool          `json:"system,omitempty"`
+	Ensure    string        `json:"ensure"`
+	OnRemove  string        `json:"on_remove"`
+	Lifecycle LifecycleSpec `json:"lifecycle"`
+	Source    SourceRef     `json:"source"`
 }
 
 type ManagedDirectorySpec struct {

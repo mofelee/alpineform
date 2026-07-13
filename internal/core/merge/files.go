@@ -15,31 +15,38 @@ import (
 
 var accountNamePattern = regexp.MustCompile(`^(?:[a-z_][a-z0-9_-]{0,31}|[0-9]{1,10})$`)
 
-func compileHostPathResources(host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) ([]ir.ManagedFileSpec, []ir.ManagedDirectorySpec, error) {
+func compileHostNativeResources(host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) ([]ir.ManagedFileSpec, []ir.ManagedDirectorySpec, []ir.ManagedGroupSpec, error) {
 	files := make([]ir.ManagedFileSpec, 0)
 	directories := make([]ir.ManagedDirectorySpec, 0)
+	groups := make([]ir.ManagedGroupSpec, 0)
 	for _, declaration := range host.Resources {
 		switch declaration.Kind {
 		case parser.ResourceFile:
 			file, err := compileFile(declaration, host, facts, ctx)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			files = append(files, file)
 		case parser.ResourceDirectory:
 			directory, err := compileDirectory(declaration, host, facts, ctx)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			directories = append(directories, directory)
+		case parser.ResourceGroup:
+			group, err := compileGroup(declaration, host, facts, ctx)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			groups = append(groups, group)
 		default:
-			return nil, nil, fmt.Errorf("%s:%d:%s: unsupported compiled host resource kind %q", declaration.Source.File, declaration.Source.Line, declaration.Source.Path, declaration.Kind)
+			return nil, nil, nil, fmt.Errorf("%s:%d:%s: unsupported compiled host resource kind %q", declaration.Source.File, declaration.Source.Line, declaration.Source.Path, declaration.Kind)
 		}
 	}
-	if err := validatePathResourceRelationships(files, directories); err != nil {
-		return nil, nil, err
+	if err := validateNativeResourceRelationships(files, directories, groups); err != nil {
+		return nil, nil, nil, err
 	}
-	return files, directories, nil
+	return files, directories, groups, nil
 }
 
 func compileDirectory(declaration parser.ResourceDeclaration, host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) (ir.ManagedDirectorySpec, error) {
@@ -100,7 +107,17 @@ func compileDirectory(declaration parser.ResourceDeclaration, host parser.Host, 
 	}, nil
 }
 
-func validatePathResourceRelationships(files []ir.ManagedFileSpec, directories []ir.ManagedDirectorySpec) error {
+func validateNativeResourceRelationships(files []ir.ManagedFileSpec, directories []ir.ManagedDirectorySpec, groups []ir.ManagedGroupSpec) error {
+	for index, group := range groups {
+		if group.GID == "" {
+			continue
+		}
+		for _, previous := range groups[:index] {
+			if previous.GID == group.GID {
+				return resourceError(group.Source, "group %q duplicates explicit gid %s declared by group %q at %s:%d", group.Name, group.GID, previous.Name, previous.Source.File, previous.Source.Line)
+			}
+		}
+	}
 	for _, file := range files {
 		for _, directory := range directories {
 			if file.Path == directory.Path {
@@ -109,6 +126,9 @@ func validatePathResourceRelationships(files []ir.ManagedFileSpec, directories [
 			if file.Ensure == "present" && directory.Ensure == "absent" && pathIsWithin(directory.Path, file.Path) {
 				return resourceError(file.Source, "present file %q is inside directory %q declared absent", file.Path, directory.Path)
 			}
+		}
+		if group, exists := managedGroupForReference(file.Group, groups); exists && file.Ensure == "present" && group.Ensure == "absent" {
+			return resourceError(file.Source, "present file %q uses group %q declared absent", file.Path, group.Name)
 		}
 	}
 	for _, child := range directories {
@@ -120,8 +140,20 @@ func validatePathResourceRelationships(files []ir.ManagedFileSpec, directories [
 				return resourceError(child.Source, "present directory %q is inside directory %q declared absent", child.Path, parent.Path)
 			}
 		}
+		if group, exists := managedGroupForReference(child.Group, groups); exists && group.Ensure == "absent" {
+			return resourceError(child.Source, "present directory %q uses group %q declared absent", child.Path, group.Name)
+		}
 	}
 	return nil
+}
+
+func managedGroupForReference(reference string, groups []ir.ManagedGroupSpec) (ir.ManagedGroupSpec, bool) {
+	for _, group := range groups {
+		if reference == group.Name || (group.GID != "" && reference == group.GID) {
+			return group, true
+		}
+	}
+	return ir.ManagedGroupSpec{}, false
 }
 
 func pathIsWithin(parent, child string) bool {

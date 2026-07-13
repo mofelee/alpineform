@@ -203,3 +203,69 @@ func TestCompileOrdersAbsentPathResourcesLeafFirst(t *testing.T) {
 		t.Fatalf("absent path schedule = %#v, want %#v", got, want)
 	}
 }
+
+func TestCompileOrdersManagedGroupBeforeOwnedPaths(t *testing.T) {
+	program := &ir.Program{Hosts: []ir.HostSpec{{
+		Name:   "node",
+		Source: source(1),
+		Groups: []ir.ManagedGroupSpec{{Name: "app", GID: "1500", Ensure: "present", Source: source(2)}},
+		Directories: []ir.ManagedDirectorySpec{{
+			Path: "/srv/app", Group: "app", Ensure: "present", Source: source(3),
+		}},
+		Files: []ir.ManagedFileSpec{{Path: "/srv/app/config", Group: "1500", Ensure: "present", Source: source(4)}},
+	}}}
+	compiled, err := Compile(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered, err := compiled.Schedule()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"host.node",
+		`host.node.groups.group["app"]`,
+		`host.node.directories.directory["/srv/app"]`,
+		`host.node.files.file["/srv/app/config"]`,
+	}
+	got := make([]string, 0, len(ordered))
+	for _, node := range ordered {
+		got = append(got, node.Address)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("owned path schedule = %#v, want %#v", got, want)
+	}
+}
+
+func TestCompileOrdersAbsentOwnedPathsBeforeGroup(t *testing.T) {
+	program := &ir.Program{Hosts: []ir.HostSpec{{
+		Name:   "node",
+		Source: source(1),
+		Groups: []ir.ManagedGroupSpec{{Name: "app", Ensure: "absent", Source: source(2)}},
+		Directories: []ir.ManagedDirectorySpec{{
+			Path: "/srv/app", Group: "app", Ensure: "absent", Source: source(3),
+		}},
+		Files: []ir.ManagedFileSpec{{Path: "/srv/app/config", Group: "app", Ensure: "absent", Source: source(4)}},
+	}}}
+	compiled, err := Compile(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered, err := compiled.Schedule()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"host.node",
+		`host.node.files.file["/srv/app/config"]`,
+		`host.node.directories.directory["/srv/app"]`,
+		`host.node.groups.group["app"]`,
+	}
+	got := make([]string, 0, len(ordered))
+	for _, node := range ordered {
+		got = append(got, node.Address)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("absent ownership schedule = %#v, want %#v", got, want)
+	}
+}

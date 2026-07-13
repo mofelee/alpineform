@@ -722,3 +722,85 @@ func TestCompileDirectoryResourceValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestCompileGroupResourceDefaultsAndPolicy(t *testing.T) {
+	config, err := compileConfig(t, `
+host "node" {
+  groups {
+    group "app" {}
+    group "worker" {
+      gid       = 1500
+      system    = true
+      on_remove = "destroy"
+      lifecycle { prevent_destroy = true }
+    }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := program.Hosts[0].Groups
+	if len(groups) != 2 {
+		t.Fatalf("groups = %#v", groups)
+	}
+	if group := groups[0]; group.Name != "app" || group.GID != "" || group.System || group.Ensure != "present" || group.OnRemove != "forget" || group.Lifecycle.PreventDestroy {
+		t.Fatalf("default group = %#v", group)
+	}
+	if group := groups[1]; group.Name != "worker" || group.GID != "1500" || !group.System || group.Ensure != "present" || group.OnRemove != "destroy" || !group.Lifecycle.PreventDestroy {
+		t.Fatalf("configured group = %#v", group)
+	}
+}
+
+func TestCompileGroupResourceValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "invalid name", body: "groups {\n    group \"Bad.Name\" {}\n  }", wantErr: "valid Alpine account name"},
+		{name: "numeric name", body: "groups {\n    group \"1500\" {}\n  }", wantErr: "valid Alpine account name"},
+		{name: "string gid", body: "groups {\n    group \"app\" { gid = \"1500\" }\n  }", wantErr: "non-protected integer"},
+		{name: "negative gid", body: "groups {\n    group \"app\" { gid = -1 }\n  }", wantErr: "between 0 and 2147483647"},
+		{name: "large gid", body: "groups {\n    group \"app\" { gid = 2147483648 }\n  }", wantErr: "between 0 and 2147483647"},
+		{name: "duplicate gid", body: `groups {
+    group "app" { gid = 1500 }
+    group "worker" { gid = 1500 }
+  }`, wantErr: "duplicates explicit gid 1500"},
+		{name: "bad ensure", body: "groups {\n    group \"app\" { ensure = \"missing\" }\n  }", wantErr: "present"},
+		{name: "present file uses absent group", body: `groups {
+    group "app" { ensure = "absent" }
+  }
+  files {
+    file "/srv/app/config" {
+      content = "x"
+      group   = "app"
+    }
+  }`, wantErr: "group \"app\" declared absent"},
+		{name: "present directory uses absent numeric group", body: `groups {
+    group "app" {
+      gid    = 1500
+      ensure = "absent"
+    }
+  }
+  directories {
+    directory "/srv/app" { group = "1500" }
+  }`, wantErr: "group \"app\" declared absent"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := compileConfig(t, "host \"node\" {\n  "+test.body+"\n}\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Compile(config)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Compile() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}

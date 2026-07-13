@@ -21,10 +21,10 @@ parser -> merge -> IR -> graph -> plan -> engine -> provider -> backend
 The current core implements source discovery, typed variables, locals, input
 precedence, product constants, version metadata, deterministic offline plans,
 Alpine facts, root SSH, remote state, runtime leases, online plan/apply/check,
-and provider-backed host files and directories. `apf variable inspect` emits
-stable JSON and redacts sensitive and ephemeral defaults. `apf fmt` validates
-every selected file before writing any formatted content and is idempotent. No
-Debian resource schema is exposed.
+and provider-backed host files, directories, and groups. `apf variable inspect`
+emits stable JSON and redacts sensitive and ephemeral defaults. `apf fmt`
+validates every selected file before writing any formatted content and is
+idempotent. No Debian resource schema is exposed.
 
 ## Implemented language subset
 
@@ -34,7 +34,7 @@ Debian resource schema is exposed.
 - metadata-only `script` declarations; execution is intentionally unavailable
 - `host` imports and optional offline `platform.architecture` / `version`
 - `lifecycle.prevent_destroy` metadata on component instances
-- host-level `files.file` and `directories.directory` resources
+- host-level `files.file`, `directories.directory`, and `groups.group` resources
 
 Platform architecture is normalized to `amd64` or `arm64`. Alpine branch,
 `libc=musl`, and native APK architecture are derived read-only facts. Offline
@@ -81,6 +81,7 @@ Runtime lock behavior is described in [locking.md](locking.md).
 Root SSH transport behavior is described in [ssh.md](ssh.md).
 Managed file behavior is described in [files.md](files.md).
 Managed directory behavior is described in [directories.md](directories.md).
+Managed group behavior is described in [groups.md](groups.md).
 
 ## Product names
 

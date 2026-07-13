@@ -443,6 +443,8 @@ type fakeOnlineTransport struct {
 	directoryOwner    string
 	directoryGroup    string
 	directoryMode     string
+	groupExists       bool
+	groupGID          string
 }
 
 func newFakeOnlineTransport(osID string) *fakeOnlineTransport {
@@ -514,6 +516,23 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 		}
 		transport.directoryExists = false
 		transport.directoryNonEmpty = false
+		return nil, nil
+	case "inspect.group":
+		if !transport.groupExists {
+			return []byte("missing\n"), nil
+		}
+		return []byte("group\n" + transport.groupGID + "\n"), nil
+	case "apply.group":
+		transport.groupExists = true
+		if command.Arguments[1] != "" {
+			transport.groupGID = command.Arguments[1]
+		} else if transport.groupGID == "" {
+			transport.groupGID = "1000"
+		}
+		return nil, nil
+	case "delete.group":
+		transport.groupExists = false
+		transport.groupGID = ""
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected backend command %q", command.Name)
@@ -960,5 +979,60 @@ host "node" {
 	}
 	if err := runCheckWithRuntime(nil, &bytes.Buffer{}, dir, nil, runtime); err != nil {
 		t.Fatalf("adopted directory second check = %v", err)
+	}
+}
+
+func TestNativeGroupWorkflowConvergesRepairsAndDeletes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.apf.hcl")
+	writeGroupConfig := func(gid int, ensure string) {
+		t.Helper()
+		content := fmt.Sprintf(`
+host "node" {
+  groups {
+    group "app" {
+      gid       = %d
+      system    = true
+      ensure    = %q
+      on_remove = "destroy"
+    }
+  }
+}
+`, gid, ensure)
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport := newFakeOnlineTransport("alpine")
+	runtime := fakeNativeRuntime(transport, "")
+	writeGroupConfig(1500, "present")
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	address := `host.node.groups.group["app"]`
+	resource, exists := transport.state.Resources[address]
+	if !transport.groupExists || transport.groupGID != "1500" || !exists || resource.Kind != "group" || resource.Delete["name"] != "app" || resource.DeleteBehavior != "destroy" {
+		t.Fatalf("group/state after create = exists=%v gid=%q resource=%#v", transport.groupExists, transport.groupGID, resource)
+	}
+	if err := runCheckWithRuntime(nil, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("group second check = %v", err)
+	}
+	transport.groupGID = "1600"
+	var driftOutput bytes.Buffer
+	if err := runCheckWithRuntime(nil, &driftOutput, dir, nil, runtime); err == nil || !strings.Contains(err.Error(), "drift") || !strings.Contains(driftOutput.String(), "update "+address) {
+		t.Fatalf("group drift check error = %v, output = %s", err, driftOutput.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("group repair apply = %v", err)
+	}
+	if transport.groupGID != "1500" {
+		t.Fatalf("repaired group gid = %q", transport.groupGID)
+	}
+	writeGroupConfig(1500, "absent")
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("group delete apply = %v", err)
+	}
+	if transport.groupExists || len(transport.state.Resources) != 0 {
+		t.Fatalf("group delete result: exists=%v state=%#v", transport.groupExists, transport.state)
 	}
 }
