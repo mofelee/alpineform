@@ -9,10 +9,9 @@ apf validate -> apf plan -> apf apply -> apf check
 ```
 
 AlpineForm is pre-release software and is not an official Alpine Linux project.
-No complete preview is currently published: `v0.1.0-alpha.1` and
-`v0.1.0-alpha.2` are retained as incomplete prereleases and must not be used.
-The intended guarantees are documented in
-[the compatibility policy](docs/compatibility-policy.md).
+The first complete preview is `v0.1.0-alpha.3`. Alpha.1 and alpha.2 are retained
+as incomplete prereleases and must not be used. Compatibility guarantees are
+documented in [the compatibility policy](docs/compatibility-policy.md).
 
 ## Supported Core
 
@@ -30,23 +29,21 @@ not part of the v0.1 core. See the complete [support matrix](docs/support-matrix
 
 ## Install
 
-Complete release archives will be built with `CGO_ENABLED=0` for Linux and
-macOS on amd64 and arm64. The installer downloads a selected archive and
-`checksums.txt`, verifies SHA-256, and atomically installs `apf`. Use it only
-for a tag listed as supported in [SECURITY.md](SECURITY.md):
+Release archives are built with `CGO_ENABLED=0` for Linux and macOS on amd64
+and arm64. The installer downloads the selected archive and `checksums.txt`,
+verifies SHA-256, and atomically installs `apf`:
 
 ```sh
-: "${APF_VERSION:?set APF_VERSION to a tag listed as supported in SECURITY.md}"
-sh scripts/install.sh --version "$APF_VERSION"
+curl -fsSL https://raw.githubusercontent.com/mofelee/alpineform/main/scripts/install.sh |
+  sh -s -- --version v0.1.0-alpha.3
 apf version
 ```
 
 Install into a private prefix:
 
 ```sh
-: "${APF_VERSION:?set APF_VERSION to a tag listed as supported in SECURITY.md}"
 sh scripts/install.sh \
-  --version "$APF_VERSION" \
+  --version v0.1.0-alpha.3 \
   --prefix "$HOME/.local"
 ```
 

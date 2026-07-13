@@ -1,8 +1,7 @@
 # Compatibility Policy
 
-AlpineForm v0.1 is in prerelease development. No complete preview is currently
-published. This policy defines the intended contract without presenting alpha
-behavior as stable.
+AlpineForm `v0.1.0-alpha.3` is a prerelease. This policy defines what users can
+rely on without presenting alpha behavior as stable.
 
 ## Versioning
 
@@ -33,7 +32,7 @@ old state. Silent reassignment is forbidden.
 
 State has an AlpineForm product marker, host identity, schema version, serial,
 facts, and managed resources. The decoder rejects foreign products, unknown
-newer schemas, and wrong-host state. The v0.1 preview has no state migration
+newer schemas, and wrong-host state. `v0.1.0-alpha.3` has no state migration
 command; back up state before upgrading and use the prior binary for rollback.
 Never hand-edit state while an apply may be running.
 

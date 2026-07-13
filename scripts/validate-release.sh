@@ -9,7 +9,8 @@ for file in README.md LICENSE NOTICE.md CHANGELOG.md .goreleaser.yaml \
   scripts/test-attestation-eligibility.sh \
   docs/support-matrix.md docs/compatibility-policy.md \
   docs/security-model.md docs/operations-runbook.md docs/release-process.md \
-  docs/releases/v0.1.0-alpha.1.md docs/releases/v0.1.0-alpha.2.md; do
+  docs/releases/v0.1.0-alpha.1.md docs/releases/v0.1.0-alpha.2.md \
+  docs/releases/v0.1.0-alpha.3.md; do
   test -s "$ROOT_DIR/$file"
 done
 

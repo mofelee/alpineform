@@ -4,6 +4,10 @@ All notable user-visible changes to AlpineForm are recorded here.
 
 ## [Unreleased]
 
+None.
+
+## [v0.1.0-alpha.3] - 2026-07-13
+
 ### Changed
 
 - Mark `v0.1.0-alpha.2` incomplete because GitHub provenance persistence is not
@@ -11,6 +15,13 @@ All notable user-visible changes to AlpineForm are recorded here.
   verification was skipped.
 - Gate release dry-runs and tag publication on GitHub artifact-attestation
   eligibility before creating or uploading any release assets.
+- Publish the corrective candidate from a public repository, where GitHub
+  artifact attestations are available on the current plan.
+
+### Fixed
+
+- Preserve alpha.1 and alpha.2 as auditable incomplete releases while advancing
+  the complete preview to a new immutable prerelease tag.
 
 ## [v0.1.0-alpha.2] - 2026-07-13
 
@@ -60,6 +71,7 @@ All notable user-visible changes to AlpineForm are recorded here.
   checksum signing, SBOM generation, provenance, and post-release verification.
   This prerelease is incomplete and must not be used.
 
-[Unreleased]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.2...HEAD
+[Unreleased]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.3...HEAD
+[v0.1.0-alpha.3]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.2...v0.1.0-alpha.3
 [v0.1.0-alpha.2]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [v0.1.0-alpha.1]: https://github.com/mofelee/alpineform/releases/tag/v0.1.0-alpha.1
