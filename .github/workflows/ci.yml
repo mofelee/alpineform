@@ -19,6 +19,8 @@ jobs:
     name: Core checks
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      integration_cases: ${{ steps.integration_cases.outputs.cases }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -37,5 +39,96 @@ jobs:
         run: make test-unit
       - name: Build CLI
         run: make build
+      - name: Build Linux arm64 Preview CLI
+        run: GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/apf-linux-arm64 ./cmd/apf
+      - name: Validate integration case layout
+        run: make test-integration-layout
+      - name: Discover integration cases
+        id: integration_cases
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          cases = sorted(path.name for path in Path("test/integration/libvirt/cases").iterdir() if path.is_dir())
+          if len(cases) != 8:
+              raise SystemExit(f"expected 8 libvirt integration cases, discovered {len(cases)}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print("cases=" + json.dumps(cases), file=output)
+          print("Discovered Alpine libvirt cases: " + ", ".join(cases))
+          PY
       - name: Check worktree whitespace
         run: git diff --check
+
+  integration:
+    name: Alpine 3.24 x86_64 libvirt (${{ matrix.case }})
+    needs: core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        case: ${{ fromJSON(needs.core.outputs.integration_cases) }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Cache Alpine cloud image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/alpine-image-cache
+          key: alpine-3.24.1-x86_64-cloudinit-ed976ef40de1
+      - name: Install libvirt and cloud image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cloud-image-utils \
+            curl \
+            dnsmasq-base \
+            libvirt-clients \
+            libvirt-daemon-system \
+            openssh-client \
+            ovmf \
+            qemu-system-x86 \
+            qemu-utils
+          sudo systemctl start libvirtd
+          if [[ -e /dev/kvm ]]; then
+            sudo chmod 0666 /dev/kvm
+          fi
+      - name: Run Alpine VM integration case
+        env:
+          APF_INTEGRATION_CASE: ${{ matrix.case }}
+          APF_INTEGRATION_IMAGE_CACHE: ${{ runner.temp }}/alpine-image-cache
+          APF_INTEGRATION_ARTIFACT_DIR: ${{ runner.temp }}/alpineform-integration-artifacts
+        run: test/integration/libvirt/run.sh
+      - name: Upload redacted libvirt diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: alpineform-libvirt-${{ matrix.case }}-diagnostics
+          path: ${{ runner.temp }}/alpineform-integration-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
+  managed-target-gate:
+    name: Alpine 3.24 core gate
+    if: always()
+    needs:
+      - core
+      - integration
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require core and managed-target matrices
+        env:
+          CORE_RESULT: ${{ needs.core.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+        run: |
+          test "$CORE_RESULT" = success
+          test "$INTEGRATION_RESULT" = success

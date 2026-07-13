@@ -59,6 +59,13 @@ func TestApplyRejectsPositionalArguments(t *testing.T) {
 	}
 }
 
+func TestDefaultSSHOptionsUseConfiguredOpenSSHFile(t *testing.T) {
+	t.Setenv("APF_SSH_CONFIG", "/tmp/alpineform-integration-ssh-config")
+	if got := defaultSSHOptions().ConfigPath; got != "/tmp/alpineform-integration-ssh-config" {
+		t.Fatalf("SSH config path = %q", got)
+	}
+}
+
 func TestOnlineCommandsRejectInvalidParallelism(t *testing.T) {
 	dir := t.TempDir()
 	for _, test := range []struct {

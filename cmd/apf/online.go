@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -66,13 +67,18 @@ func emitDebug(sink debugEventSink, event debugEvent) {
 }
 
 func defaultOnlineRuntime() onlineRuntime {
+	sshOptions := defaultSSHOptions()
 	return onlineRuntime{
 		Context: context.Background(),
 		Stdin:   strings.NewReader(""),
 		NewRunner: func(host ir.HostSpec) (onlineRunner, error) {
-			return corebackend.NewSSHRunner(host, corebackend.SSHOptions{})
+			return corebackend.NewSSHRunner(host, sshOptions)
 		},
 	}
+}
+
+func defaultSSHOptions() corebackend.SSHOptions {
+	return corebackend.SSHOptions{ConfigPath: os.Getenv("APF_SSH_CONFIG")}
 }
 
 func (runtime onlineRuntime) normalized() (onlineRuntime, error) {

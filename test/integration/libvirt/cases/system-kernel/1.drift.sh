@@ -1,0 +1,2 @@
+run_remote "drift system and kernel persistence" \
+  "hostname drifted.alpineform.test && printf 'drifted.alpineform.test\n' > /etc/hostname && cp /usr/share/zoneinfo/UTC /etc/localtime && printf 'UTC\n' > /etc/timezone && sysctl -w net.ipv4.ip_forward=0 >/dev/null && rm -f /etc/modules-load.d/alpineform-loop.conf && for path in /etc/sysctl.d/99-alpineform-net_ipv4_ip_forward-*.conf; do printf 'net.ipv4.ip_forward = 0\n' > \"\$path\"; done"

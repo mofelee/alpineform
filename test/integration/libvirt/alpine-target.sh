@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+APF_INTEGRATION_ALPINE_VERSION="3.24.1"
+APF_INTEGRATION_ALPINE_BRANCH="v3.24"
+APF_INTEGRATION_ALPINE_ARCHITECTURE="x86_64"
+APF_INTEGRATION_PLATFORM_ARCHITECTURE="amd64"
+APF_INTEGRATION_CLOUD_URL="https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud"
+APF_INTEGRATION_CLOUD_IMAGE="generic_alpine-3.24.1-x86_64-uefi-cloudinit-r0.qcow2"
+APF_INTEGRATION_CLOUD_IMAGE_SHA512="ed976ef40de1f73adcb0a3b253ec9e73e43c408208fcc3c30dcdf7a69b91a387a4777f88c6b72345123edf3832d7cb49403ecce28ec84d496d4b3bad6fbd0923"
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  printf 'version=%s\n' "$APF_INTEGRATION_ALPINE_VERSION"
+  printf 'branch=%s\n' "$APF_INTEGRATION_ALPINE_BRANCH"
+  printf 'architecture=%s\n' "$APF_INTEGRATION_ALPINE_ARCHITECTURE"
+  printf 'platform_architecture=%s\n' "$APF_INTEGRATION_PLATFORM_ARCHITECTURE"
+  printf 'cloud_url=%s\n' "$APF_INTEGRATION_CLOUD_URL"
+  printf 'cloud_image=%s\n' "$APF_INTEGRATION_CLOUD_IMAGE"
+  printf 'sha512=%s\n' "$APF_INTEGRATION_CLOUD_IMAGE_SHA512"
+fi
