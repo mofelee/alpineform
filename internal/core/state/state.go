@@ -2,6 +2,8 @@
 package state
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -25,16 +27,27 @@ type State struct {
 }
 
 type Resource struct {
-	Host          string         `json:"host"`
-	Kind          string         `json:"kind"`
-	Ownership     string         `json:"ownership"`
-	Desired       map[string]any `json:"desired,omitempty"`
-	DesiredDigest string         `json:"desired_digest,omitempty"`
-	Observed      map[string]any `json:"observed,omitempty"`
-	Order         int            `json:"order"`
-	Protected     bool           `json:"protected,omitempty"`
-	Sensitive     bool           `json:"-"`
-	Ephemeral     bool           `json:"-"`
+	Host           string         `json:"host"`
+	Kind           string         `json:"kind"`
+	Ownership      string         `json:"ownership"`
+	Desired        map[string]any `json:"desired,omitempty"`
+	DesiredDigest  string         `json:"desired_digest,omitempty"`
+	Observed       map[string]any `json:"observed,omitempty"`
+	Order          int            `json:"order"`
+	Protected      bool           `json:"protected,omitempty"`
+	Sensitive      bool           `json:"-"`
+	Ephemeral      bool           `json:"-"`
+	PreventDestroy bool           `json:"prevent_destroy,omitempty"`
+	DeleteBehavior string         `json:"delete_behavior,omitempty"`
+}
+
+func Digest(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		data = []byte(fmt.Sprintf("%#v", value))
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func (resource Resource) MarshalJSON() ([]byte, error) {
