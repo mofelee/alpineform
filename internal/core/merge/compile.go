@@ -58,6 +58,9 @@ func CompileWithOptions(config *parser.Config, options CompileOptions) (*ir.Prog
 	if err := validateComponentDefaults(config.Components); err != nil {
 		return nil, err
 	}
+	if err := validateComponentArtifacts(config.Components); err != nil {
+		return nil, err
+	}
 	baseContext, err := configEvalContext(config)
 	if err != nil {
 		return nil, err
@@ -164,7 +167,15 @@ func compileComponentTemplates(components map[string]parser.Component) map[strin
 				Source:      input.Source,
 			}
 		}
-		out[name] = ir.ComponentTemplateSpec{Name: name, Description: component.Description, Inputs: inputs, Source: component.Source}
+		sources := make(map[string]ir.ComponentArtifactSourceSpec, len(component.Sources))
+		for architecture, source := range component.Sources {
+			sources[architecture] = componentArtifactSourceSpec(source)
+		}
+		out[name] = ir.ComponentTemplateSpec{
+			Name: name, Description: component.Description, ArtifactType: component.ArtifactType, Version: component.Version,
+			Inputs: inputs, Sources: sources, Extract: componentArtifactExtractSpec(component.Extract),
+			Install: componentArtifactInstallSpec(component.ArtifactType, component.Install), Source: component.Source,
+		}
 	}
 	return out
 }
@@ -400,9 +411,18 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 	sort.Strings(protected)
 	dependencies := append([]string(nil), instance.DependsOn...)
 	sort.Strings(dependencies)
+	selectedSource, err := selectComponentArtifactSource(template, host, facts, instance)
+	if err != nil {
+		return ir.ComponentInstanceSpec{}, err
+	}
 	return ir.ComponentInstanceSpec{
 		Name:            instance.Name,
 		Template:        instance.Template,
+		ArtifactType:    template.ArtifactType,
+		Version:         template.Version,
+		SelectedSource:  selectedSource,
+		Extract:         componentArtifactExtractSpec(template.Extract),
+		Install:         componentArtifactInstallSpec(template.ArtifactType, template.Install),
 		InputNames:      inputNames,
 		ProtectedInputs: protected,
 		DependsOn:       dependencies,

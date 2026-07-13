@@ -53,6 +53,10 @@ func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.Obs
 		return inspectSysctl(ctx, runner, node)
 	case "sysctl_runtime":
 		return inspectSysctlRuntime(node)
+	case "component_artifact_source":
+		return inspectComponentSource(ctx, runner, node)
+	case "component_binary", "component_file":
+		return inspectComponentInstall(ctx, runner, node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", node.Kind)
 	}
@@ -96,6 +100,10 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 		return applySysctl(ctx, runner, step.Node)
 	case "sysctl_runtime":
 		return applySysctlRuntime(ctx, runner, step.Node)
+	case "component_artifact_source":
+		return applyComponentSource(ctx, runner, step.Node)
+	case "component_binary", "component_file":
+		return applyComponentInstall(ctx, runner, step.Node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", step.Node.Kind)
 	}
@@ -139,6 +147,10 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 		return fmt.Errorf("resource kind %q can only be forgotten when removed", kind)
 	case "sysctl":
 		return deleteSysctl(ctx, runner, step)
+	case "component_artifact_source":
+		return deleteComponentSource(ctx, runner, step)
+	case "component_binary", "component_file":
+		return deleteComponentInstall(ctx, runner, step)
 	default:
 		return fmt.Errorf("no Alpine provider is registered for resource kind %q", kind)
 	}

@@ -280,6 +280,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 					"protected_inputs": append([]string(nil), component.ProtectedInputs...),
 				},
 			})
+			appendComponentArtifactNodes(graph, host, component, address)
 		}
 	}
 	sort.SliceStable(graph.Nodes, func(i, j int) bool { return graph.Nodes[i].Address < graph.Nodes[j].Address })
@@ -287,6 +288,44 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 		return nil, err
 	}
 	return graph, nil
+}
+
+func appendComponentArtifactNodes(resourceGraph *ResourceGraph, host ir.HostSpec, component ir.ComponentInstanceSpec, componentAddress string) {
+	if component.SelectedSource == nil || component.Install == nil {
+		return
+	}
+	source := *component.SelectedSource
+	install := *component.Install
+	sourceLabel := source.Architecture
+	if sourceLabel == "" {
+		sourceLabel = "any"
+	}
+	cachePath := "/var/cache/alpineform/components/" + component.Name + "/" + source.SHA256 + "/artifact"
+	sourceAddress := componentAddress + ".artifact.source[" + strconv.Quote(sourceLabel) + "]"
+	resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
+		Host: host.Name, Address: sourceAddress, Kind: "component_artifact_source", Managed: true,
+		Summary: "download and verify component " + component.Name + " artifact for " + sourceLabel,
+		Source:  source.Source, Lifecycle: &component.Lifecycle,
+		Desired: map[string]any{
+			"path": cachePath, "url": source.URL, "sha256": source.SHA256, "ensure": "present",
+			"delete_behavior": "delete", "delete": map[string]any{"path": cachePath},
+			"prevent_destroy": component.Lifecycle.PreventDestroy,
+		},
+		DependsOn: []string{componentAddress}, DigestSafe: true,
+	})
+	installAddress := componentAddress + ".artifact.install[" + strconv.Quote(install.Path) + "]"
+	resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
+		Host: host.Name, Address: installAddress, Kind: "component_" + component.ArtifactType, Managed: true,
+		Summary: "install component " + component.Name + " " + component.ArtifactType + " at " + install.Path,
+		Source:  install.Source, Lifecycle: &component.Lifecycle,
+		Desired: map[string]any{
+			"path": install.Path, "owner": install.Owner, "group": install.Group, "mode": install.Mode,
+			"content_sha256": source.SHA256, "cache_path": cachePath, "artifact_type": component.ArtifactType,
+			"version": component.Version, "ensure": "present", "delete_behavior": "destroy",
+			"delete": map[string]any{"path": install.Path}, "prevent_destroy": component.Lifecycle.PreventDestroy,
+		},
+		DependsOn: []string{sourceAddress}, DigestSafe: true,
+	})
 }
 
 func appendKernelNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddress string) {

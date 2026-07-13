@@ -25,11 +25,38 @@ type Profile struct {
 }
 
 type Component struct {
-	Name        string
-	Description string
-	Inputs      map[string]ComponentInput
-	Asserts     []Assert
-	Source      ir.SourceRef
+	Name         string
+	Description  string
+	ArtifactType string
+	Version      string
+	Inputs       map[string]ComponentInput
+	Sources      map[string]ComponentArtifactSource
+	Extract      *ComponentArtifactExtract
+	Install      *ComponentArtifactInstall
+	Asserts      []Assert
+	Source       ir.SourceRef
+}
+
+type ComponentArtifactSource struct {
+	Architecture string
+	URL          string
+	SHA256       string
+	Source       ir.SourceRef
+}
+
+type ComponentArtifactExtract struct {
+	Format          string
+	StripComponents int
+	Include         string
+	Source          ir.SourceRef
+}
+
+type ComponentArtifactInstall struct {
+	Path   string
+	Owner  string
+	Group  string
+	Mode   string
+	Source ir.SourceRef
 }
 
 type ComponentInput struct {
@@ -233,12 +260,24 @@ func parseComponent(file string, block *hclsyntax.Block, ctx EvalContext) (Compo
 	if err != nil {
 		return Component{}, err
 	}
-	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "description"); err != nil {
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "description", "type", "version"); err != nil {
 		return Component{}, err
 	}
-	component := Component{Name: name, Inputs: map[string]ComponentInput{}, Source: source}
+	component := Component{Name: name, Inputs: map[string]ComponentInput{}, Sources: map[string]ComponentArtifactSource{}, Source: source}
 	if attr, exists := block.Body.Attributes["description"]; exists {
 		component.Description, err = evalStringAttribute(file, path, "description", attr, ctx, false)
+		if err != nil {
+			return Component{}, err
+		}
+	}
+	if attr, exists := block.Body.Attributes["type"]; exists {
+		component.ArtifactType, err = evalStringAttribute(file, path, "type", attr, ctx, true)
+		if err != nil {
+			return Component{}, err
+		}
+	}
+	if attr, exists := block.Body.Attributes["version"]; exists {
+		component.Version, err = evalStringAttribute(file, path, "version", attr, ctx, true)
 		if err != nil {
 			return Component{}, err
 		}
@@ -254,6 +293,35 @@ func parseComponent(file string, block *hclsyntax.Block, ctx EvalContext) (Compo
 				return Component{}, duplicateDeclarationError("component input", input.Name, input.Source, previous.Source)
 			}
 			component.Inputs[input.Name] = input
+		case "source":
+			artifactSource, err := parseComponentArtifactSource(file, path, child, ctx)
+			if err != nil {
+				return Component{}, err
+			}
+			if previous, exists := component.Sources[artifactSource.Architecture]; exists {
+				return Component{}, duplicateDeclarationError("component source", artifactSource.Architecture, artifactSource.Source, previous.Source)
+			}
+			component.Sources[artifactSource.Architecture] = artifactSource
+		case "extract":
+			if component.Extract != nil {
+				return Component{}, fmt.Errorf("%s:%d: duplicate %s.extract block", file, child.TypeRange.Start.Line, path)
+			}
+			extract, err := parseComponentArtifactExtract(file, path, child, ctx)
+			if err != nil {
+				return Component{}, err
+			}
+			component.Extract = &extract
+		case "install":
+			if component.Install != nil {
+				return Component{}, fmt.Errorf("%s:%d: duplicate %s.install block", file, child.TypeRange.Start.Line, path)
+			}
+			install, err := parseComponentArtifactInstall(file, path, child, ctx)
+			if err != nil {
+				return Component{}, err
+			}
+			component.Install = &install
+		case "build":
+			return Component{}, fmt.Errorf("%s:%d:%s.build: target-side build blocks are unsupported in v0.1; see follow-up #14", file, child.TypeRange.Start.Line, path)
 		case "assert":
 			assertion, err := parseAssert(file, path+".assert", child, ctx)
 			if err != nil {

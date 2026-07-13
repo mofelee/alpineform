@@ -20,10 +20,37 @@ type VariableSpec struct {
 }
 
 type ComponentTemplateSpec struct {
-	Name        string                        `json:"name"`
-	Description string                        `json:"description,omitempty"`
-	Inputs      map[string]ComponentInputSpec `json:"inputs,omitempty"`
-	Source      SourceRef                     `json:"source"`
+	Name         string                                 `json:"name"`
+	Description  string                                 `json:"description,omitempty"`
+	ArtifactType string                                 `json:"artifact_type,omitempty"`
+	Version      string                                 `json:"version,omitempty"`
+	Inputs       map[string]ComponentInputSpec          `json:"inputs,omitempty"`
+	Sources      map[string]ComponentArtifactSourceSpec `json:"sources,omitempty"`
+	Extract      *ComponentArtifactExtractSpec          `json:"extract,omitempty"`
+	Install      *ComponentArtifactInstallSpec          `json:"install,omitempty"`
+	Source       SourceRef                              `json:"source"`
+}
+
+type ComponentArtifactSourceSpec struct {
+	Architecture string    `json:"architecture,omitempty"`
+	URL          string    `json:"url"`
+	SHA256       string    `json:"sha256"`
+	Source       SourceRef `json:"source"`
+}
+
+type ComponentArtifactExtractSpec struct {
+	Format          string    `json:"format,omitempty"`
+	StripComponents int       `json:"strip_components,omitempty"`
+	Include         string    `json:"include,omitempty"`
+	Source          SourceRef `json:"source"`
+}
+
+type ComponentArtifactInstallSpec struct {
+	Path   string    `json:"path"`
+	Owner  string    `json:"owner"`
+	Group  string    `json:"group"`
+	Mode   string    `json:"mode"`
+	Source SourceRef `json:"source"`
 }
 
 type ComponentInputSpec struct {
@@ -266,13 +293,18 @@ type PlatformSpec struct {
 }
 
 type ComponentInstanceSpec struct {
-	Name            string        `json:"name"`
-	Template        string        `json:"template"`
-	InputNames      []string      `json:"input_names,omitempty"`
-	ProtectedInputs []string      `json:"protected_inputs,omitempty"`
-	DependsOn       []string      `json:"depends_on,omitempty"`
-	Lifecycle       LifecycleSpec `json:"lifecycle"`
-	Source          SourceRef     `json:"source"`
+	Name            string                        `json:"name"`
+	Template        string                        `json:"template"`
+	ArtifactType    string                        `json:"artifact_type,omitempty"`
+	Version         string                        `json:"version,omitempty"`
+	SelectedSource  *ComponentArtifactSourceSpec  `json:"selected_source,omitempty"`
+	Extract         *ComponentArtifactExtractSpec `json:"extract,omitempty"`
+	Install         *ComponentArtifactInstallSpec `json:"install,omitempty"`
+	InputNames      []string                      `json:"input_names,omitempty"`
+	ProtectedInputs []string                      `json:"protected_inputs,omitempty"`
+	DependsOn       []string                      `json:"depends_on,omitempty"`
+	Lifecycle       LifecycleSpec                 `json:"lifecycle"`
+	Source          SourceRef                     `json:"source"`
 }
 
 type LifecycleSpec struct {
