@@ -99,6 +99,8 @@ runlevel-only repair performs no restart/reload. Operations require
 `/etc/conf.d/<name>` trigger. OpenRC always supports restart. Reload is allowed
 only for raw init scripts; generated scripts reject it during validation, and a
 raw script without a reload command fails apply with an explicit error.
+The provider checks the init script's advertised command list before invoking
+reload, because OpenRC can otherwise return success for an undefined fallback.
 
 The optional `package`, `user`, and `group` fields must name resources declared
 present on the same host and make the service depend on them. A generated

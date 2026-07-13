@@ -62,7 +62,7 @@ func TestServiceProviderRunsOneRequestedOperationForChangedFiles(t *testing.T) {
 	if _, err := applyService(context.Background(), runner, step); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.commands) != 2 || strings.Join(runner.commands[0].Arguments, ",") != "worker,default,true,running,restarted,boot" || !strings.Contains(runner.commands[0].Script, "does not support or failed operation") || !strings.Contains(runner.commands[0].Script, "previous_runlevel") {
+	if len(runner.commands) != 2 || strings.Join(runner.commands[0].Arguments, ",") != "worker,default,true,running,restarted,boot" || !strings.Contains(runner.commands[0].Script, "does not support or failed operation") || !strings.Contains(runner.commands[0].Script, "grep -Eq") || !strings.Contains(runner.commands[0].Script, "previous_runlevel") {
 		t.Fatalf("triggered service commands = %#v", runner.commands)
 	}
 }

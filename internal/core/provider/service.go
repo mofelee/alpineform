@@ -78,6 +78,12 @@ case "$state" in
       '') ;;
       *) echo 'unsupported OpenRC service operation' >&2; exit 1 ;;
     esac
+    if [ "$command" = reload ]; then
+      if ! "$init" 2>&1 | sed -n '1p' | grep -Eq '(^|[ |])reload([ |]|$)'; then
+        echo "OpenRC service $name does not support operation reload" >&2
+        exit 1
+      fi
+    fi
     if ! rc-service "$name" "$command" >/dev/null; then
       echo "OpenRC service $name does not support or failed operation $command" >&2
       exit 1
