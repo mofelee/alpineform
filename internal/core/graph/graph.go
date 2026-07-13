@@ -97,7 +97,36 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 					"delete":          map[string]any{"name": group.Name},
 					"prevent_destroy": group.Lifecycle.PreventDestroy,
 				},
-				DependsOn:  groupDependencies(host.Name, hostAddress, group, host.Directories, host.Files),
+				DependsOn:  groupDependencies(host.Name, hostAddress, group, host.Directories, host.Files, host.Users),
+				DigestSafe: true,
+			})
+		}
+		for _, user := range host.Users {
+			deleteBehavior := user.OnRemove
+			if deleteBehavior == "forget" {
+				deleteBehavior = ""
+			}
+			graph.Nodes = append(graph.Nodes, Node{
+				Host:      host.Name,
+				Address:   userResourceAddress(host.Name, user.Name),
+				Kind:      "user",
+				Managed:   true,
+				Summary:   userSummary(user),
+				Source:    user.Source,
+				Lifecycle: &user.Lifecycle,
+				Desired: map[string]any{
+					"name":            user.Name,
+					"uid":             user.UID,
+					"group":           user.PrimaryGroup,
+					"home":            user.Home,
+					"shell":           user.Shell,
+					"system":          user.System,
+					"ensure":          user.Ensure,
+					"delete_behavior": deleteBehavior,
+					"delete":          map[string]any{"name": user.Name},
+					"prevent_destroy": user.Lifecycle.PreventDestroy,
+				},
+				DependsOn:  userDependencies(host.Name, hostAddress, user, host.Groups, host.Directories, host.Files),
 				DigestSafe: true,
 			})
 		}
@@ -128,7 +157,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 					},
 					"prevent_destroy": directory.Lifecycle.PreventDestroy,
 				},
-				DependsOn:  directoryDependencies(host.Name, hostAddress, directory, host.Directories, host.Files, host.Groups),
+				DependsOn:  directoryDependencies(host.Name, hostAddress, directory, host.Directories, host.Files, host.Groups, host.Users),
 				DigestSafe: true,
 			})
 		}
@@ -168,7 +197,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 				Payload: map[string]any{
 					"content": file.Content,
 				},
-				DependsOn:  fileDependencies(host.Name, hostAddress, file, host.Directories, host.Groups),
+				DependsOn:  fileDependencies(host.Name, hostAddress, file, host.Directories, host.Groups, host.Users),
 				Sensitive:  file.Sensitive,
 				Ephemeral:  file.Ephemeral,
 				DigestSafe: true,
@@ -226,7 +255,14 @@ func groupSummary(group ir.ManagedGroupSpec) string {
 	return "manage group " + group.Name
 }
 
-func fileDependencies(host, hostAddress string, file ir.ManagedFileSpec, directories []ir.ManagedDirectorySpec, groups []ir.ManagedGroupSpec) []string {
+func userSummary(user ir.ManagedUserSpec) string {
+	if user.Ensure == "absent" {
+		return "ensure user is absent " + user.Name
+	}
+	return "manage user " + user.Name
+}
+
+func fileDependencies(host, hostAddress string, file ir.ManagedFileSpec, directories []ir.ManagedDirectorySpec, groups []ir.ManagedGroupSpec, users []ir.ManagedUserSpec) []string {
 	dependencies := []string{hostAddress}
 	if file.Ensure != "present" {
 		return dependencies
@@ -237,11 +273,14 @@ func fileDependencies(host, hostAddress string, file ir.ManagedFileSpec, directo
 	if group, exists := managedGroup(file.Group, groups); exists && group.Ensure == "present" {
 		dependencies = append(dependencies, groupResourceAddress(host, group.Name))
 	}
+	if user, exists := managedUser(file.Owner, users); exists && user.Ensure == "present" {
+		dependencies = append(dependencies, userResourceAddress(host, user.Name))
+	}
 	sort.Strings(dependencies)
 	return dependencies
 }
 
-func directoryDependencies(host, hostAddress string, directory ir.ManagedDirectorySpec, directories []ir.ManagedDirectorySpec, files []ir.ManagedFileSpec, groups []ir.ManagedGroupSpec) []string {
+func directoryDependencies(host, hostAddress string, directory ir.ManagedDirectorySpec, directories []ir.ManagedDirectorySpec, files []ir.ManagedFileSpec, groups []ir.ManagedGroupSpec, users []ir.ManagedUserSpec) []string {
 	dependencies := []string{hostAddress}
 	if directory.Ensure == "present" {
 		if parent, exists := nearestPresentDirectory(directory.Path, directories); exists {
@@ -249,6 +288,9 @@ func directoryDependencies(host, hostAddress string, directory ir.ManagedDirecto
 		}
 		if group, exists := managedGroup(directory.Group, groups); exists && group.Ensure == "present" {
 			dependencies = append(dependencies, groupResourceAddress(host, group.Name))
+		}
+		if user, exists := managedUser(directory.Owner, users); exists && user.Ensure == "present" {
+			dependencies = append(dependencies, userResourceAddress(host, user.Name))
 		}
 		sort.Strings(dependencies)
 		return dependencies
@@ -267,7 +309,7 @@ func directoryDependencies(host, hostAddress string, directory ir.ManagedDirecto
 	return dependencies
 }
 
-func groupDependencies(host, hostAddress string, group ir.ManagedGroupSpec, directories []ir.ManagedDirectorySpec, files []ir.ManagedFileSpec) []string {
+func groupDependencies(host, hostAddress string, group ir.ManagedGroupSpec, directories []ir.ManagedDirectorySpec, files []ir.ManagedFileSpec, users []ir.ManagedUserSpec) []string {
 	dependencies := []string{hostAddress}
 	if group.Ensure == "present" {
 		return dependencies
@@ -279,6 +321,34 @@ func groupDependencies(host, hostAddress string, group ir.ManagedGroupSpec, dire
 	}
 	for _, file := range files {
 		if file.Ensure == "absent" && groupMatchesReference(group, file.Group) {
+			dependencies = append(dependencies, fileResourceAddress(host, file.Path))
+		}
+	}
+	for _, user := range users {
+		if user.Ensure == "absent" && groupMatchesReference(group, user.PrimaryGroup) {
+			dependencies = append(dependencies, userResourceAddress(host, user.Name))
+		}
+	}
+	sort.Strings(dependencies)
+	return dependencies
+}
+
+func userDependencies(host, hostAddress string, user ir.ManagedUserSpec, groups []ir.ManagedGroupSpec, directories []ir.ManagedDirectorySpec, files []ir.ManagedFileSpec) []string {
+	dependencies := []string{hostAddress}
+	if user.Ensure == "present" {
+		if group, exists := managedGroup(user.PrimaryGroup, groups); exists && group.Ensure == "present" {
+			dependencies = append(dependencies, groupResourceAddress(host, group.Name))
+		}
+		sort.Strings(dependencies)
+		return dependencies
+	}
+	for _, directory := range directories {
+		if directory.Ensure == "absent" && userMatchesReference(user, directory.Owner) {
+			dependencies = append(dependencies, directoryResourceAddress(host, directory.Path))
+		}
+	}
+	for _, file := range files {
+		if file.Ensure == "absent" && userMatchesReference(user, file.Owner) {
 			dependencies = append(dependencies, fileResourceAddress(host, file.Path))
 		}
 	}
@@ -297,6 +367,19 @@ func managedGroup(reference string, groups []ir.ManagedGroupSpec) (ir.ManagedGro
 
 func groupMatchesReference(group ir.ManagedGroupSpec, reference string) bool {
 	return reference == group.Name || (group.GID != "" && reference == group.GID)
+}
+
+func managedUser(reference string, users []ir.ManagedUserSpec) (ir.ManagedUserSpec, bool) {
+	for _, user := range users {
+		if userMatchesReference(user, reference) {
+			return user, true
+		}
+	}
+	return ir.ManagedUserSpec{}, false
+}
+
+func userMatchesReference(user ir.ManagedUserSpec, reference string) bool {
+	return reference == user.Name || (user.UID != "" && reference == user.UID)
 }
 
 func nearestPresentDirectory(path string, directories []ir.ManagedDirectorySpec) (ir.ManagedDirectorySpec, bool) {
@@ -328,6 +411,10 @@ func directoryResourceAddress(host, path string) string {
 
 func groupResourceAddress(host, name string) string {
 	return "host." + host + ".groups.group[" + strconv.Quote(name) + "]"
+}
+
+func userResourceAddress(host, name string) string {
+	return "host." + host + ".users.user[" + strconv.Quote(name) + "]"
 }
 
 func fileResourceAddress(host, path string) string {

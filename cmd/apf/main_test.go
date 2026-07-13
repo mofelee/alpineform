@@ -445,6 +445,12 @@ type fakeOnlineTransport struct {
 	directoryMode     string
 	groupExists       bool
 	groupGID          string
+	userExists        bool
+	userUID           string
+	userGroup         string
+	userGroupGID      string
+	userHome          string
+	userShell         string
 }
 
 func newFakeOnlineTransport(osID string) *fakeOnlineTransport {
@@ -533,6 +539,44 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 	case "delete.group":
 		transport.groupExists = false
 		transport.groupGID = ""
+		return nil, nil
+	case "inspect.user":
+		if !transport.userExists {
+			return []byte("missing\n"), nil
+		}
+		return []byte(fmt.Sprintf("user\n%s\n%s\n%s\n%s\n%s\n", transport.userUID, transport.userGroupGID, transport.userGroup, transport.userHome, transport.userShell)), nil
+	case "apply.user":
+		transport.userExists = true
+		if command.Arguments[1] != "" {
+			transport.userUID = command.Arguments[1]
+		} else if transport.userUID == "" {
+			transport.userUID = "1000"
+		}
+		if command.Arguments[2] != "" {
+			transport.userGroup = command.Arguments[2]
+			transport.userGroupGID = transport.groupGID
+		} else if transport.userGroup == "" {
+			transport.userGroup = command.Arguments[0]
+			transport.userGroupGID = transport.userUID
+		}
+		if command.Arguments[3] != "" {
+			transport.userHome = command.Arguments[3]
+		} else if transport.userHome == "" {
+			transport.userHome = "/home/" + command.Arguments[0]
+		}
+		if command.Arguments[4] != "" {
+			transport.userShell = command.Arguments[4]
+		} else if transport.userShell == "" {
+			transport.userShell = "/bin/ash"
+		}
+		return nil, nil
+	case "delete.user":
+		transport.userExists = false
+		transport.userUID = ""
+		transport.userGroup = ""
+		transport.userGroupGID = ""
+		transport.userHome = ""
+		transport.userShell = ""
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected backend command %q", command.Name)
@@ -1034,5 +1078,83 @@ host "node" {
 	}
 	if transport.groupExists || len(transport.state.Resources) != 0 {
 		t.Fatalf("group delete result: exists=%v state=%#v", transport.groupExists, transport.state)
+	}
+}
+
+func TestNativeUserWorkflowConvergesRepairsAndDeletesInDependencyOrder(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.apf.hcl")
+	writeAccountConfig := func(ensure, shell string) {
+		t.Helper()
+		content := fmt.Sprintf(`
+host "node" {
+  groups {
+    group "app" {
+      gid       = 1500
+      ensure    = %q
+      on_remove = "destroy"
+    }
+  }
+  users {
+    user "app" {
+      uid       = 1500
+      group     = "app"
+      home      = "/srv/app"
+      shell     = %q
+      system    = true
+      ensure    = %q
+      on_remove = "destroy"
+    }
+  }
+}
+`, ensure, shell, ensure)
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport := newFakeOnlineTransport("alpine")
+	runtime := fakeNativeRuntime(transport, "")
+	writeAccountConfig("present", "/sbin/nologin")
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	address := `host.node.users.user["app"]`
+	resource, exists := transport.state.Resources[address]
+	groupResource := transport.state.Resources[`host.node.groups.group["app"]`]
+	if !transport.userExists || transport.userUID != "1500" || transport.userGroup != "app" || transport.userGroupGID != "1500" || transport.userHome != "/srv/app" || transport.userShell != "/sbin/nologin" || !exists || resource.Kind != "user" || resource.Delete["name"] != "app" || groupResource.Order >= resource.Order {
+		t.Fatalf("user/state after create = user=%#v resource=%#v", transport, resource)
+	}
+	if err := runCheckWithRuntime(nil, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("user second check = %v", err)
+	}
+	transport.userShell = "/bin/ash"
+	var driftOutput bytes.Buffer
+	if err := runCheckWithRuntime(nil, &driftOutput, dir, nil, runtime); err == nil || !strings.Contains(err.Error(), "drift") || !strings.Contains(driftOutput.String(), "update "+address) {
+		t.Fatalf("user drift check error = %v, output = %s", err, driftOutput.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("user repair apply = %v", err)
+	}
+	if transport.userShell != "/sbin/nologin" {
+		t.Fatalf("repaired user shell = %q", transport.userShell)
+	}
+	if err := os.WriteFile(path, []byte("host \"node\" {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	eventStart := len(transport.events)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("account delete apply = %v", err)
+	}
+	deleteEvents := make([]string, 0, 2)
+	for _, event := range transport.events[eventStart:] {
+		if strings.HasPrefix(event, "delete.") {
+			deleteEvents = append(deleteEvents, event)
+		}
+	}
+	if !reflect.DeepEqual(deleteEvents, []string{"delete.user", "delete.group"}) {
+		t.Fatalf("account deletion order = %#v", deleteEvents)
+	}
+	if transport.userExists || transport.groupExists || len(transport.state.Resources) != 0 {
+		t.Fatalf("account delete result: user=%v group=%v state=%#v", transport.userExists, transport.groupExists, transport.state)
 	}
 }

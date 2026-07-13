@@ -269,3 +269,77 @@ func TestCompileOrdersAbsentOwnedPathsBeforeGroup(t *testing.T) {
 		t.Fatalf("absent ownership schedule = %#v, want %#v", got, want)
 	}
 }
+
+func TestCompileOrdersGroupUserAndOwnedPaths(t *testing.T) {
+	program := &ir.Program{Hosts: []ir.HostSpec{{
+		Name:   "node",
+		Source: source(1),
+		Groups: []ir.ManagedGroupSpec{{Name: "app", Ensure: "present", Source: source(2)}},
+		Users: []ir.ManagedUserSpec{{
+			Name: "app", UID: "1500", PrimaryGroup: "app", Ensure: "present", Source: source(3),
+		}},
+		Directories: []ir.ManagedDirectorySpec{{
+			Path: "/srv/app", Owner: "app", Group: "app", Ensure: "present", Source: source(4),
+		}},
+		Files: []ir.ManagedFileSpec{{Path: "/srv/app/config", Owner: "1500", Group: "app", Ensure: "present", Source: source(5)}},
+	}}}
+	compiled, err := Compile(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered, err := compiled.Schedule()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"host.node",
+		`host.node.groups.group["app"]`,
+		`host.node.users.user["app"]`,
+		`host.node.directories.directory["/srv/app"]`,
+		`host.node.files.file["/srv/app/config"]`,
+	}
+	got := make([]string, 0, len(ordered))
+	for _, node := range ordered {
+		got = append(got, node.Address)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("account ownership schedule = %#v, want %#v", got, want)
+	}
+}
+
+func TestCompileOrdersAbsentOwnedPathsUserAndGroup(t *testing.T) {
+	program := &ir.Program{Hosts: []ir.HostSpec{{
+		Name:   "node",
+		Source: source(1),
+		Groups: []ir.ManagedGroupSpec{{Name: "app", Ensure: "absent", Source: source(2)}},
+		Users: []ir.ManagedUserSpec{{
+			Name: "app", PrimaryGroup: "app", Ensure: "absent", Source: source(3),
+		}},
+		Directories: []ir.ManagedDirectorySpec{{
+			Path: "/srv/app", Owner: "app", Group: "app", Ensure: "absent", Source: source(4),
+		}},
+		Files: []ir.ManagedFileSpec{{Path: "/srv/app/config", Owner: "app", Group: "app", Ensure: "absent", Source: source(5)}},
+	}}}
+	compiled, err := Compile(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered, err := compiled.Schedule()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"host.node",
+		`host.node.files.file["/srv/app/config"]`,
+		`host.node.directories.directory["/srv/app"]`,
+		`host.node.users.user["app"]`,
+		`host.node.groups.group["app"]`,
+	}
+	got := make([]string, 0, len(ordered))
+	for _, node := range ordered {
+		got = append(got, node.Address)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("absent account schedule = %#v, want %#v", got, want)
+	}
+}

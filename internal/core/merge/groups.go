@@ -61,3 +61,8 @@ func resourceNumericID(declaration parser.ResourceDeclaration, name string, host
 	}
 	return strconv.FormatUint(id, 10), nil
 }
+
+func validateNumericIDString(value string) bool {
+	_, err := strconv.ParseUint(value, 10, 31)
+	return err == nil
+}

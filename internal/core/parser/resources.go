@@ -14,6 +14,7 @@ const (
 	ResourceFile      = "file"
 	ResourceDirectory = "directory"
 	ResourceGroup     = "group"
+	ResourceUser      = "user"
 )
 
 type ResourceAttribute struct {
@@ -56,6 +57,13 @@ var hostResourceCollections = map[string]resourceCollectionSchema{
 		resource: ResourceGroup,
 		attributes: attributeSet(
 			"gid", "system", "ensure", "on_remove",
+		),
+	},
+	"users": {
+		block:    "users",
+		resource: ResourceUser,
+		attributes: attributeSet(
+			"uid", "group", "home", "shell", "system", "ensure", "on_remove",
 		),
 	},
 }

@@ -231,6 +231,14 @@ host "node" {
       system = true
     }
   }
+  users {
+    user "app" {
+      uid   = 1500
+      group = "app"
+      home  = "/srv/app"
+      shell = "/sbin/nologin"
+    }
+  }
   directories {
     directory "/etc/app" {
       owner = "root"
@@ -251,20 +259,24 @@ host "node" {
 		t.Fatal(err)
 	}
 	resources := config.Hosts["node"].Resources
-	if len(resources) != 3 {
+	if len(resources) != 4 {
 		t.Fatalf("resources = %#v", resources)
 	}
-	file := resources[2]
+	file := resources[3]
 	if file.Kind != ResourceFile || file.Label != "/etc/app/motd" || file.Attributes["content"].Expression == nil || !file.Lifecycle.PreventDestroy {
 		t.Fatalf("file declaration = %#v", file)
 	}
-	directory := resources[1]
+	directory := resources[2]
 	if directory.Kind != ResourceDirectory || directory.Label != "/etc/app" || directory.Attributes["mode"].Expression == nil {
 		t.Fatalf("directory declaration = %#v", directory)
 	}
 	group := resources[0]
 	if group.Kind != ResourceGroup || group.Label != "app" || group.Attributes["gid"].Expression == nil {
 		t.Fatalf("group declaration = %#v", group)
+	}
+	user := resources[1]
+	if user.Kind != ResourceUser || user.Label != "app" || user.Attributes["uid"].Expression == nil || user.Attributes["group"].Expression == nil {
+		t.Fatalf("user declaration = %#v", user)
 	}
 }
 
@@ -279,9 +291,10 @@ func TestParseHostNativeResourcesRejectInvalidShapeAndDuplicates(t *testing.T) {
 		{name: "unknown attribute", content: "host \"node\" {\n  files {\n    file \"/tmp/x\" {\n      template = \"x\"\n    }\n  }\n}\n", want: "unsupported attribute"},
 		{name: "duplicate", content: "host \"node\" {\n  files {\n    file \"/tmp/x\" {}\n  }\n  files {\n    file \"/tmp/x\" {}\n  }\n}\n", want: `duplicate file label "/tmp/x"`},
 		{name: "control label", content: "host \"node\" {\n  files {\n    file \"bad\\nname\" {}\n  }\n}\n", want: "contain no control characters"},
-		{name: "deferred domain", content: "host \"node\" {\n  users {\n    user \"app\" {}\n  }\n}\n", want: "unsupported block"},
+		{name: "deferred domain", content: "host \"node\" {\n  services {\n    service \"app\" {}\n  }\n}\n", want: "unsupported block"},
 		{name: "directory unknown attribute", content: "host \"node\" {\n  directories {\n    directory \"/tmp/x\" { content = \"x\" }\n  }\n}\n", want: "unsupported attribute"},
 		{name: "group unknown attribute", content: "host \"node\" {\n  groups {\n    group \"app\" { members = [] }\n  }\n}\n", want: "unsupported attribute"},
+		{name: "user unknown attribute", content: "host \"node\" {\n  users {\n    user \"app\" { password = \"x\" }\n  }\n}\n", want: "unsupported attribute"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

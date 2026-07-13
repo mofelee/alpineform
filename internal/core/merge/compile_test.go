@@ -804,3 +804,84 @@ func TestCompileGroupResourceValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestCompileUserResourceDefaultsAndPolicy(t *testing.T) {
+	config, err := compileConfig(t, `
+host "node" {
+  users {
+    user "app" {}
+    user "worker" {
+      uid       = 1500
+      group     = "app"
+      home      = "/srv/worker"
+      shell     = "/sbin/nologin"
+      system    = true
+      on_remove = "destroy"
+      lifecycle { prevent_destroy = true }
+    }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := program.Hosts[0].Users
+	if len(users) != 2 {
+		t.Fatalf("users = %#v", users)
+	}
+	if user := users[0]; user.Name != "app" || user.UID != "" || user.PrimaryGroup != "" || user.Home != "" || user.Shell != "" || user.System || user.Ensure != "present" || user.OnRemove != "forget" || user.Lifecycle.PreventDestroy {
+		t.Fatalf("default user = %#v", user)
+	}
+	if user := users[1]; user.Name != "worker" || user.UID != "1500" || user.PrimaryGroup != "app" || user.Home != "/srv/worker" || user.Shell != "/sbin/nologin" || !user.System || user.Ensure != "present" || user.OnRemove != "destroy" || !user.Lifecycle.PreventDestroy {
+		t.Fatalf("configured user = %#v", user)
+	}
+}
+
+func TestCompileUserResourceValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "root", body: "users {\n    user \"root\" {}\n  }", wantErr: "non-root"},
+		{name: "invalid name", body: "users {\n    user \"Bad.Name\" {}\n  }", wantErr: "non-root"},
+		{name: "string uid", body: "users {\n    user \"app\" { uid = \"1500\" }\n  }", wantErr: "non-protected integer"},
+		{name: "uid zero", body: "users {\n    user \"app\" { uid = 0 }\n  }", wantErr: "uid 0 is reserved"},
+		{name: "duplicate uid", body: `users {
+    user "app" { uid = 1500 }
+    user "worker" { uid = 1500 }
+  }`, wantErr: "duplicates explicit uid 1500"},
+		{name: "relative home", body: "users {\n    user \"app\" { home = \"home/app\" }\n  }", wantErr: "clean absolute non-root"},
+		{name: "root home", body: "users {\n    user \"app\" { home = \"/\" }\n  }", wantErr: "clean absolute non-root"},
+		{name: "relative shell", body: "users {\n    user \"app\" { shell = \"bin/ash\" }\n  }", wantErr: "clean absolute path"},
+		{name: "invalid group", body: "users {\n    user \"app\" { group = \"bad.group\" }\n  }", wantErr: "valid Alpine group"},
+		{name: "absent primary group", body: `groups {
+    group "app" { ensure = "absent" }
+  }
+  users {
+    user "worker" { group = "app" }
+  }`, wantErr: "primary group \"app\" declared absent"},
+		{name: "absent path owner", body: `users {
+    user "app" { ensure = "absent" }
+  }
+  directories {
+    directory "/srv/app" { owner = "app" }
+  }`, wantErr: "owner \"app\" declared absent"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := compileConfig(t, "host \"node\" {\n  "+test.body+"\n}\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Compile(config)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Compile() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}

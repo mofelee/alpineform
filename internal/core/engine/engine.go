@@ -286,7 +286,14 @@ func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []gra
 			addresses = append(addresses, address)
 		}
 	}
-	sort.Strings(addresses)
+	sort.Slice(addresses, func(i, j int) bool {
+		left := prior.Resources[addresses[i]].Order
+		right := prior.Resources[addresses[j]].Order
+		if left != right {
+			return left > right
+		}
+		return addresses[i] > addresses[j]
+	})
 	for _, address := range addresses {
 		resource := prior.Resources[address]
 		action := ActionForget
@@ -392,9 +399,14 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 	if state.Resources == nil {
 		state.Resources = map[string]corestate.Resource{}
 	}
-	for _, step := range plan.Steps {
+	for index, step := range plan.Steps {
+		order := index + 1
 		switch step.Action {
 		case ActionNoOp:
+			if resource, exists := state.Resources[step.Address]; exists {
+				resource.Order = order
+				state.Resources[step.Address] = resource
+			}
 			continue
 		case ActionForget:
 			delete(state.Resources, step.Address)
@@ -407,7 +419,7 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 			}
 			delete(state.Resources, step.Address)
 		case ActionAdopt:
-			state.Resources[step.Address] = resourceForStep(step, step.Observed)
+			state.Resources[step.Address] = resourceForStep(step, step.Observed, order)
 		case ActionCreate, ActionUpdate:
 			observed, err := engine.Provider.Apply(ctx, step)
 			if err != nil {
@@ -416,7 +428,7 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 				}
 				return fmt.Errorf("%s %s: %w", step.Action, step.Address, err)
 			}
-			state.Resources[step.Address] = resourceForStep(step, observed)
+			state.Resources[step.Address] = resourceForStep(step, observed, order)
 		default:
 			return fmt.Errorf("unsupported action %q for %s", step.Action, step.Address)
 		}
@@ -425,7 +437,7 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 	return err
 }
 
-func resourceForStep(step Step, observed ObservedResource) corestate.Resource {
+func resourceForStep(step Step, observed ObservedResource, order int) corestate.Resource {
 	digest := corestate.Digest(step.Node.Desired)
 	observedValues := observed.Values
 	if step.Node.Sensitive || step.Node.Ephemeral || observed.Protected {
@@ -438,6 +450,7 @@ func resourceForStep(step Step, observed ObservedResource) corestate.Resource {
 		Host:          step.Host,
 		Kind:          step.Node.Kind,
 		Ownership:     "managed",
+		Order:         order,
 		DesiredDigest: digest,
 		Observed:      observedValues,
 		Protected:     observed.Protected,

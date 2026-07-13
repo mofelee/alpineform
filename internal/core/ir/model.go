@@ -54,7 +54,21 @@ type HostSpec struct {
 	Files       []ManagedFileSpec       `json:"files,omitempty"`
 	Directories []ManagedDirectorySpec  `json:"directories,omitempty"`
 	Groups      []ManagedGroupSpec      `json:"groups,omitempty"`
+	Users       []ManagedUserSpec       `json:"users,omitempty"`
 	Source      SourceRef               `json:"source"`
+}
+
+type ManagedUserSpec struct {
+	Name         string        `json:"name"`
+	UID          string        `json:"uid,omitempty"`
+	PrimaryGroup string        `json:"group,omitempty"`
+	Home         string        `json:"home,omitempty"`
+	Shell        string        `json:"shell,omitempty"`
+	System       bool          `json:"system,omitempty"`
+	Ensure       string        `json:"ensure"`
+	OnRemove     string        `json:"on_remove"`
+	Lifecycle    LifecycleSpec `json:"lifecycle"`
+	Source       SourceRef     `json:"source"`
 }
 
 type ManagedGroupSpec struct {

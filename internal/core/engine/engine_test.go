@@ -278,6 +278,32 @@ func TestPlanOrphanActionsAndPreventDestroy(t *testing.T) {
 	}
 }
 
+func TestPlanOrdersOrphanedResourcesInReverseRecordedDependencyOrder(t *testing.T) {
+	backend := newMemoryBackend()
+	backend.states["node"] = corestate.State{Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node", Resources: map[string]corestate.Resource{
+		"host.node.groups.group.app":        {Order: 1, DeleteBehavior: ActionDestroy},
+		"host.node.users.user.app":          {Order: 2, DeleteBehavior: ActionDestroy},
+		"host.node.directories.directory.a": {Order: 3, DeleteBehavior: ActionDestroy},
+	}}
+	engine := Engine{Backend: backend, Provider: newMemoryProvider()}
+	plan, err := engine.Plan(context.Background(), staticBuild(testHost()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(plan.Hosts[0].Steps))
+	for _, step := range plan.Hosts[0].Steps {
+		got = append(got, step.Address)
+	}
+	want := []string{
+		"host.node.directories.directory.a",
+		"host.node.users.user.app",
+		"host.node.groups.group.app",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("orphan order = %#v, want %#v", got, want)
+	}
+}
+
 func TestCheckDistinguishesNoOpAndDrift(t *testing.T) {
 	node := testNode(map[string]any{"value": "expected"})
 	digest := corestate.Digest(node.Desired)

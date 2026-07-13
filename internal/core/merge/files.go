@@ -15,38 +15,45 @@ import (
 
 var accountNamePattern = regexp.MustCompile(`^(?:[a-z_][a-z0-9_-]{0,31}|[0-9]{1,10})$`)
 
-func compileHostNativeResources(host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) ([]ir.ManagedFileSpec, []ir.ManagedDirectorySpec, []ir.ManagedGroupSpec, error) {
+func compileHostNativeResources(host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) ([]ir.ManagedFileSpec, []ir.ManagedDirectorySpec, []ir.ManagedGroupSpec, []ir.ManagedUserSpec, error) {
 	files := make([]ir.ManagedFileSpec, 0)
 	directories := make([]ir.ManagedDirectorySpec, 0)
 	groups := make([]ir.ManagedGroupSpec, 0)
+	users := make([]ir.ManagedUserSpec, 0)
 	for _, declaration := range host.Resources {
 		switch declaration.Kind {
 		case parser.ResourceFile:
 			file, err := compileFile(declaration, host, facts, ctx)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			files = append(files, file)
 		case parser.ResourceDirectory:
 			directory, err := compileDirectory(declaration, host, facts, ctx)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			directories = append(directories, directory)
 		case parser.ResourceGroup:
 			group, err := compileGroup(declaration, host, facts, ctx)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			groups = append(groups, group)
+		case parser.ResourceUser:
+			user, err := compileUser(declaration, host, facts, ctx)
+			if err != nil {
+				return nil, nil, nil, nil, err
+			}
+			users = append(users, user)
 		default:
-			return nil, nil, nil, fmt.Errorf("%s:%d:%s: unsupported compiled host resource kind %q", declaration.Source.File, declaration.Source.Line, declaration.Source.Path, declaration.Kind)
+			return nil, nil, nil, nil, fmt.Errorf("%s:%d:%s: unsupported compiled host resource kind %q", declaration.Source.File, declaration.Source.Line, declaration.Source.Path, declaration.Kind)
 		}
 	}
-	if err := validateNativeResourceRelationships(files, directories, groups); err != nil {
-		return nil, nil, nil, err
+	if err := validateNativeResourceRelationships(files, directories, groups, users); err != nil {
+		return nil, nil, nil, nil, err
 	}
-	return files, directories, groups, nil
+	return files, directories, groups, users, nil
 }
 
 func compileDirectory(declaration parser.ResourceDeclaration, host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) (ir.ManagedDirectorySpec, error) {
@@ -107,7 +114,7 @@ func compileDirectory(declaration parser.ResourceDeclaration, host parser.Host, 
 	}, nil
 }
 
-func validateNativeResourceRelationships(files []ir.ManagedFileSpec, directories []ir.ManagedDirectorySpec, groups []ir.ManagedGroupSpec) error {
+func validateNativeResourceRelationships(files []ir.ManagedFileSpec, directories []ir.ManagedDirectorySpec, groups []ir.ManagedGroupSpec, users []ir.ManagedUserSpec) error {
 	for index, group := range groups {
 		if group.GID == "" {
 			continue
@@ -116,6 +123,18 @@ func validateNativeResourceRelationships(files []ir.ManagedFileSpec, directories
 			if previous.GID == group.GID {
 				return resourceError(group.Source, "group %q duplicates explicit gid %s declared by group %q at %s:%d", group.Name, group.GID, previous.Name, previous.Source.File, previous.Source.Line)
 			}
+		}
+	}
+	for index, user := range users {
+		if user.UID != "" {
+			for _, previous := range users[:index] {
+				if previous.UID == user.UID {
+					return resourceError(user.Source, "user %q duplicates explicit uid %s declared by user %q at %s:%d", user.Name, user.UID, previous.Name, previous.Source.File, previous.Source.Line)
+				}
+			}
+		}
+		if group, exists := managedGroupForReference(user.PrimaryGroup, groups); exists && user.Ensure == "present" && group.Ensure == "absent" {
+			return resourceError(user.Source, "present user %q uses primary group %q declared absent", user.Name, group.Name)
 		}
 	}
 	for _, file := range files {
@@ -130,6 +149,9 @@ func validateNativeResourceRelationships(files []ir.ManagedFileSpec, directories
 		if group, exists := managedGroupForReference(file.Group, groups); exists && file.Ensure == "present" && group.Ensure == "absent" {
 			return resourceError(file.Source, "present file %q uses group %q declared absent", file.Path, group.Name)
 		}
+		if user, exists := managedUserForReference(file.Owner, users); exists && file.Ensure == "present" && user.Ensure == "absent" {
+			return resourceError(file.Source, "present file %q uses owner %q declared absent", file.Path, user.Name)
+		}
 	}
 	for _, child := range directories {
 		if child.Ensure != "present" {
@@ -143,6 +165,9 @@ func validateNativeResourceRelationships(files []ir.ManagedFileSpec, directories
 		if group, exists := managedGroupForReference(child.Group, groups); exists && group.Ensure == "absent" {
 			return resourceError(child.Source, "present directory %q uses group %q declared absent", child.Path, group.Name)
 		}
+		if user, exists := managedUserForReference(child.Owner, users); exists && user.Ensure == "absent" {
+			return resourceError(child.Source, "present directory %q uses owner %q declared absent", child.Path, user.Name)
+		}
 	}
 	return nil
 }
@@ -154,6 +179,15 @@ func managedGroupForReference(reference string, groups []ir.ManagedGroupSpec) (i
 		}
 	}
 	return ir.ManagedGroupSpec{}, false
+}
+
+func managedUserForReference(reference string, users []ir.ManagedUserSpec) (ir.ManagedUserSpec, bool) {
+	for _, user := range users {
+		if reference == user.Name || (user.UID != "" && reference == user.UID) {
+			return user, true
+		}
+	}
+	return ir.ManagedUserSpec{}, false
 }
 
 func pathIsWithin(parent, child string) bool {
