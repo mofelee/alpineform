@@ -291,7 +291,7 @@ func TestParseHostNativeResourcesRejectInvalidShapeAndDuplicates(t *testing.T) {
 		{name: "unknown attribute", content: "host \"node\" {\n  files {\n    file \"/tmp/x\" {\n      template = \"x\"\n    }\n  }\n}\n", want: "unsupported attribute"},
 		{name: "duplicate", content: "host \"node\" {\n  files {\n    file \"/tmp/x\" {}\n  }\n  files {\n    file \"/tmp/x\" {}\n  }\n}\n", want: `duplicate file label "/tmp/x"`},
 		{name: "control label", content: "host \"node\" {\n  files {\n    file \"bad\\nname\" {}\n  }\n}\n", want: "contain no control characters"},
-		{name: "deferred domain", content: "host \"node\" {\n  services {\n    service \"app\" {}\n  }\n}\n", want: "unsupported block"},
+		{name: "deferred domain", content: "host \"node\" {\n  docker {\n    engine {}\n  }\n}\n", want: "unsupported block"},
 		{name: "directory unknown attribute", content: "host \"node\" {\n  directories {\n    directory \"/tmp/x\" { content = \"x\" }\n  }\n}\n", want: "unsupported attribute"},
 		{name: "group unknown attribute", content: "host \"node\" {\n  groups {\n    group \"app\" { members = [] }\n  }\n}\n", want: "unsupported attribute"},
 		{name: "user unknown attribute", content: "host \"node\" {\n  users {\n    user \"app\" { password = \"x\" }\n  }\n}\n", want: "unsupported attribute"},

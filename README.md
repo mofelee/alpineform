@@ -41,10 +41,11 @@ selected code patterns of DebianForm v0.6.0; see [NOTICE.md](NOTICE.md).
 The current model accepts reusable profiles, typed component metadata,
 component instances, assertions, lifecycle metadata, and offline Alpine
 platform declarations. Host-level `files.file`, `directories.directory`,
-`groups.group`, `users.user`, host-level `apk`, and `packages.package` resources provide native convergence; see
+`groups.group`, `users.user`, host-level `apk`, `packages.package`, and
+`services.service` resources provide native convergence; see
 [docs/files.md](docs/files.md), [docs/directories.md](docs/directories.md), and
 [docs/groups.md](docs/groups.md), [docs/users.md](docs/users.md), and
-[docs/apk.md](docs/apk.md). Bounded OpenRC init generation is documented in
+[docs/apk.md](docs/apk.md). Bounded OpenRC generation and runtime convergence are documented in
 [docs/openrc.md](docs/openrc.md).
 
 Online commands first discover and validate Alpine 3.24 facts through fixed

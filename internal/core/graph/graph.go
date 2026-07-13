@@ -254,6 +254,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 				DigestSafe: true,
 			})
 		}
+		appendServiceNodes(graph, host, hostAddress)
 		for _, component := range host.Components {
 			address := hostAddress + ".component." + component.Name
 			dependencies := []string{hostAddress}
@@ -283,6 +284,60 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 		return nil, err
 	}
 	return graph, nil
+}
+
+func appendServiceNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddress string) {
+	for _, service := range host.Services {
+		dependencies := []string{hostAddress}
+		for _, file := range host.Files {
+			if file.Ensure == "present" && (file.Path == "/etc/init.d/"+service.Name || file.Path == "/etc/conf.d/"+service.Name) {
+				dependencies = append(dependencies, fileResourceAddress(host.Name, file.Path))
+			}
+		}
+		if service.Package != "" {
+			dependencies = append(dependencies, packageResourceAddress(host.Name, service.Package))
+		}
+		if service.User != "" {
+			if user, found := managedUser(service.User, host.Users); found && user.Ensure == "present" {
+				dependencies = append(dependencies, userResourceAddress(host.Name, user.Name))
+				dependencies = append(dependencies, presentUserChildAddresses(host.Name, user)...)
+			}
+		}
+		if service.Group != "" {
+			if group, found := managedGroup(service.Group, host.Groups); found && group.Ensure == "present" {
+				dependencies = append(dependencies, groupResourceAddress(host.Name, group.Name))
+			}
+		}
+		sort.Strings(dependencies)
+		resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
+			Host: host.Name, Address: serviceResourceAddress(host.Name, service.Name), Kind: "service", Managed: true,
+			Summary: serviceSummary(service), Source: service.Source, Lifecycle: &service.Lifecycle,
+			Desired: map[string]any{
+				"name":            service.Name,
+				"enabled":         service.Enabled,
+				"runlevel":        service.Runlevel,
+				"state":           service.State,
+				"package":         service.Package,
+				"user":            service.User,
+				"group":           service.Group,
+				"delete_behavior": "",
+				"prevent_destroy": service.Lifecycle.PreventDestroy,
+			},
+			DependsOn: dependencies, DigestSafe: true,
+		})
+	}
+}
+
+func serviceSummary(service ir.ServiceSpec) string {
+	state := service.State
+	if service.Enabled {
+		return "keep OpenRC service " + service.Name + " " + state + " and enabled in " + service.Runlevel
+	}
+	return "keep OpenRC service " + service.Name + " " + state + " and disabled in " + service.Runlevel
+}
+
+func serviceResourceAddress(host, name string) string {
+	return "host." + host + ".services.service[" + strconv.Quote(name) + "]"
 }
 
 func appendPackageNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddress string) {

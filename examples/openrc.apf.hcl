@@ -22,4 +22,12 @@ host "alpine_openrc" {
       conf               = "WORKERS=2\n"
     }
   }
+
+  services {
+    service "example-worker" {
+      enabled  = true
+      runlevel = "default"
+      state    = "running"
+    }
+  }
 }

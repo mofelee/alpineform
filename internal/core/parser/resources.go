@@ -16,6 +16,7 @@ const (
 	ResourceGroup     = "group"
 	ResourceUser      = "user"
 	ResourcePackage   = "package"
+	ResourceService   = "service"
 )
 
 type ResourceAttribute struct {
@@ -71,6 +72,11 @@ var hostResourceCollections = map[string]resourceCollectionSchema{
 		block:      "packages",
 		resource:   ResourcePackage,
 		attributes: attributeSet("ensure", "repository"),
+	},
+	"services": {
+		block:      "services",
+		resource:   ResourceService,
+		attributes: attributeSet("enabled", "runlevel", "state", "package", "user", "group"),
 	},
 }
 

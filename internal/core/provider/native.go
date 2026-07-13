@@ -41,6 +41,8 @@ func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.Obs
 		return inspectAPKUpdate(ctx, runner, node)
 	case "package":
 		return inspectPackage(ctx, runner, node)
+	case "service":
+		return inspectService(ctx, runner, node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", node.Kind)
 	}
@@ -72,6 +74,8 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 		return applyAPKUpdate(ctx, runner, step.Node)
 	case "package":
 		return applyPackage(ctx, runner, step.Node)
+	case "service":
+		return applyService(ctx, runner, step)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", step.Node.Kind)
 	}
@@ -107,6 +111,8 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 		return fmt.Errorf("resource kind %q can only be forgotten when its declaration is removed", kind)
 	case "package":
 		return deletePackage(ctx, runner, step)
+	case "service":
+		return fmt.Errorf("OpenRC service declarations can only be forgotten; disable or stop the service explicitly first")
 	default:
 		return fmt.Errorf("no Alpine provider is registered for resource kind %q", kind)
 	}

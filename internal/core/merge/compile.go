@@ -296,7 +296,7 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 			return ir.HostSpec{}, err
 		}
 	}
-	out.Files, out.Directories, out.Groups, out.Users, out.Packages, err = compileHostNativeResources(host, out.APK, facts, hostContext)
+	out.Files, out.Directories, out.Groups, out.Users, out.Packages, out.Services, err = compileHostNativeResources(host, out.APK, facts, hostContext)
 	if err != nil {
 		return ir.HostSpec{}, err
 	}
@@ -310,6 +310,9 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 		if err := validateNativeResourceRelationships(out.Files, out.Directories, out.Groups, out.Users); err != nil {
 			return ir.HostSpec{}, err
 		}
+	}
+	if err := resolveAndValidateServiceDependencies(out.Services, out.OpenRC, out.Packages, out.Users, out.Groups); err != nil {
+		return ir.HostSpec{}, err
 	}
 	for _, name := range resolved.Order {
 		instance := resolved.Components[name]

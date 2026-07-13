@@ -58,7 +58,20 @@ type HostSpec struct {
 	Groups      []ManagedGroupSpec      `json:"groups,omitempty"`
 	Users       []ManagedUserSpec       `json:"users,omitempty"`
 	Packages    []PackageSpec           `json:"packages,omitempty"`
+	Services    []ServiceSpec           `json:"services,omitempty"`
 	Source      SourceRef               `json:"source"`
+}
+
+type ServiceSpec struct {
+	Name      string        `json:"name"`
+	Enabled   bool          `json:"enabled"`
+	Runlevel  string        `json:"runlevel"`
+	State     string        `json:"state"`
+	Package   string        `json:"package,omitempty"`
+	User      string        `json:"user,omitempty"`
+	Group     string        `json:"group,omitempty"`
+	Lifecycle LifecycleSpec `json:"lifecycle"`
+	Source    SourceRef     `json:"source"`
 }
 
 type OpenRCServiceSpec struct {
