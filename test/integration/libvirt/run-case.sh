@@ -396,7 +396,7 @@ Host *
   StrictHostKeyChecking no
   UserKnownHostsFile /dev/null
 
-Host cihost
+Host cihost alpine
   HostName $VM_IP
   User root
   IdentityFile $SSH_KEY

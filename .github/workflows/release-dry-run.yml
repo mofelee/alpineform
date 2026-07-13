@@ -1,0 +1,96 @@
+name: Release dry-run
+
+on:
+  push:
+    paths:
+      - ".github/workflows/release-dry-run.yml"
+      - ".github/workflows/release.yml"
+      - ".goreleaser.yaml"
+      - "Makefile"
+      - "scripts/**"
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "README.md"
+      - "LICENSE"
+      - "NOTICE.md"
+      - "CHANGELOG.md"
+      - "docs/**"
+      - "examples/**"
+      - "test/release/**"
+  pull_request:
+    paths:
+      - ".github/workflows/release-dry-run.yml"
+      - ".github/workflows/release.yml"
+      - ".goreleaser.yaml"
+      - "Makefile"
+      - "scripts/**"
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "README.md"
+      - "LICENSE"
+      - "NOTICE.md"
+      - "CHANGELOG.md"
+      - "docs/**"
+      - "examples/**"
+      - "test/release/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-dry-run-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    name: Snapshot release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install GoReleaser
+        env:
+          GORELEASER_VERSION: 2.16.0
+        run: |
+          cd "${RUNNER_TEMP}"
+          archive="goreleaser_Linux_x86_64.tar.gz"
+          base_url="https://github.com/goreleaser/goreleaser/releases/download/v${GORELEASER_VERSION}"
+          curl --fail --location --retry 3 --show-error --silent --output "$archive" "$base_url/$archive"
+          curl --fail --location --retry 3 --show-error --silent --output checksums.txt "$base_url/checksums.txt"
+          grep " $archive$" checksums.txt | sha256sum --check -
+          tar -xzf "$archive" goreleaser
+          install -D -m 0755 goreleaser "${HOME}/.local/bin/goreleaser"
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+      - name: Run repository and installer gates
+        run: |
+          make check
+          make vulncheck
+          make test-installer
+      - name: Check GoReleaser config
+        run: goreleaser check
+      - name: Build snapshot release
+        run: goreleaser release --snapshot --clean --skip publish
+      - name: Verify snapshot artifacts
+        run: |
+          test -s dist/checksums.txt
+          for platform in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            archive="$(find dist -maxdepth 1 -name "apf_*_${platform}.tar.gz" -print -quit)"
+            test -n "$archive"
+            tar -tzf "$archive" > "${RUNNER_TEMP}/${platform}.files"
+            grep -Eq '(^|/)apf$' "${RUNNER_TEMP}/${platform}.files"
+            grep -Eq '(^|/)README.md$' "${RUNNER_TEMP}/${platform}.files"
+          done
+          (cd dist && sha256sum --check checksums.txt)

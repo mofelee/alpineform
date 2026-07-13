@@ -1,0 +1,6 @@
+paths:
+  .github/workflows/release.yml:
+    ignore:
+      # GitHub documents these as standard hosted labels; actionlint 1.7.7
+      # predates the macOS 26 runner catalog.
+      - 'label "macos-26(-intel)?" is unknown'

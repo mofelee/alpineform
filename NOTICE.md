@@ -22,4 +22,6 @@ Major differences from the referenced version:
 - state has an explicit AlpineForm product marker and an independent schema;
 - Debian-only APT, systemd, codename, locale, Docker, nftables, and source-build
   schemas are not present in the bootstrap;
-- no Alpine resource is advertised as implemented by the bootstrap.
+- Alpine and BusyBox providers, OpenRC behavior, component artifacts, release
+  automation, and the real-VM support gate were implemented independently for
+  AlpineForm after the bootstrap.

@@ -16,7 +16,7 @@ LDFLAGS := -s -w \
 	-X $(VERSION_PACKAGE).Commit=$(COMMIT) \
 	-X $(VERSION_PACKAGE).Date=$(BUILD_DATE)
 
-.PHONY: build install test test-unit test-integration test-integration-case test-integration-layout vet format-check vulncheck update-golden check clean
+.PHONY: build install test test-unit test-installer test-release-layout test-integration test-integration-case test-integration-layout vet format-check vulncheck update-golden check clean
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) $(PACKAGE)
@@ -31,6 +31,12 @@ test:
 
 test-unit:
 	go test -race -count=1 ./...
+
+test-installer:
+	scripts/test-install.sh
+
+test-release-layout:
+	scripts/validate-release.sh
 
 test-integration:
 	APF_INTEGRATION_DISABLE_KVM="$(INTEGRATION_DISABLE_KVM)" test/integration/libvirt/run.sh
@@ -54,7 +60,7 @@ vulncheck:
 update-golden:
 	UPDATE_GOLDEN=1 go test ./internal/core/plan
 
-check: test-unit vet format-check test-integration-layout
+check: test-unit vet format-check test-integration-layout test-release-layout
 
 clean:
 	go clean

@@ -1,0 +1,276 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  attestations: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      tag: ${{ github.ref_name }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install verified release tools
+        env:
+          GORELEASER_VERSION: 2.16.0
+          COSIGN_VERSION: 3.1.1
+          SYFT_VERSION: 1.45.1
+        run: |
+          cd "${RUNNER_TEMP}"
+          goreleaser_archive="goreleaser_Linux_x86_64.tar.gz"
+          goreleaser_url="https://github.com/goreleaser/goreleaser/releases/download/v${GORELEASER_VERSION}"
+          curl --fail --location --retry 3 --show-error --silent --output "$goreleaser_archive" "$goreleaser_url/$goreleaser_archive"
+          curl --fail --location --retry 3 --show-error --silent --output goreleaser_checksums.txt "$goreleaser_url/checksums.txt"
+          grep " $goreleaser_archive$" goreleaser_checksums.txt | sha256sum --check -
+          tar -xzf "$goreleaser_archive" goreleaser
+
+          cosign_url="https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}"
+          curl --fail --location --retry 3 --show-error --silent --output cosign-linux-amd64 "$cosign_url/cosign-linux-amd64"
+          curl --fail --location --retry 3 --show-error --silent --output cosign_checksums.txt "$cosign_url/cosign_checksums.txt"
+          grep ' cosign-linux-amd64$' cosign_checksums.txt | sha256sum --check -
+
+          syft_archive="syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          syft_url="https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}"
+          curl --fail --location --retry 3 --show-error --silent --output "$syft_archive" "$syft_url/$syft_archive"
+          curl --fail --location --retry 3 --show-error --silent --output syft_checksums.txt "$syft_url/syft_${SYFT_VERSION}_checksums.txt"
+          grep " $syft_archive$" syft_checksums.txt | sha256sum --check -
+          tar -xzf "$syft_archive" syft
+
+          mkdir -p "${HOME}/.local/bin"
+          install -m 0755 goreleaser cosign-linux-amd64 syft "${HOME}/.local/bin/"
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+      - name: Run release gates
+        run: |
+          make check
+          make vulncheck
+          make test-installer
+          goreleaser check
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          test -s "$notes"
+          goreleaser release --clean --release-notes "$notes"
+      - name: Sign checksums and generate SBOMs
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign-blob --yes --bundle dist/checksums.txt.sigstore.json dist/checksums.txt
+          for archive in dist/apf_*.tar.gz; do
+            syft "$archive" -o spdx-json="${archive}.sbom.spdx.json"
+          done
+      - name: Upload supply-chain assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/checksums.txt.sigstore.json \
+            dist/apf_*.tar.gz.sbom.spdx.json \
+            --clobber
+      - name: Generate provenance attestations
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-checksums: dist/checksums.txt
+
+  verify-linux:
+    name: Verify release (linux/amd64)
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install cosign
+        env:
+          COSIGN_VERSION: 3.1.1
+        run: |
+          cd "${RUNNER_TEMP}"
+          base_url="https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}"
+          curl --fail --location --retry 3 --show-error --silent --output cosign-linux-amd64 "$base_url/cosign-linux-amd64"
+          curl --fail --location --retry 3 --show-error --silent --output checksums.txt "$base_url/cosign_checksums.txt"
+          grep ' cosign-linux-amd64$' checksums.txt | sha256sum --check -
+          install -D -m 0755 cosign-linux-amd64 "${HOME}/.local/bin/cosign"
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+      - name: Verify installer and metadata
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          prefix="${RUNNER_TEMP}/alpineform-install"
+          scripts/install.sh --version "${{ needs.release.outputs.tag }}" --prefix "$prefix" --os linux --arch amd64 --force
+          "$prefix/bin/apf" version | tee "${RUNNER_TEMP}/version.txt"
+          grep -Fq "${{ needs.release.outputs.tag }}" "${RUNNER_TEMP}/version.txt"
+          "$prefix/bin/apf" validate -f examples/quickstart.apf.hcl
+          "$prefix/bin/apf" plan --offline -f examples/quickstart.apf.hcl
+      - name: Verify checksums, signature, SBOM, and attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ needs.release.outputs.tag }}"
+          mkdir -p "${RUNNER_TEMP}/supply-chain"
+          gh release download "$tag" \
+            --pattern checksums.txt \
+            --pattern checksums.txt.sigstore.json \
+            --pattern 'apf_*.tar.gz' \
+            --pattern 'apf_*.tar.gz.sbom.spdx.json' \
+            --dir "${RUNNER_TEMP}/supply-chain"
+          cd "${RUNNER_TEMP}/supply-chain"
+          sha256sum --check checksums.txt
+          cosign verify-blob --bundle checksums.txt.sigstore.json \
+            --certificate-identity-regexp 'https://github.com/mofelee/alpineform/.github/workflows/release.yml@refs/tags/v.*' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+          for artifact in apf_*.tar.gz; do
+            test -s "$artifact.sbom.spdx.json"
+            gh attestation verify "$artifact" --repo mofelee/alpineform
+          done
+      - name: Record verification
+        run: printf '%s\n' 'linux_amd64_installer=yes' 'supply_chain=yes' > "${RUNNER_TEMP}/linux.env"
+      - name: Upload verification result
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-verification-linux-${{ needs.release.outputs.tag }}
+          path: ${{ runner.temp }}/linux.env
+          if-no-files-found: error
+
+  verify-macos:
+    name: Verify release (${{ matrix.platform }})
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin/amd64
+            runner: macos-26-intel
+            arch: amd64
+          - platform: darwin/arm64
+            runner: macos-26
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Verify installer and metadata
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          prefix="${RUNNER_TEMP}/alpineform-install"
+          scripts/install.sh --version "${{ needs.release.outputs.tag }}" --prefix "$prefix" --os darwin --arch "${{ matrix.arch }}" --force
+          "$prefix/bin/apf" version | tee "${RUNNER_TEMP}/version.txt"
+          grep -Fq "${{ needs.release.outputs.tag }}" "${RUNNER_TEMP}/version.txt"
+          "$prefix/bin/apf" validate -f examples/quickstart.apf.hcl
+          "$prefix/bin/apf" plan --offline -f examples/quickstart.apf.hcl
+          printf 'darwin_%s_installer=yes\n' "${{ matrix.arch }}" > "${RUNNER_TEMP}/macos.env"
+      - name: Upload verification result
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-verification-darwin-${{ matrix.arch }}-${{ needs.release.outputs.tag }}
+          path: ${{ runner.temp }}/macos.env
+          if-no-files-found: error
+
+  verify-alpine:
+    name: Verify fresh install against Alpine 3.24 VM
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install libvirt tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cloud-image-utils curl dnsmasq-base libvirt-clients libvirt-daemon-system openssh-client ovmf qemu-system-x86 qemu-utils
+          sudo systemctl start libvirtd
+          if [[ -e /dev/kvm ]]; then sudo chmod 0666 /dev/kvm; fi
+      - name: Install published apf
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          scripts/install.sh --version "${{ needs.release.outputs.tag }}" --prefix "${RUNNER_TEMP}/alpineform-install" --os linux --arch amd64 --force
+      - name: Run promoted quickstart in a fresh VM
+        env:
+          APF_INTEGRATION_APF_BIN: ${{ runner.temp }}/alpineform-install/bin/apf
+          APF_INTEGRATION_CASE_SOURCE: test/release/quickstart
+          APF_INTEGRATION_IMAGE_CACHE: ${{ runner.temp }}/alpine-image-cache
+          APF_INTEGRATION_ARTIFACT_DIR: ${{ runner.temp }}/alpineform-integration-artifacts
+        run: test/integration/libvirt/run.sh
+      - name: Upload redacted diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-quickstart-diagnostics-${{ needs.release.outputs.tag }}
+          path: ${{ runner.temp }}/alpineform-integration-artifacts
+          if-no-files-found: ignore
+      - name: Record verification
+        run: printf '%s\n' 'alpine_3_24_x86_64_quickstart=yes' > "${RUNNER_TEMP}/alpine.env"
+      - name: Upload verification result
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-verification-alpine-${{ needs.release.outputs.tag }}
+          path: ${{ runner.temp }}/alpine.env
+          if-no-files-found: error
+
+  verify-summary:
+    name: Release verification summary
+    needs: [release, verify-linux, verify-macos, verify-alpine]
+    if: always() && needs.release.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download verification results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v6.0.0
+        with:
+          pattern: release-verification-*-${{ needs.release.outputs.tag }}
+          path: ${{ runner.temp }}/verification
+          merge-multiple: true
+      - name: Build verification matrix
+        run: |
+          linux_amd64_installer=failed
+          darwin_amd64_installer=failed
+          darwin_arm64_installer=failed
+          supply_chain=failed
+          alpine_3_24_x86_64_quickstart=failed
+          for result in "${RUNNER_TEMP}"/verification/*.env; do
+            test ! -f "$result" || . "$result"
+          done
+          cat > "${RUNNER_TEMP}/matrix.md" <<EOF
+          | Verification | linux/amd64 | linux/arm64 | darwin/amd64 | darwin/arm64 |
+          | --- | --- | --- | --- | --- |
+          | Artifact build | yes | yes | yes | yes |
+          | Installer | ${linux_amd64_installer} | build-only | ${darwin_amd64_installer} | ${darwin_arm64_installer} |
+          | Supply chain | ${supply_chain} | ${supply_chain} | ${supply_chain} | ${supply_chain} |
+          | Alpine 3.24 x86_64 quickstart | ${alpine_3_24_x86_64_quickstart} | n/a | n/a | n/a |
+          EOF
+          cat "${RUNNER_TEMP}/matrix.md" >> "$GITHUB_STEP_SUMMARY"
+          ! grep -q failed "${RUNNER_TEMP}/matrix.md"
+      - name: Add matrix to release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ needs.release.outputs.tag }}"
+          gh release view "$tag" --repo mofelee/alpineform --json body --jq '.body // ""' > "${RUNNER_TEMP}/body.md"
+          awk '/^## Verification Matrix$/ {skip=1; next} skip && /^## / {skip=0} !skip {print}' "${RUNNER_TEMP}/body.md" > "${RUNNER_TEMP}/updated.md"
+          printf '\n## Verification Matrix\n\n' >> "${RUNNER_TEMP}/updated.md"
+          cat "${RUNNER_TEMP}/matrix.md" >> "${RUNNER_TEMP}/updated.md"
+          gh release edit "$tag" --repo mofelee/alpineform --notes-file "${RUNNER_TEMP}/updated.md"

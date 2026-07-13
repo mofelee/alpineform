@@ -1,68 +1,149 @@
 # AlpineForm
 
-AlpineForm is a declarative configuration tool for Alpine Linux hosts. The
-current core implements the configuration language, deterministic offline
-plans, Alpine 3.24 fact discovery, root SSH, remote state, renewable locks, and
-reviewed online plan/apply/check workflows. Provider-backed Alpine resource
-domains are being added separately; structural declarations do not pretend to
-be remote changes.
-
-The workflow is:
+AlpineForm (`apf`) is a declarative configuration tool for Alpine Linux hosts.
+It validates HCL configuration, previews changes, converges a target over root
+SSH, and reports drift with the same configuration:
 
 ```text
 apf validate -> apf plan -> apf apply -> apf check
 ```
 
-Configuration files use the `*.apf.hcl` suffix. Variable inputs use
-`alpineform.apfvars`, `*.auto.apfvars`, or the `APF_VAR_` environment prefix.
+AlpineForm is pre-release software and is not an official Alpine Linux project.
+The first release is `v0.1.0-alpha.1`; its compatibility guarantees are
+documented in [the compatibility policy](docs/compatibility-policy.md).
+
+## Supported Core
+
+The blocking target is persistent Alpine 3.24 x86_64 with OpenRC. The core
+manages files, directories, groups, users, authorized keys, APK repositories
+and packages, bounded or raw OpenRC services, hostname, timezone, kernel
+modules, sysctls, and verified prebuilt components. Every Beta domain runs in
+a fresh Alpine 3.24.1 VM through apply, no-op plan, drift and repair where
+applicable, and reboot.
+
+Alpine 3.24 aarch64 remains Preview because it has cross-build and selector
+coverage but no blocking real-VM gate. Docker (#10), rollback-safe nftables
+(#13), and target-side source builds (#14) are independent follow-ups and are
+not part of the v0.1 core. See the complete [support matrix](docs/support-matrix.md).
+
+## Install
+
+Release archives are built with `CGO_ENABLED=0` for Linux and macOS on amd64
+and arm64. The installer downloads the selected archive and `checksums.txt`,
+verifies SHA-256, and atomically installs `apf`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mofelee/alpineform/main/scripts/install.sh |
+  sh -s -- --version v0.1.0-alpha.1
+apf version
+```
+
+Install into a private prefix:
+
+```sh
+sh scripts/install.sh \
+  --version v0.1.0-alpha.1 \
+  --prefix "$HOME/.local"
+```
+
+Homebrew is not published for this release. It will only be offered after its
+install, test, and upgrade paths have real automated evidence.
+
+For a private repository or mirror, run the installer from an authenticated
+checkout and export `GITHUB_TOKEN` or `GH_TOKEN`; authenticated release assets
+are resolved through the GitHub API.
+
+## Quickstart
+
+The control host needs `apf` and OpenSSH. The managed host must be a persistent
+Alpine 3.24 installation reachable as root with a key. Put the target in your
+OpenSSH configuration; online fact discovery does not require platform values
+in the AlpineForm file:
+
+```sshconfig
+Host alpine
+  HostName 192.0.2.10
+  User root
+  IdentityFile ~/.ssh/alpine
+  IdentitiesOnly yes
+```
+
+[`examples/quickstart.apf.hcl`](examples/quickstart.apf.hcl) creates a small
+managed directory and file:
+
+```hcl
+host "alpine" {
+  ssh {
+    host = "alpine"
+  }
+
+  directories {
+    directory "/etc/alpineform-example" {}
+  }
+
+  files {
+    file "/etc/alpineform-example/managed.conf" {
+      content = "managed-by=alpineform\n"
+      mode    = "0644"
+    }
+  }
+}
+```
+
+Run the complete workflow:
+
+```sh
+apf validate -f examples/quickstart.apf.hcl
+apf plan --offline -f examples/quickstart.apf.hcl
+apf plan -f examples/quickstart.apf.hcl
+apf apply -f examples/quickstart.apf.hcl
+apf check -f examples/quickstart.apf.hcl
+```
+
+`apply` previews before locking, replans inside a renewable per-host lease, and
+asks for approval of the actual locked plan. A clean `check` exits zero; drift
+prints the required actions and exits nonzero. Remote state is stored at
+`/var/lib/alpineform/state.json` with mode `0600`.
+
+## Configuration
+
+Configuration uses `*.apf.hcl`. Variable inputs use
+`alpineform.apfvars[.json]`, `*.auto.apfvars[.json]`, explicit `-var-file`,
+`-var`, or `APF_VAR_<name>`. Reusable `profile`, `component`, `script`,
+`locals`, `variable`, and `assert` declarations compile into deterministic
+resource addresses and dependency order.
+
+Start with the [DSL and CLI reference](docs/dsl-reference.md), then use the
+domain guides:
+
+- [files](docs/files.md), [directories](docs/directories.md),
+  [groups](docs/groups.md), and [users](docs/users.md)
+- [APK and packages](docs/apk.md)
+- [OpenRC services](docs/openrc.md)
+- [system settings](docs/system.md) and [kernel settings](docs/kernel.md)
+- [components and change scripts](docs/components.md)
+
+Operational contracts are covered by the [architecture](docs/architecture.md),
+[state backend](docs/state-backend.md), [lock model](docs/locking.md),
+[security model](docs/security-model.md), and
+[operations runbook](docs/operations-runbook.md).
 
 ## Development
 
 ```sh
 make build
-./apf version
-./apf validate -f examples/variables.apf.hcl
-./apf variable inspect -f examples/variables.apf.hcl
-./apf validate -f examples/model.apf.hcl
-./apf component inspect -f examples/model.apf.hcl web_app
-./apf plan --offline -f examples/model.apf.hcl --format json --html plan.html
-# Online commands use the host SSH identities declared in configuration:
-./apf plan -f path/to/hosts.apf.hcl
-./apf apply -f path/to/hosts.apf.hcl
-./apf check -f path/to/hosts.apf.hcl
-./apf fmt -f examples/variables.apf.hcl
 make check
+make vulncheck
+make test-integration-layout
 ```
 
-See [docs/development.md](docs/development.md) for the package boundaries and
-current core scope. AlpineForm is derived from the architecture and
-selected code patterns of DebianForm v0.6.0; see [NOTICE.md](NOTICE.md).
+The real-VM harness and remote-libvirt settings are documented in
+[the integration runbook](test/integration/libvirt/README.md). Release work
+follows [the release process](docs/release-process.md).
 
-The current model accepts reusable profiles, typed components, verified
-prebuilt artifacts, deduplicated change scripts, assertions, lifecycle
-metadata, and offline Alpine platform declarations. Components can compose the
-same file, directory, account, package, OpenRC, and service domains under
-instance-scoped resource addresses; see [docs/components.md](docs/components.md).
-Host-level `files.file`, `directories.directory`,
-`groups.group`, `users.user`, host-level `apk`, `packages.package`, and
-`services.service` resources plus explicit `system` settings provide native convergence; see
-[docs/files.md](docs/files.md), [docs/directories.md](docs/directories.md), and
-[docs/groups.md](docs/groups.md), [docs/users.md](docs/users.md), and
-[docs/apk.md](docs/apk.md). Bounded OpenRC generation and runtime convergence are documented in
-[docs/openrc.md](docs/openrc.md), [docs/system.md](docs/system.md), and
-[docs/kernel.md](docs/kernel.md).
+## Provenance And License
 
-Online commands first discover and validate Alpine 3.24 facts through fixed
-read-only commands. `apply` shows a preview, acquires each host's runtime lease,
-rebuilds the plan, and requires approval of the locked plan before persisting
-facts, state, or provider changes. `--parallel` bounds concurrent hosts;
-`--lock-timeout` bounds lease acquisition; `apply --debug` emits structural,
-redacted lifecycle events.
-
-Offline plans include a deterministic structural graph. Host, platform, and
-component declarations are structural; provider-backed component resources
-and artifacts appear as managed changes with their actual dependencies.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+AlpineForm uses DebianForm v0.6.0 as an architecture and selected-code
+reference. [NOTICE.md](NOTICE.md) records the exact upstream commit and major
+changes. AlpineForm is independently versioned and does not accept DebianForm
+configuration or state. Licensed under the MIT License; see [LICENSE](LICENSE).

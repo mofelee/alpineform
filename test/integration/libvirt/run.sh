@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/alpine-target.sh"
 
 WORK_ROOT="${APF_INTEGRATION_WORKDIR:-$(mktemp -d "${TMPDIR:-/tmp}/alpineform-core-integration.XXXXXX")}"
 ARTIFACT_ROOT="${APF_INTEGRATION_ARTIFACT_DIR:-${TMPDIR:-/tmp}/alpineform-core-integration-artifacts}"
+INPUT_APF_BIN="${APF_INTEGRATION_APF_BIN:-}"
 APF_BIN="$WORK_ROOT/apf"
 BASE_IMAGE="$WORK_ROOT/$APF_INTEGRATION_CLOUD_IMAGE"
 
@@ -35,9 +36,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in curl go python3 sha512sum ssh ssh-keygen virsh; do
+for command in curl python3 sha512sum ssh ssh-keygen virsh; do
   require_command "$command"
 done
+if [[ -z "$INPUT_APF_BIN" ]]; then
+  require_command go
+fi
 if [[ -z "${APF_LIBVIRT_URI:-${VIRSH_DEFAULT_CONNECT_URI:-${LIBVIRT_DEFAULT_URI:-}}}" ]]; then
   for command in cloud-localds qemu-img sudo; do
     require_command "$command"
@@ -51,11 +55,20 @@ fi
 mkdir -p "$WORK_ROOT" "$ARTIFACT_ROOT"
 chmod 0755 "$WORK_ROOT"
 
-log "building apf"
-(
-  cd "$ROOT_DIR"
-  go build -trimpath -o "$APF_BIN" ./cmd/apf
-)
+if [[ -n "$INPUT_APF_BIN" ]]; then
+  [[ -x "$INPUT_APF_BIN" ]] || {
+    printf 'integration apf binary is not executable: %s\n' "$INPUT_APF_BIN" >&2
+    exit 1
+  }
+  log "using supplied apf binary"
+  cp "$INPUT_APF_BIN" "$APF_BIN"
+else
+  log "building apf"
+  (
+    cd "$ROOT_DIR"
+    go build -trimpath -o "$APF_BIN" ./cmd/apf
+  )
+fi
 
 log "verifying pinned Alpine $APF_INTEGRATION_ALPINE_VERSION cloud image metadata"
 published_sha="$(curl --fail --location --retry 3 --show-error --silent \
@@ -87,7 +100,10 @@ fi
 chmod 0644 "$BASE_IMAGE"
 
 declare -a CASE_DIRS=()
-if [[ -n "${APF_INTEGRATION_CASE:-}" ]]; then
+if [[ -n "${APF_INTEGRATION_CASE_SOURCE:-}" ]]; then
+  case_dir="$(cd "$APF_INTEGRATION_CASE_SOURCE" && pwd)"
+  CASE_DIRS+=("$case_dir")
+elif [[ -n "${APF_INTEGRATION_CASE:-}" ]]; then
   case_dir="$CASES_DIR/$APF_INTEGRATION_CASE"
   [[ -d "$case_dir" ]] || {
     printf 'integration case not found: %s\n' "$APF_INTEGRATION_CASE" >&2

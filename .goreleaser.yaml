@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: apf
+
+builds:
+  - id: apf
+    main: ./cmd/apf
+    binary: apf
+    env:
+      - CGO_ENABLED=0
+    targets:
+      - linux_amd64
+      - linux_arm64
+      - darwin_amd64
+      - darwin_arm64
+    flags:
+      - -buildvcs=false
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/mofelee/alpineform/internal/version.Version={{ .Tag }}
+      - -X github.com/mofelee/alpineform/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/mofelee/alpineform/internal/version.Date={{ .Date }}
+
+archives:
+  - id: tarballs
+    ids:
+      - apf
+    formats:
+      - tar.gz
+    name_template: "apf_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - NOTICE.md
+      - CHANGELOG.md
+      - docs/**
+      - examples/**
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  prerelease: auto
