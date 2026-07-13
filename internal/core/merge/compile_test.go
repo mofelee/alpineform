@@ -250,7 +250,40 @@ component "app" {
   }
 }
 `,
-			want: "invalid protected default",
+			want: "invalid protected component input default",
+		},
+		{
+			name: "invalid default validation",
+			content: `
+component "app" {
+  input "port" {
+    type    = number
+    default = 0
+    validation {
+      condition     = input.port > 0
+      error_message = "default port must be positive"
+    }
+  }
+}
+`,
+			want: "default port must be positive",
+		},
+		{
+			name: "cross input validation",
+			content: `
+component "app" {
+  input "port" {
+    type    = number
+    default = 80
+    validation {
+      condition     = input.other > 0
+      error_message = "invalid reference"
+    }
+  }
+  input "other" { type = number }
+}
+`,
+			want: "can only read input.port",
 		},
 		{
 			name: "unknown dependency",
@@ -318,6 +351,22 @@ host "node" {
 	}
 	_, err = Compile(config)
 	if err == nil || !strings.Contains(err.Error(), "declare platform.architecture for offline evaluation") {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	config, err = compileConfig(t, `
+host "node" {
+  assert {
+    condition     = self.platform.branch == "3.24"
+    error_message = "Alpine 3.24 required"
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Compile(config)
+	if err == nil || !strings.Contains(err.Error(), "declare platform.version for offline evaluation") {
 		t.Fatalf("Compile() error = %v", err)
 	}
 }

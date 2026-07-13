@@ -1,0 +1,5 @@
+Offline plan:
+  Configuration graph: 3 node(s), 0 managed resource(s).
+  No managed resource changes.
+
+Summary: 0 to create, 0 to update, 0 to delete.

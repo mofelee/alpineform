@@ -152,6 +152,22 @@ func TestFmtValidatesBeforeWritingAndIsIdempotent(t *testing.T) {
 	if !bytes.Equal(after, invalid) {
 		t.Fatalf("fmt changed semantically invalid input: %q", after)
 	}
+
+	compileInvalidPath := filepath.Join(dir, "compile-invalid.apf.hcl")
+	compileInvalid := []byte("host \"node\" {\n  component \"app\" { source = component.missing }\n}\n")
+	if err := os.WriteFile(compileInvalidPath, compileInvalid, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runFmt([]string{"-f", compileInvalidPath}, &bytes.Buffer{}, dir); err == nil || !strings.Contains(err.Error(), "unknown component.missing") {
+		t.Fatalf("compile-invalid fmt error = %v", err)
+	}
+	after, err = os.ReadFile(compileInvalidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, compileInvalid) {
+		t.Fatalf("fmt changed compiler-invalid input: %q", after)
+	}
 }
 
 func TestVariableInspectIsStableAndRedactsProtectedDefaults(t *testing.T) {

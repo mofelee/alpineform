@@ -300,6 +300,16 @@ func parseComponentInput(file, parentPath string, block *hclsyntax.Block, ctx Ev
 		}
 		input.Validations = append(input.Validations, validation)
 	}
+	if input.Default != nil {
+		normalized, err := NormalizeComponentInputValue(input, *input.Default)
+		if err != nil {
+			if input.Sensitive || input.Ephemeral {
+				return ComponentInput{}, fmt.Errorf("%s:%d:%s: invalid protected component input default", input.Source.File, input.Source.Line, input.Source.Path)
+			}
+			return ComponentInput{}, err
+		}
+		input.Default = &normalized
+	}
 	return input, nil
 }
 

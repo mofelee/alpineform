@@ -57,13 +57,24 @@ func validateComponentDefaults(components map[string]parser.Component) error {
 		component := components[componentName]
 		for _, inputName := range sortedInputNames(component.Inputs) {
 			input := component.Inputs[inputName]
+			if err := validateInputValidationReferences(input); err != nil {
+				return err
+			}
 			if input.Default == nil {
 				continue
 			}
-			if _, err := parser.NormalizeComponentInputValue(input, *input.Default); err != nil {
+			normalized, err := parser.NormalizeComponentInputValue(input, *input.Default)
+			if err != nil {
 				if input.Sensitive || input.Ephemeral {
 					return fmt.Errorf("%s:%d:%s: invalid protected default for component.%s input %q", input.Source.File, input.Source.Line, input.Source.Path, componentName, inputName)
 				}
+				return err
+			}
+			context, err := inputEvalContext(parser.EvalContext{}, map[string]parser.Value{inputName: normalized})
+			if err != nil {
+				return err
+			}
+			if err := evaluateInputValidations(input, normalized, context, componentName); err != nil {
 				return err
 			}
 		}
@@ -310,6 +321,22 @@ func evaluateInputValidations(input parser.ComponentInput, value parser.Value, c
 		}
 		if !result.Bool {
 			return fmt.Errorf("%s:%d:%s.validation[%d]: validation failed for component.%s input %q: %s", validation.Source.File, validation.Source.Line, input.Source.Path, i, componentName, input.Name, validation.Message)
+		}
+	}
+	return nil
+}
+
+func validateInputValidationReferences(input parser.ComponentInput) error {
+	for _, validation := range input.Validations {
+		for _, traversal := range validation.Condition.Variables() {
+			if len(traversal) < 2 {
+				return fmt.Errorf("%s:%d:%s: component input validation can only read input.%s", validation.ConditionSource.File, validation.ConditionSource.Line, validation.ConditionSource.Path, input.Name)
+			}
+			root, rootOK := traversal[0].(hcl.TraverseRoot)
+			attribute, attributeOK := traversal[1].(hcl.TraverseAttr)
+			if !rootOK || root.Name != "input" || !attributeOK || attribute.Name != input.Name {
+				return fmt.Errorf("%s:%d:%s: component input validation can only read input.%s", validation.ConditionSource.File, validation.ConditionSource.Line, validation.ConditionSource.Path, input.Name)
+			}
 		}
 	}
 	return nil

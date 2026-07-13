@@ -1,0 +1,59 @@
+{
+  "format_version": "alpineform.plan.alpha1",
+  "mode": "offline",
+  "command": {
+    "files": [
+      "../../../examples/model.apf.hcl"
+    ]
+  },
+  "hosts": [
+    "alpine_1"
+  ],
+  "summary": {
+    "create": 0,
+    "update": 0,
+    "delete": 0,
+    "no_op": 0,
+    "managed_resources": 0,
+    "graph_nodes": 3
+  },
+  "graph": [
+    {
+      "address": "host.alpine_1",
+      "kind": "host",
+      "managed": false,
+      "source": {
+        "file": "../../../examples/model.apf.hcl",
+        "line": 54,
+        "path": "host[\"alpine_1\"]"
+      }
+    },
+    {
+      "address": "host.alpine_1.component.web",
+      "kind": "component",
+      "managed": false,
+      "depends_on": [
+        "host.alpine_1"
+      ],
+      "source": {
+        "file": "../../../examples/model.apf.hcl",
+        "line": 42,
+        "path": "profile[\"base\"].component[\"web\"]"
+      }
+    },
+    {
+      "address": "host.alpine_1.platform",
+      "kind": "platform",
+      "managed": false,
+      "depends_on": [
+        "host.alpine_1"
+      ],
+      "source": {
+        "file": "../../../examples/model.apf.hcl",
+        "line": 57,
+        "path": "host[\"alpine_1\"].platform"
+      }
+    }
+  ],
+  "changes": []
+}
