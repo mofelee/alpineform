@@ -4,7 +4,13 @@ All notable user-visible changes to AlpineForm are recorded here.
 
 ## [Unreleased]
 
-None.
+### Changed
+
+- Mark `v0.1.0-alpha.2` incomplete because GitHub provenance persistence is not
+  available to a user-owned private repository and downstream release
+  verification was skipped.
+- Gate release dry-runs and tag publication on GitHub artifact-attestation
+  eligibility before creating or uploading any release assets.
 
 ## [v0.1.0-alpha.2] - 2026-07-13
 
@@ -15,6 +21,13 @@ None.
   artifact verification to run.
 - Supersede the incomplete `v0.1.0-alpha.1` prerelease without moving its signed
   tag or replacing its partial assets.
+
+### Known Issues
+
+- The release published archives, checksums, a Sigstore bundle, and four SBOMs,
+  then GitHub rejected artifact-attestation persistence for the user-owned
+  private repository. Downstream installer and fresh-VM verification was
+  skipped. This prerelease is incomplete and must not be used.
 
 ## [v0.1.0-alpha.1] - 2026-07-13
 

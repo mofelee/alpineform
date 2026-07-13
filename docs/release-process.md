@@ -1,8 +1,8 @@
 # Release Process
 
-The first complete public contract is `v0.1.0-alpha.2`. The preceding alpha.1
-is retained as an incomplete prerelease for auditability. Releases are built
-from a commit whose core CI and release dry-run both passed.
+No complete public contract is currently published. Alpha.1 and alpha.2 are
+retained as incomplete prereleases for auditability. Releases are built from a
+commit whose core CI and release dry-run both passed.
 
 ## Artifacts
 
@@ -41,9 +41,13 @@ until install, test, and upgrade have blocking evidence.
    ```
 
 4. Run the full Alpine 3.24 VM matrix and verify exact cleanup.
-5. Push the release commit and require its exact-SHA core CI and release dry-run.
-6. Test the installer against the snapshot artifacts in an isolated prefix.
-7. Create an SSH- or GPG-signed annotated tag and push only that tag.
+5. Confirm GitHub artifact attestations are available. Public repositories pass
+   directly; a private Enterprise Cloud repository must explicitly set the
+   repository variable `APF_PRIVATE_ATTESTATIONS_ENABLED=true` after confirming
+   entitlement.
+6. Push the release commit and require its exact-SHA core CI and release dry-run.
+7. Test the installer against the snapshot artifacts in an isolated prefix.
+8. Create an SSH- or GPG-signed annotated tag and push only that tag.
 
 ## Publish And Verify
 

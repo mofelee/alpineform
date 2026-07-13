@@ -5,15 +5,31 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 for file in README.md LICENSE NOTICE.md CHANGELOG.md .goreleaser.yaml \
-  scripts/install.sh docs/support-matrix.md docs/compatibility-policy.md \
+  scripts/install.sh scripts/check-attestation-eligibility.sh \
+  scripts/test-attestation-eligibility.sh \
+  docs/support-matrix.md docs/compatibility-policy.md \
   docs/security-model.md docs/operations-runbook.md docs/release-process.md \
   docs/releases/v0.1.0-alpha.1.md docs/releases/v0.1.0-alpha.2.md; do
   test -s "$ROOT_DIR/$file"
 done
 
-bash -n "$ROOT_DIR/scripts/test-install.sh" "$ROOT_DIR/scripts/validate-release.sh"
+bash -n "$ROOT_DIR/scripts/check-attestation-eligibility.sh" \
+  "$ROOT_DIR/scripts/test-attestation-eligibility.sh" \
+  "$ROOT_DIR/scripts/test-install.sh" "$ROOT_DIR/scripts/validate-release.sh"
 sh -n "$ROOT_DIR/scripts/install.sh"
+"$ROOT_DIR/scripts/test-attestation-eligibility.sh"
 cmp "$ROOT_DIR/examples/quickstart.apf.hcl" "$ROOT_DIR/test/release/quickstart/1.apf.hcl"
+
+require_step_before() {
+  local workflow=$1 first=$2 second=$3 first_line second_line
+  first_line="$(grep -nF -m1 -- "$first" "$workflow" | cut -d: -f1)"
+  second_line="$(grep -nF -m1 -- "$second" "$workflow" | cut -d: -f1)"
+  test -n "$first_line" -a -n "$second_line" -a "$first_line" -lt "$second_line"
+}
+require_step_before "$ROOT_DIR/.github/workflows/release-dry-run.yml" \
+  "Check GitHub attestation eligibility" "Build snapshot release"
+require_step_before "$ROOT_DIR/.github/workflows/release.yml" \
+  "Check GitHub attestation eligibility" "Publish release"
 
 for example in "$ROOT_DIR"/examples/*.apf.hcl; do
   go run "$ROOT_DIR/cmd/apf" validate -f "$example" >/dev/null

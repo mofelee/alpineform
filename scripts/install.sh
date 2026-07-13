@@ -19,7 +19,7 @@ usage() {
 Usage: install.sh [options]
 
 Options:
-  --version VERSION  Install a specific version, for example v0.1.0-alpha.2.
+  --version VERSION  Install a specific supported release tag.
   --prefix DIR       Defaults to /usr/local when writable, otherwise $HOME/.local.
   --bin-dir DIR      Defaults to <prefix>/bin.
   --os OS            Override OS detection: linux or darwin.
