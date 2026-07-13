@@ -24,7 +24,7 @@ installed=false
 metadata=
 if apk info --exists "$name" >/dev/null 2>&1; then
   installed=true
-  metadata=$(apk info --verbose "$name" 2>/dev/null | head -n 1 || true)
+  metadata=$(apk list --installed "$name" 2>/dev/null | head -n 1 || true)
 fi
 world=false
 if [ -L /etc/apk/world ]; then

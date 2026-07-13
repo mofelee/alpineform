@@ -48,7 +48,7 @@ func TestPackageProviderUsesSafeAddAndExplicitDeleteOnly(t *testing.T) {
 	if _, err := applyPackage(context.Background(), runner, node); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.commands) != 2 || runner.commands[0].Name != "apply.package" || runner.commands[0].Arguments[0] != "curl@testing" || strings.Contains(runner.commands[0].Script, "curl") || !strings.Contains(runner.commands[0].Script, "apk --quiet add") {
+	if len(runner.commands) != 2 || runner.commands[0].Name != "apply.package" || runner.commands[0].Arguments[0] != "curl@testing" || strings.Contains(runner.commands[0].Script, "curl") || !strings.Contains(runner.commands[0].Script, "apk --quiet add") || !strings.Contains(runner.commands[1].Script, "apk list --installed") {
 		t.Fatalf("package add commands = %#v", runner.commands)
 	}
 	if err := deletePackage(context.Background(), runner, engine.Step{Action: engine.ActionDestroy, Prior: &corestate.Resource{Kind: "package", Delete: map[string]any{"name": "curl"}}}); err == nil {
