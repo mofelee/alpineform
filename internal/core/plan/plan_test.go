@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mofelee/alpineform/internal/core/engine"
 	"github.com/mofelee/alpineform/internal/core/graph"
 	"github.com/mofelee/alpineform/internal/core/ir"
+	corestate "github.com/mofelee/alpineform/internal/core/state"
 )
 
 func testDocument() Document {
@@ -53,6 +55,70 @@ func TestTextColorIsExplicit(t *testing.T) {
 	PrintText(&output, testDocument(), TextOptions{Color: false})
 	if strings.Contains(output.String(), "\x1b[") {
 		t.Fatalf("plain output contains ANSI sequence: %q", output.String())
+	}
+}
+
+func TestOnlinePlanRendersEveryActionWithoutProtectedValues(t *testing.T) {
+	secret := "not-a-real-online-plan-secret"
+	host := ir.HostSpec{Name: "node"}
+	actions := []string{
+		engine.ActionCreate,
+		engine.ActionUpdate,
+		engine.ActionAdopt,
+		engine.ActionDelete,
+		engine.ActionDestroy,
+		engine.ActionForget,
+		engine.ActionNoOp,
+	}
+	steps := make([]engine.Step, 0, len(actions))
+	for _, action := range actions {
+		node := graph.Node{
+			Address:   "host.node.test." + action,
+			Kind:      "test",
+			Managed:   true,
+			Summary:   action + " test resource",
+			Desired:   map[string]any{"content": action},
+			Source:    ir.SourceRef{File: "model.apf.hcl", Line: 3},
+			DependsOn: []string{"host.node"},
+		}
+		step := engine.Step{Address: node.Address, Action: action, Summary: node.Summary, Node: node}
+		if action == engine.ActionUpdate {
+			step.Node.Sensitive = true
+			step.Node.Desired = map[string]any{"content": secret}
+			step.Observed = engine.ObservedResource{Exists: true, Values: map[string]any{"content": secret}}
+		}
+		if action == engine.ActionForget {
+			step.Node = graph.Node{}
+			step.Prior = &corestate.Resource{Kind: "test", Protected: true, Observed: map[string]any{"content": secret}}
+		}
+		steps = append(steps, step)
+	}
+	document := NewOnline(engine.Plan{Hosts: []engine.HostPlan{{Host: host, Steps: steps}}}, Options{Files: []string{"model.apf.hcl"}})
+	if document.Mode != "online" || document.Summary.Create != 1 || document.Summary.Update != 1 || document.Summary.Adopt != 1 || document.Summary.Delete != 1 || document.Summary.Destroy != 1 || document.Summary.Forget != 1 || document.Summary.NoOp != 1 {
+		t.Fatalf("online document summary = %#v", document.Summary)
+	}
+	var textOutput bytes.Buffer
+	PrintText(&textOutput, document, TextOptions{Color: true})
+	var jsonOutput bytes.Buffer
+	if err := PrintJSON(&jsonOutput, document); err != nil {
+		t.Fatal(err)
+	}
+	var htmlOutput bytes.Buffer
+	if err := PrintHTML(&htmlOutput, document); err != nil {
+		t.Fatal(err)
+	}
+	for name, output := range map[string]string{"text": textOutput.String(), "json": jsonOutput.String(), "html": htmlOutput.String()} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("%s online plan leaked protected value: %s", name, output)
+		}
+	}
+	for name, output := range map[string]string{"text": textOutput.String(), "html": htmlOutput.String()} {
+		if !strings.Contains(output, "Online plan") && !strings.Contains(output, "online plan") {
+			t.Fatalf("%s online plan lacks mode heading: %s", name, output)
+		}
+	}
+	if !strings.Contains(jsonOutput.String(), `"mode": "online"`) || !strings.Contains(jsonOutput.String(), `"protected": true`) || !strings.Contains(htmlOutput.String(), ">destroy<") {
+		t.Fatalf("online JSON/HTML = %s\n%s", jsonOutput.String(), htmlOutput.String())
 	}
 }
 
