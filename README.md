@@ -21,6 +21,8 @@ make build
 ./apf version
 ./apf validate -f examples/variables.apf.hcl
 ./apf variable inspect -f examples/variables.apf.hcl
+./apf validate -f examples/model.apf.hcl
+./apf component inspect -f examples/model.apf.hcl web_app
 ./apf fmt -f examples/variables.apf.hcl
 make check
 ```
@@ -28,6 +30,11 @@ make check
 See [docs/development.md](docs/development.md) for the package boundaries and
 current bootstrap scope. AlpineForm is derived from the architecture and
 selected code patterns of DebianForm v0.6.0; see [NOTICE.md](NOTICE.md).
+
+The current model accepts reusable profiles, typed component metadata,
+component instances, assertions, lifecycle metadata, and offline Alpine
+platform declarations. It does not yet turn those declarations into remote
+resource changes.
 
 ## License
 

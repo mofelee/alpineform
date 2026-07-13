@@ -26,6 +26,20 @@ redacts sensitive and ephemeral defaults. `apf fmt` validates every selected
 file before writing any formatted content and is idempotent. No Alpine or
 Debian resource schema is public yet.
 
+## Implemented language subset
+
+- `variable`, `locals`, root and nested `assert`
+- `profile` imports with deterministic component-instance override order
+- typed `component` inputs and local instance dependency validation
+- metadata-only `script` declarations; execution is intentionally unavailable
+- `host` imports and optional offline `platform.architecture` / `version`
+- `lifecycle.prevent_destroy` metadata on component instances
+
+Platform architecture is normalized to `amd64` or `arm64`. Alpine branch,
+`libc=musl`, and native APK architecture are derived read-only facts. Offline
+compilation requires architecture or version only when an expression actually
+references the corresponding platform fact.
+
 ## Product names
 
 | Surface | Value |

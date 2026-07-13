@@ -138,6 +138,12 @@ func (v Value) CanonicalString() string {
 	return string(data)
 }
 
+// UnmarkedInterface returns the value without sensitivity metadata. Callers
+// must apply redaction before serializing the result.
+func (v Value) UnmarkedInterface() any {
+	return v.canonicalTypeLiteral()
+}
+
 func (v Value) canonicalTypeLiteral() any {
 	switch v.Kind {
 	case KindNumber:

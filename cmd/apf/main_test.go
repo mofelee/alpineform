@@ -138,11 +138,11 @@ func TestFmtValidatesBeforeWritingAndIsIdempotent(t *testing.T) {
 	}
 
 	invalidPath := filepath.Join(dir, "invalid.apf.hcl")
-	invalid := []byte("host \"server1\"{}\n")
+	invalid := []byte("apt {}\n")
 	if err := os.WriteFile(invalidPath, invalid, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := runFmt([]string{"-f", invalidPath}, &bytes.Buffer{}, dir); err == nil || !strings.Contains(err.Error(), "not supported yet") {
+	if err := runFmt([]string{"-f", invalidPath}, &bytes.Buffer{}, dir); err == nil || !strings.Contains(err.Error(), "unknown top-level block") {
 		t.Fatalf("invalid fmt error = %v", err)
 	}
 	after, err := os.ReadFile(invalidPath)
@@ -162,6 +162,7 @@ variable "zeta" {
   default     = [443, 80]
   description = "public ports"
 }
+
 variable "secret" {
   type      = string
   default   = "not-a-real-secret-token"
@@ -212,6 +213,61 @@ variable "alpha" {
 	for i, want := range wantOrder {
 		if decoded.Variables[i].Name != want {
 			t.Fatalf("variable order = %#v", decoded.Variables)
+		}
+	}
+}
+
+func TestValidateRunsModelCompiler(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.apf.hcl"), []byte(`
+host "node" {
+  component "app" { source = component.missing }
+}
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := runValidate(nil, &bytes.Buffer{}, dir, nil)
+	if err == nil || !strings.Contains(err.Error(), "unknown component.missing") {
+		t.Fatalf("validate error = %v", err)
+	}
+}
+
+func TestComponentInspectRedactsProtectedDefaults(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.apf.hcl"), []byte(`
+component "app" {
+  description = "Example application."
+  input "port" {
+    type    = number
+    default = 8080
+  }
+  input "token" {
+    type      = string
+    default   = "not-a-real-component-secret"
+    sensitive = true
+  }
+  input "session" {
+    type      = string
+    default   = "not-a-real-ephemeral-secret"
+    ephemeral = true
+  }
+}
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := runComponent([]string{"inspect", "-f", "main.apf.hcl", "app"}, &output, dir); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	for _, secret := range []string{"not-a-real-component-secret", "not-a-real-ephemeral-secret"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("component inspect leaked %q:\n%s", secret, text)
+		}
+	}
+	for _, want := range []string{`"name": "app"`, `"default": 8080`, `"default": "<sensitive>"`, `"default": "<ephemeral>"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("component inspect missing %q:\n%s", want, text)
 		}
 	}
 }

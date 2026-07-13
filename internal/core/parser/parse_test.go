@@ -156,10 +156,10 @@ variable "token" {
 }
 
 func TestParseFilesRejectsUnimplementedTopLevelBlocks(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "host.apf.hcl")
-	writeConfig(t, path, `host "server1" {}`)
+	path := filepath.Join(t.TempDir(), "apt.apf.hcl")
+	writeConfig(t, path, `apt {}`)
 	_, err := ParseFiles([]string{path})
-	if err == nil || !strings.Contains(err.Error(), `top-level block "host" is not supported yet`) {
+	if err == nil || !strings.Contains(err.Error(), `unknown top-level block "apt"`) {
 		t.Fatalf("ParseFiles() error = %v", err)
 	}
 }

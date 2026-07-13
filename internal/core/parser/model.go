@@ -1,0 +1,649 @@
+package parser
+
+import (
+	"fmt"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/mofelee/alpineform/internal/core/ir"
+	"github.com/zclconf/go-cty/cty"
+)
+
+var declarationLabelPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+type Profile struct {
+	Name       string
+	Imports    []string
+	Components []ComponentInstance
+	Asserts    []Assert
+	Source     ir.SourceRef
+}
+
+type Component struct {
+	Name        string
+	Description string
+	Inputs      map[string]ComponentInput
+	Asserts     []Assert
+	Source      ir.SourceRef
+}
+
+type ComponentInput struct {
+	Name        string
+	Type        string
+	TypeSpec    ComponentInputTypeSpec
+	Description string
+	Default     *Value
+	Nullable    bool
+	Sensitive   bool
+	Ephemeral   bool
+	Deprecated  string
+	Validations []ComponentInputValidation
+	Source      ir.SourceRef
+}
+
+type ComponentInputValidation struct {
+	Source          ir.SourceRef
+	Condition       hcl.Expression
+	ConditionSource ir.SourceRef
+	Message         string
+	MessageSource   ir.SourceRef
+}
+
+type ComponentInstance struct {
+	Name      string
+	Template  string
+	Inputs    map[string]Value
+	DependsOn []string
+	Lifecycle Lifecycle
+	Source    ir.SourceRef
+}
+
+type Lifecycle struct {
+	PreventDestroy bool
+	Source         ir.SourceRef
+}
+
+type Platform struct {
+	Architecture       string
+	Version            string
+	Branch             string
+	Libc               string
+	NativeArchitecture string
+	Source             ir.SourceRef
+}
+
+type Host struct {
+	Name       string
+	Imports    []string
+	Platform   *Platform
+	Components []ComponentInstance
+	Asserts    []Assert
+	Source     ir.SourceRef
+}
+
+type Script struct {
+	Name        string
+	Description string
+	Source      ir.SourceRef
+}
+
+type Assert struct {
+	Condition       hcl.Expression
+	ConditionSource ir.SourceRef
+	Message         string
+	MessageSource   ir.SourceRef
+	Source          ir.SourceRef
+}
+
+func parseModelBlocks(cfg *Config, file string, body *hclsyntax.Body) error {
+	ctx, err := evalContextForConfig(cfg, filepath.Dir(file))
+	if err != nil {
+		return err
+	}
+	for _, block := range body.Blocks {
+		switch block.Type {
+		case "variable", "locals":
+			continue
+		case "profile":
+			profile, err := parseProfile(file, block, ctx)
+			if err != nil {
+				return err
+			}
+			if previous, exists := cfg.Profiles[profile.Name]; exists {
+				return duplicateDeclarationError("profile", profile.Name, profile.Source, previous.Source)
+			}
+			cfg.Profiles[profile.Name] = profile
+		case "component":
+			component, err := parseComponent(file, block, ctx)
+			if err != nil {
+				return err
+			}
+			if previous, exists := cfg.Components[component.Name]; exists {
+				return duplicateDeclarationError("component", component.Name, component.Source, previous.Source)
+			}
+			cfg.Components[component.Name] = component
+		case "host":
+			host, err := parseHost(file, block, ctx)
+			if err != nil {
+				return err
+			}
+			if previous, exists := cfg.Hosts[host.Name]; exists {
+				return duplicateDeclarationError("host", host.Name, host.Source, previous.Source)
+			}
+			cfg.Hosts[host.Name] = host
+		case "script":
+			script, err := parseScript(file, block, ctx)
+			if err != nil {
+				return err
+			}
+			if previous, exists := cfg.Scripts[script.Name]; exists {
+				return duplicateDeclarationError("script", script.Name, script.Source, previous.Source)
+			}
+			cfg.Scripts[script.Name] = script
+		case "assert":
+			assertion, err := parseAssert(file, "assert", block, ctx)
+			if err != nil {
+				return err
+			}
+			cfg.Asserts = append(cfg.Asserts, assertion)
+		default:
+			return fmt.Errorf("%s:%d: unknown top-level block %q", file, block.TypeRange.Start.Line, block.Type)
+		}
+	}
+	return nil
+}
+
+func parseProfile(file string, block *hclsyntax.Block, ctx EvalContext) (Profile, error) {
+	name, path, source, err := declarationIdentity(file, "profile", block)
+	if err != nil {
+		return Profile{}, err
+	}
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "imports"); err != nil {
+		return Profile{}, err
+	}
+	profile := Profile{Name: name, Source: source}
+	if attr, exists := block.Body.Attributes["imports"]; exists {
+		profile.Imports, err = parseReferences(file, path+".imports", attr.Expr, "profile")
+		if err != nil {
+			return Profile{}, err
+		}
+	}
+	for _, child := range block.Body.Blocks {
+		switch child.Type {
+		case "component":
+			instance, err := parseComponentInstance(file, path, child, ctx)
+			if err != nil {
+				return Profile{}, err
+			}
+			if err := rejectDuplicateInstance(profile.Components, instance); err != nil {
+				return Profile{}, err
+			}
+			profile.Components = append(profile.Components, instance)
+		case "assert":
+			assertion, err := parseAssert(file, path+".assert", child, ctx)
+			if err != nil {
+				return Profile{}, err
+			}
+			profile.Asserts = append(profile.Asserts, assertion)
+		default:
+			return Profile{}, fmt.Errorf("%s:%d: unsupported block %s.%s", file, child.TypeRange.Start.Line, path, child.Type)
+		}
+	}
+	return profile, nil
+}
+
+func parseComponent(file string, block *hclsyntax.Block, ctx EvalContext) (Component, error) {
+	name, path, source, err := declarationIdentity(file, "component", block)
+	if err != nil {
+		return Component{}, err
+	}
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "description"); err != nil {
+		return Component{}, err
+	}
+	component := Component{Name: name, Inputs: map[string]ComponentInput{}, Source: source}
+	if attr, exists := block.Body.Attributes["description"]; exists {
+		component.Description, err = evalStringAttribute(file, path, "description", attr, ctx, false)
+		if err != nil {
+			return Component{}, err
+		}
+	}
+	for _, child := range block.Body.Blocks {
+		switch child.Type {
+		case "input":
+			input, err := parseComponentInput(file, path, child, ctx)
+			if err != nil {
+				return Component{}, err
+			}
+			if previous, exists := component.Inputs[input.Name]; exists {
+				return Component{}, duplicateDeclarationError("component input", input.Name, input.Source, previous.Source)
+			}
+			component.Inputs[input.Name] = input
+		case "assert":
+			assertion, err := parseAssert(file, path+".assert", child, ctx)
+			if err != nil {
+				return Component{}, err
+			}
+			component.Asserts = append(component.Asserts, assertion)
+		default:
+			return Component{}, fmt.Errorf("%s:%d: unsupported block %s.%s", file, child.TypeRange.Start.Line, path, child.Type)
+		}
+	}
+	return component, nil
+}
+
+func parseComponentInput(file, parentPath string, block *hclsyntax.Block, ctx EvalContext) (ComponentInput, error) {
+	name, path, source, err := declarationIdentityAt(file, parentPath+".input", "input", block)
+	if err != nil {
+		return ComponentInput{}, err
+	}
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "type", "default", "description", "nullable", "sensitive", "ephemeral", "deprecated"); err != nil {
+		return ComponentInput{}, err
+	}
+	for _, child := range block.Body.Blocks {
+		if child.Type != "validation" {
+			return ComponentInput{}, fmt.Errorf("%s:%d: unsupported block %s.%s", file, child.TypeRange.Start.Line, path, child.Type)
+		}
+	}
+	typeAttr, exists := block.Body.Attributes["type"]
+	if !exists {
+		return ComponentInput{}, fmt.Errorf("%s:%d: %s.type is required", file, source.Line, path)
+	}
+	typeSpec, typeName, err := parseComponentInputType(typeAttr.Expr, ctx, path+".type")
+	if err != nil {
+		return ComponentInput{}, fmt.Errorf("%s:%d:%s.type: %w", file, typeAttr.NameRange.Start.Line, path, err)
+	}
+	input := ComponentInput{Name: name, Type: typeName, TypeSpec: typeSpec, Nullable: true, Source: source}
+	if attr, exists := block.Body.Attributes["description"]; exists {
+		input.Description, err = evalStringAttribute(file, path, "description", attr, ctx, false)
+		if err != nil {
+			return ComponentInput{}, err
+		}
+	}
+	if attr, exists := block.Body.Attributes["deprecated"]; exists {
+		input.Deprecated, err = evalStringAttribute(file, path, "deprecated", attr, ctx, true)
+		if err != nil {
+			return ComponentInput{}, err
+		}
+	}
+	if attr, exists := block.Body.Attributes["default"]; exists {
+		defaultSource := ir.SourceRef{File: file, Line: attr.NameRange.Start.Line, Path: path + ".default"}
+		value, err := evalValue(attr.Expr, ctx, defaultSource)
+		if err != nil {
+			return ComponentInput{}, err
+		}
+		input.Default = &value
+	}
+	for _, item := range []struct {
+		name string
+		set  func(bool)
+	}{
+		{name: "nullable", set: func(value bool) { input.Nullable = value }},
+		{name: "sensitive", set: func(value bool) { input.Sensitive = value }},
+		{name: "ephemeral", set: func(value bool) { input.Ephemeral = value }},
+	} {
+		if attr, exists := block.Body.Attributes[item.name]; exists {
+			value, err := evalBoolAttribute(file, path, item.name, attr, ctx)
+			if err != nil {
+				return ComponentInput{}, err
+			}
+			item.set(value)
+		}
+	}
+	for i, child := range block.Body.Blocks {
+		validation, err := parseComponentInputValidationBlock(file, fmt.Sprintf("%s.validation[%d]", path, i), child, ctx)
+		if err != nil {
+			return ComponentInput{}, err
+		}
+		input.Validations = append(input.Validations, validation)
+	}
+	return input, nil
+}
+
+func parseHost(file string, block *hclsyntax.Block, ctx EvalContext) (Host, error) {
+	name, path, source, err := declarationIdentity(file, "host", block)
+	if err != nil {
+		return Host{}, err
+	}
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "imports"); err != nil {
+		return Host{}, err
+	}
+	host := Host{Name: name, Source: source}
+	if attr, exists := block.Body.Attributes["imports"]; exists {
+		host.Imports, err = parseReferences(file, path+".imports", attr.Expr, "profile")
+		if err != nil {
+			return Host{}, err
+		}
+	}
+	for _, child := range block.Body.Blocks {
+		switch child.Type {
+		case "platform":
+			if host.Platform != nil {
+				return Host{}, fmt.Errorf("%s:%d: duplicate %s.platform block", file, child.TypeRange.Start.Line, path)
+			}
+			platform, err := parsePlatform(file, path+".platform", child, ctx)
+			if err != nil {
+				return Host{}, err
+			}
+			host.Platform = &platform
+		case "component":
+			instance, err := parseComponentInstance(file, path, child, ctx)
+			if err != nil {
+				return Host{}, err
+			}
+			if err := rejectDuplicateInstance(host.Components, instance); err != nil {
+				return Host{}, err
+			}
+			host.Components = append(host.Components, instance)
+		case "assert":
+			assertion, err := parseAssert(file, path+".assert", child, ctx)
+			if err != nil {
+				return Host{}, err
+			}
+			host.Asserts = append(host.Asserts, assertion)
+		default:
+			return Host{}, fmt.Errorf("%s:%d: unsupported block %s.%s", file, child.TypeRange.Start.Line, path, child.Type)
+		}
+	}
+	return host, nil
+}
+
+func parsePlatform(file, path string, block *hclsyntax.Block, ctx EvalContext) (Platform, error) {
+	if len(block.Labels) != 0 {
+		return Platform{}, fmt.Errorf("%s:%d: %s block must not have labels", file, block.TypeRange.Start.Line, path)
+	}
+	if len(block.Body.Blocks) != 0 {
+		return Platform{}, fmt.Errorf("%s:%d: %s does not support nested blocks", file, block.Body.Blocks[0].TypeRange.Start.Line, path)
+	}
+	for name, attr := range block.Body.Attributes {
+		switch name {
+		case "architecture", "version":
+		case "branch", "libc", "native_architecture":
+			return Platform{}, fmt.Errorf("%s:%d: %s.%s is a read-only derived fact and cannot be configured", file, attr.NameRange.Start.Line, path, name)
+		default:
+			return Platform{}, fmt.Errorf("%s:%d: unsupported attribute %s.%s", file, attr.NameRange.Start.Line, path, name)
+		}
+	}
+	platform := Platform{Libc: "musl", Source: ir.SourceRef{File: file, Line: block.TypeRange.Start.Line, Path: path}}
+	if attr, exists := block.Body.Attributes["architecture"]; exists {
+		value, err := evalStringAttribute(file, path, "architecture", attr, ctx, true)
+		if err != nil {
+			return Platform{}, err
+		}
+		switch value {
+		case "amd64", "x86_64":
+			platform.Architecture = "amd64"
+			platform.NativeArchitecture = "x86_64"
+		case "arm64", "aarch64":
+			platform.Architecture = "arm64"
+			platform.NativeArchitecture = "aarch64"
+		default:
+			return Platform{}, fmt.Errorf("%s:%d:%s.architecture: unsupported architecture %q; use amd64 or arm64", file, attr.NameRange.Start.Line, path, value)
+		}
+	}
+	if attr, exists := block.Body.Attributes["version"]; exists {
+		value, err := evalStringAttribute(file, path, "version", attr, ctx, true)
+		if err != nil {
+			return Platform{}, err
+		}
+		platform.Version = value
+		platform.Branch = alpineBranch(value)
+	}
+	return platform, nil
+}
+
+func parseComponentInstance(file, parentPath string, block *hclsyntax.Block, ctx EvalContext) (ComponentInstance, error) {
+	name, path, source, err := declarationIdentityAt(file, parentPath+".component", "component", block)
+	if err != nil {
+		return ComponentInstance{}, err
+	}
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "source", "inputs", "depends_on"); err != nil {
+		return ComponentInstance{}, err
+	}
+	instance := ComponentInstance{Name: name, Inputs: map[string]Value{}, Source: source}
+	sourceAttr, exists := block.Body.Attributes["source"]
+	if !exists {
+		return ComponentInstance{}, fmt.Errorf("%s:%d: %s.source is required", file, source.Line, path)
+	}
+	references, err := parseReferences(file, path+".source", sourceAttr.Expr, "component")
+	if err != nil || len(references) != 1 {
+		return ComponentInstance{}, fmt.Errorf("%s:%d: %s.source must be component.<name>", file, sourceAttr.NameRange.Start.Line, path)
+	}
+	instance.Template = references[0]
+	if attr, exists := block.Body.Attributes["inputs"]; exists {
+		value, err := evalValue(attr.Expr, ctx, ir.SourceRef{File: file, Line: attr.NameRange.Start.Line, Path: path + ".inputs"})
+		if err != nil {
+			return ComponentInstance{}, err
+		}
+		if !value.IsMap() {
+			return ComponentInstance{}, fmt.Errorf("%s:%d: %s.inputs must be an object", file, attr.NameRange.Start.Line, path)
+		}
+		instance.Inputs = value.Map
+	}
+	if attr, exists := block.Body.Attributes["depends_on"]; exists {
+		instance.DependsOn, err = parseReferences(file, path+".depends_on", attr.Expr, "component")
+		if err != nil {
+			return ComponentInstance{}, err
+		}
+	}
+	for _, child := range block.Body.Blocks {
+		if child.Type != "lifecycle" {
+			return ComponentInstance{}, fmt.Errorf("%s:%d: unsupported block %s.%s", file, child.TypeRange.Start.Line, path, child.Type)
+		}
+		if instance.Lifecycle.Source.File != "" {
+			return ComponentInstance{}, fmt.Errorf("%s:%d: duplicate %s.lifecycle block", file, child.TypeRange.Start.Line, path)
+		}
+		lifecycle, err := parseLifecycle(file, path+".lifecycle", child, ctx)
+		if err != nil {
+			return ComponentInstance{}, err
+		}
+		instance.Lifecycle = lifecycle
+	}
+	return instance, nil
+}
+
+func parseLifecycle(file, path string, block *hclsyntax.Block, ctx EvalContext) (Lifecycle, error) {
+	if len(block.Labels) != 0 || len(block.Body.Blocks) != 0 {
+		return Lifecycle{}, fmt.Errorf("%s:%d: %s must be an unlabeled attribute-only block", file, block.TypeRange.Start.Line, path)
+	}
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "prevent_destroy"); err != nil {
+		return Lifecycle{}, err
+	}
+	lifecycle := Lifecycle{Source: ir.SourceRef{File: file, Line: block.TypeRange.Start.Line, Path: path}}
+	if attr, exists := block.Body.Attributes["prevent_destroy"]; exists {
+		value, err := evalBoolAttribute(file, path, "prevent_destroy", attr, ctx)
+		if err != nil {
+			return Lifecycle{}, err
+		}
+		lifecycle.PreventDestroy = value
+	}
+	return lifecycle, nil
+}
+
+func parseScript(file string, block *hclsyntax.Block, ctx EvalContext) (Script, error) {
+	name, path, source, err := declarationIdentity(file, "script", block)
+	if err != nil {
+		return Script{}, err
+	}
+	if len(block.Body.Blocks) != 0 {
+		return Script{}, fmt.Errorf("%s:%d: %s does not support nested blocks yet", file, block.Body.Blocks[0].TypeRange.Start.Line, path)
+	}
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "description"); err != nil {
+		return Script{}, err
+	}
+	script := Script{Name: name, Source: source}
+	if attr, exists := block.Body.Attributes["description"]; exists {
+		script.Description, err = evalStringAttribute(file, path, "description", attr, ctx, false)
+		if err != nil {
+			return Script{}, err
+		}
+	}
+	return script, nil
+}
+
+func parseAssert(file, path string, block *hclsyntax.Block, ctx EvalContext) (Assert, error) {
+	if len(block.Labels) != 0 || len(block.Body.Blocks) != 0 {
+		return Assert{}, fmt.Errorf("%s:%d: %s must be an unlabeled attribute-only block", file, block.TypeRange.Start.Line, path)
+	}
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "condition", "error_message"); err != nil {
+		return Assert{}, err
+	}
+	condition, exists := block.Body.Attributes["condition"]
+	if !exists {
+		return Assert{}, fmt.Errorf("%s:%d: %s.condition is required", file, block.TypeRange.Start.Line, path)
+	}
+	message, exists := block.Body.Attributes["error_message"]
+	if !exists {
+		return Assert{}, fmt.Errorf("%s:%d: %s.error_message is required", file, block.TypeRange.Start.Line, path)
+	}
+	messageSource := ir.SourceRef{File: file, Line: message.NameRange.Start.Line, Path: path + ".error_message"}
+	messageValue, err := evalValue(message.Expr, ctx, messageSource)
+	if err != nil {
+		return Assert{}, err
+	}
+	if messageValue.Kind != KindString || messageValue.String == "" {
+		return Assert{}, fmt.Errorf("%s:%d:%s: error_message must be a non-empty string", file, messageSource.Line, messageSource.Path)
+	}
+	if messageValue.ContainsSensitive() || messageValue.ContainsEphemeral() {
+		return Assert{}, fmt.Errorf("%s:%d:%s: error_message must not use sensitive or ephemeral values", file, messageSource.Line, messageSource.Path)
+	}
+	return Assert{
+		Condition:       condition.Expr,
+		ConditionSource: ir.SourceRef{File: file, Line: condition.NameRange.Start.Line, Path: path + ".condition"},
+		Message:         messageValue.String,
+		MessageSource:   messageSource,
+		Source:          ir.SourceRef{File: file, Line: block.TypeRange.Start.Line, Path: path},
+	}, nil
+}
+
+func parseComponentInputValidationBlock(file, path string, block *hclsyntax.Block, ctx EvalContext) (ComponentInputValidation, error) {
+	validation, err := parseVariableValidationBlock(file, path, block, ctx)
+	if err != nil {
+		return ComponentInputValidation{}, err
+	}
+	return ComponentInputValidation{
+		Source:          validation.Source,
+		Condition:       validation.Condition,
+		ConditionSource: validation.ConditionSource,
+		Message:         validation.Message,
+		MessageSource:   validation.MessageSource,
+	}, nil
+}
+
+func evalContextForConfig(cfg *Config, moduleDir string) (EvalContext, error) {
+	variables, err := variableNamespaceValue(cfg)
+	if err != nil {
+		return EvalContext{}, err
+	}
+	return EvalContext{ModuleDir: moduleDir, Locals: cfg.Locals, Variables: map[string]cty.Value{"var": variables}}, nil
+}
+
+func EvaluateExpression(expr hcl.Expression, ctx EvalContext, source ir.SourceRef) (Value, error) {
+	return evalValue(expr, ctx, source)
+}
+
+func declarationIdentity(file, kind string, block *hclsyntax.Block) (string, string, ir.SourceRef, error) {
+	return declarationIdentityAt(file, kind, kind, block)
+}
+
+func declarationIdentityAt(file, pathPrefix, kind string, block *hclsyntax.Block) (string, string, ir.SourceRef, error) {
+	if len(block.Labels) != 1 {
+		return "", "", ir.SourceRef{}, fmt.Errorf("%s:%d: %s block requires exactly one label", file, block.TypeRange.Start.Line, kind)
+	}
+	name := block.Labels[0]
+	if !declarationLabelPattern.MatchString(name) {
+		return "", "", ir.SourceRef{}, fmt.Errorf("%s:%d: %s label %q must match %s", file, block.TypeRange.Start.Line, kind, name, declarationLabelPattern.String())
+	}
+	path := fmt.Sprintf("%s[%s]", pathPrefix, strconv.Quote(name))
+	return name, path, ir.SourceRef{File: file, Line: block.TypeRange.Start.Line, Path: path}, nil
+}
+
+func duplicateDeclarationError(kind, name string, current, previous ir.SourceRef) error {
+	return fmt.Errorf("%s:%d: duplicate %s %q; first defined at %s:%d", current.File, current.Line, kind, name, previous.File, previous.Line)
+}
+
+func rejectAttributesExcept(file, path string, attributes hclsyntax.Attributes, allowed ...string) error {
+	set := make(map[string]bool, len(allowed))
+	for _, name := range allowed {
+		set[name] = true
+	}
+	for name, attr := range attributes {
+		if !set[name] {
+			return fmt.Errorf("%s:%d: unsupported attribute %s.%s", file, attr.NameRange.Start.Line, path, name)
+		}
+	}
+	return nil
+}
+
+func parseReferences(file, path string, expr hcl.Expression, rootName string) ([]string, error) {
+	items, diags := hcl.ExprList(expr)
+	if diags.HasErrors() {
+		items = []hcl.Expression{expr}
+	}
+	refs := make([]string, 0, len(items))
+	for _, item := range items {
+		traversal, diags := hcl.AbsTraversalForExpr(item)
+		if diags.HasErrors() || len(traversal) != 2 {
+			return nil, fmt.Errorf("%s:%d:%s: reference must be %s.<name>", file, item.Range().Start.Line, path, rootName)
+		}
+		root, rootOK := traversal[0].(hcl.TraverseRoot)
+		name, nameOK := traversal[1].(hcl.TraverseAttr)
+		if !rootOK || root.Name != rootName || !nameOK || !declarationLabelPattern.MatchString(name.Name) {
+			return nil, fmt.Errorf("%s:%d:%s: reference must be %s.<name>", file, item.Range().Start.Line, path, rootName)
+		}
+		refs = append(refs, name.Name)
+	}
+	return refs, nil
+}
+
+func rejectDuplicateInstance(instances []ComponentInstance, candidate ComponentInstance) error {
+	for _, instance := range instances {
+		if instance.Name == candidate.Name {
+			return duplicateDeclarationError("component instance", candidate.Name, candidate.Source, instance.Source)
+		}
+	}
+	return nil
+}
+
+func alpineBranch(version string) string {
+	for i, r := range version {
+		if r == '.' {
+			for j, next := range version[i+1:] {
+				if next == '.' {
+					return version[:i+1+j]
+				}
+			}
+			return version
+		}
+	}
+	return version
+}
+
+func NormalizeComponentInputValue(input ComponentInput, value Value) (Value, error) {
+	if value.Kind == KindNull && !input.Nullable {
+		return Value{}, fmt.Errorf("%s:%d:%s: component input %q must not be null", value.Source.File, value.Source.Line, value.Source.Path, input.Name)
+	}
+	normalized, err := normalizeValueForType(input.Name, input.TypeSpec, value, "")
+	if err != nil {
+		return Value{}, err
+	}
+	if input.Sensitive {
+		normalized.Sensitive = true
+	}
+	if input.Ephemeral {
+		normalized.Ephemeral = true
+	}
+	return normalized, nil
+}
+
+func sortedComponentInputNames(inputs map[string]ComponentInput) []string {
+	names := make([]string, 0, len(inputs))
+	for name := range inputs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}

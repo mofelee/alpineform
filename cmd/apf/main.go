@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	coremerge "github.com/mofelee/alpineform/internal/core/merge"
 	coreparser "github.com/mofelee/alpineform/internal/core/parser"
 	"github.com/mofelee/alpineform/internal/product"
 	"github.com/mofelee/alpineform/internal/version"
@@ -54,7 +55,13 @@ func run(args []string, stdout io.Writer) error {
 			return err
 		}
 		return runVariable(args[1:], stdout, workingDir, os.Environ())
-	case "plan", "apply", "check", "component":
+	case "component":
+		workingDir, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		return runComponent(args[1:], stdout, workingDir)
+	case "plan", "apply", "check":
 		return fmt.Errorf("%s is not available in the bootstrap build; Alpine resource management is not implemented", strings.Join(args, " "))
 	default:
 		return fmt.Errorf("unknown command %q; run %s help", args[0], product.CLIName)
@@ -80,7 +87,11 @@ func runFmt(args []string, stdout io.Writer, workingDir string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := coreparser.ParseFilesWithOptions(files, coreparser.ParseOptions{AllowMissingVariables: true}); err != nil {
+	config, err := coreparser.ParseFilesWithOptions(files, coreparser.ParseOptions{AllowMissingVariables: true})
+	if err != nil {
+		return err
+	}
+	if _, err := coremerge.Compile(config); err != nil {
 		return err
 	}
 	changed := 0
@@ -104,6 +115,93 @@ func runFmt(args []string, stdout io.Writer, workingDir string) error {
 	}
 	fmt.Fprintf(stdout, "formatted %d file(s)\n", changed)
 	return nil
+}
+
+func runComponent(args []string, stdout io.Writer, workingDir string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("component subcommand is required")
+	}
+	if args[0] != "inspect" {
+		return fmt.Errorf("unknown component subcommand %q", args[0])
+	}
+	return runComponentInspect(args[1:], stdout, workingDir)
+}
+
+type componentInspectOutput struct {
+	Name        string                  `json:"name"`
+	Description string                  `json:"description,omitempty"`
+	Inputs      []componentInspectInput `json:"inputs"`
+}
+
+type componentInspectInput struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Default     any    `json:"default,omitempty"`
+	Nullable    bool   `json:"nullable"`
+	Sensitive   bool   `json:"sensitive"`
+	Ephemeral   bool   `json:"ephemeral"`
+	Deprecated  string `json:"deprecated,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+func runComponentInspect(args []string, stdout io.Writer, workingDir string) error {
+	fs := flag.NewFlagSet("component inspect", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var sources repeatedFlag
+	fs.Var(&sources, "f", "configuration file or directory; may be repeated")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("component inspect arguments: %w", err)
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("component inspect requires exactly one component name")
+	}
+	resolvedSources := make([]string, len(sources))
+	for i, source := range sources {
+		resolvedSources[i] = resolvePath(workingDir, source)
+	}
+	files, err := coreparser.DiscoverConfigFiles(workingDir, resolvedSources)
+	if err != nil {
+		return err
+	}
+	config, err := coreparser.ParseFilesWithOptions(files, coreparser.ParseOptions{AllowMissingVariables: true})
+	if err != nil {
+		return err
+	}
+	component, exists := config.Components[fs.Arg(0)]
+	if !exists {
+		return fmt.Errorf("unknown component.%s", fs.Arg(0))
+	}
+	output := componentInspectOutput{Name: component.Name, Description: component.Description, Inputs: make([]componentInspectInput, 0, len(component.Inputs))}
+	for _, name := range sortedComponentInputNames(component.Inputs) {
+		input := component.Inputs[name]
+		output.Inputs = append(output.Inputs, componentInspectInput{
+			Name:        input.Name,
+			Type:        input.Type,
+			Default:     inspectComponentDefault(input),
+			Nullable:    input.Nullable,
+			Sensitive:   input.Sensitive,
+			Ephemeral:   input.Ephemeral,
+			Deprecated:  input.Deprecated,
+			Description: input.Description,
+		})
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	encoder.SetEscapeHTML(false)
+	return encoder.Encode(output)
+}
+
+func inspectComponentDefault(input coreparser.ComponentInput) any {
+	if input.Default == nil {
+		return nil
+	}
+	if input.Sensitive {
+		return "<sensitive>"
+	}
+	if input.Ephemeral {
+		return "<ephemeral>"
+	}
+	return json.RawMessage(input.Default.CanonicalString())
 }
 
 func runVariable(args []string, stdout io.Writer, workingDir string, environ []string) error {
@@ -249,6 +347,9 @@ func runValidate(args []string, stdout io.Writer, workingDir string, environ []s
 	if err != nil {
 		return err
 	}
+	if _, err := coremerge.Compile(config); err != nil {
+		return err
+	}
 	fmt.Fprintf(stdout, "Configuration is valid: %d file(s), %d variable(s), %d local(s).\n", len(config.Files), len(config.Variables), len(config.Locals))
 	for _, name := range sortedVariableNames(config.Variables) {
 		if message := config.Variables[name].Deprecated; message != "" {
@@ -268,6 +369,15 @@ func resolvePath(workingDir, path string) string {
 func sortedVariableNames(variables map[string]coreparser.Variable) []string {
 	names := make([]string, 0, len(variables))
 	for name := range variables {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func sortedComponentInputNames(inputs map[string]coreparser.ComponentInput) []string {
+	names := make([]string, 0, len(inputs))
+	for name := range inputs {
 		names = append(names, name)
 	}
 	sort.Strings(names)

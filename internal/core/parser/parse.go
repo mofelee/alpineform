@@ -19,6 +19,11 @@ type Config struct {
 	Variables              map[string]Variable
 	VariableValues         map[string]Value
 	ExplicitVariableValues map[string]bool
+	Profiles               map[string]Profile
+	Components             map[string]Component
+	Hosts                  map[string]Host
+	Scripts                map[string]Script
+	Asserts                []Assert
 }
 
 type Variable struct {
@@ -69,6 +74,10 @@ func ParseFilesWithOptions(files []string, opts ParseOptions) (*Config, error) {
 		Variables:              map[string]Variable{},
 		VariableValues:         map[string]Value{},
 		ExplicitVariableValues: map[string]bool{},
+		Profiles:               map[string]Profile{},
+		Components:             map[string]Component{},
+		Hosts:                  map[string]Host{},
+		Scripts:                map[string]Script{},
 	}
 	type parsedFile struct {
 		name string
@@ -116,13 +125,8 @@ func ParseFilesWithOptions(files []string, opts ParseOptions) (*Config, error) {
 		return nil, err
 	}
 	for _, file := range parsed {
-		for _, block := range file.body.Blocks {
-			switch block.Type {
-			case "variable", "locals":
-				continue
-			default:
-				return nil, fmt.Errorf("%s:%d: top-level block %q is not supported yet", file.name, block.TypeRange.Start.Line, block.Type)
-			}
+		if err := parseModelBlocks(cfg, file.name, file.body); err != nil {
+			return nil, err
 		}
 	}
 	return cfg, nil

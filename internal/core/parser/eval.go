@@ -178,15 +178,12 @@ func hclEvalContext(ctx EvalContext) (*hcl.EvalContext, error) {
 		vars[name] = value
 	}
 
-	return &hcl.EvalContext{
-		Variables: vars,
-		Functions: map[string]function.Function{
-			"file":         fileFunction(ctx.ModuleDir),
-			"jsonencode":   jsonencodeFunction(),
-			"templatefile": templatefileFunction(ctx.ModuleDir),
-			"toset":        tosetFunction(),
-		},
-	}, nil
+	functions := validationFunctions()
+	functions["file"] = fileFunction(ctx.ModuleDir)
+	functions["jsonencode"] = jsonencodeFunction()
+	functions["templatefile"] = templatefileFunction(ctx.ModuleDir)
+	functions["toset"] = tosetFunction()
+	return &hcl.EvalContext{Variables: vars, Functions: functions}, nil
 }
 
 func jsonencodeFunction() function.Function {
