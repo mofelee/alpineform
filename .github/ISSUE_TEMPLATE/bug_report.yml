@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a reproducible AlpineForm bug.
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove secrets, SSH keys, tokens, private hostnames, and sensitive
+        plan/state output. Report vulnerabilities through Security Advisories.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Include exact commands and a minimal redacted *.apf.hcl file.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        apf version:
+        control machine:
+        Alpine target:
+        install method:
+    validations:
+      required: true
