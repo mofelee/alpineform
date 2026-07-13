@@ -471,6 +471,10 @@ type fakeOnlineTransport struct {
 	serviceApplyCount       int
 	serviceOperationCount   int
 	serviceLastOperation    string
+	hostnameFile            string
+	hostnameRuntime         string
+	timezoneLocaltime       string
+	timezoneFile            string
 }
 
 func newFakeOnlineTransport(osID string) *fakeOnlineTransport {
@@ -721,6 +725,24 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 			transport.serviceOperationCount++
 			transport.serviceLastOperation = command.Arguments[4]
 		}
+		return nil, nil
+	case "inspect.system_hostname":
+		fileExists := transport.hostnameFile != ""
+		return []byte(fmt.Sprintf("hostname\n%t\n%s\n%s\n", fileExists, transport.hostnameFile, transport.hostnameRuntime)), nil
+	case "apply.system_hostname":
+		transport.hostnameFile = command.Arguments[0]
+		transport.hostnameRuntime = command.Arguments[0]
+		return nil, nil
+	case "inspect.system_timezone":
+		timezone := command.Arguments[0]
+		pathsExist := transport.timezoneLocaltime != "" || transport.timezoneFile != ""
+		return []byte(fmt.Sprintf("timezone\n%t\n%t\n%t\n%t\n", transport.apkPackages["tzdata"], transport.timezoneLocaltime == timezone, transport.timezoneFile == timezone, pathsExist)), nil
+	case "apply.system_timezone":
+		if !transport.apkPackages["tzdata"] {
+			return nil, fmt.Errorf("tzdata is not installed")
+		}
+		transport.timezoneLocaltime = command.Arguments[0]
+		transport.timezoneFile = command.Arguments[0]
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected backend command %q", command.Name)
@@ -1714,5 +1736,64 @@ host "node" {
 	}
 	if _, exists := transport.state.Resources[`host.node.services.service["worker"]`]; exists {
 		t.Fatalf("forgotten service remained in state: %#v", transport.state.Resources)
+	}
+}
+
+func TestNativeSystemWorkflowInstallsRepairsAndForgets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.apf.hcl")
+	writeConfig := func(includeSystem bool) {
+		t.Helper()
+		system := ""
+		if includeSystem {
+			system = `
+  system {
+    hostname = "edge.example"
+    timezone = "Asia/Shanghai"
+  }
+`
+		}
+		content := fmt.Sprintf("host \"node\" {\n%s}\n", system)
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	transport := newFakeOnlineTransport("alpine")
+	runtime := fakeNativeRuntime(transport, "")
+	writeConfig(true)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	packageApply := slices.Index(transport.events, "apply.package")
+	timezoneApply := slices.Index(transport.events, "apply.system_timezone")
+	if !transport.apkPackages["tzdata"] || !transport.apkWorld["tzdata"] || transport.hostnameFile != "edge.example" || transport.hostnameRuntime != "edge.example" || transport.timezoneLocaltime != "Asia/Shanghai" || transport.timezoneFile != "Asia/Shanghai" || packageApply < 0 || timezoneApply <= packageApply {
+		t.Fatalf("initial system result = events=%#v transport=%#v", transport.events, transport)
+	}
+	if err := runCheckWithRuntime(nil, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("system no-op check = %v", err)
+	}
+
+	transport.hostnameRuntime = "drifted"
+	transport.hostnameFile = "drifted"
+	transport.timezoneLocaltime = "UTC"
+	transport.timezoneFile = "UTC"
+	var drift bytes.Buffer
+	if err := runCheckWithRuntime(nil, &drift, dir, nil, runtime); err == nil || !strings.Contains(drift.String(), "update host.node.system.hostname") || !strings.Contains(drift.String(), "update host.node.system.timezone") {
+		t.Fatalf("system drift check error = %v, output = %s", err, drift.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("system drift repair = %v", err)
+	}
+	if transport.hostnameRuntime != "edge.example" || transport.timezoneLocaltime != "Asia/Shanghai" {
+		t.Fatalf("system drift repair result = %#v", transport)
+	}
+
+	writeConfig(false)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("system declaration forget = %v", err)
+	}
+	if transport.hostnameRuntime != "edge.example" || transport.timezoneLocaltime != "Asia/Shanghai" || !transport.apkPackages["tzdata"] || !transport.apkWorld["tzdata"] || len(transport.state.Resources) != 0 {
+		t.Fatalf("system forget changed remote state = %#v", transport)
 	}
 }

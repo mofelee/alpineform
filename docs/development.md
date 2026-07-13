@@ -88,6 +88,7 @@ Managed user behavior is described in [users.md](users.md).
 Managed APK repository and key behavior is described in [apk.md](apk.md).
 Bounded OpenRC init generation and runtime convergence are described in
 [openrc.md](openrc.md).
+Alpine hostname and timezone behavior is described in [system.md](system.md).
 
 ## Product names
 

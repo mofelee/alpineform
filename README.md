@@ -42,11 +42,11 @@ The current model accepts reusable profiles, typed component metadata,
 component instances, assertions, lifecycle metadata, and offline Alpine
 platform declarations. Host-level `files.file`, `directories.directory`,
 `groups.group`, `users.user`, host-level `apk`, `packages.package`, and
-`services.service` resources provide native convergence; see
+`services.service` resources plus explicit `system` settings provide native convergence; see
 [docs/files.md](docs/files.md), [docs/directories.md](docs/directories.md), and
 [docs/groups.md](docs/groups.md), [docs/users.md](docs/users.md), and
 [docs/apk.md](docs/apk.md). Bounded OpenRC generation and runtime convergence are documented in
-[docs/openrc.md](docs/openrc.md).
+[docs/openrc.md](docs/openrc.md) and [docs/system.md](docs/system.md).
 
 Online commands first discover and validate Alpine 3.24 facts through fixed
 read-only commands. `apply` shows a preview, acquires each host's runtime lease,

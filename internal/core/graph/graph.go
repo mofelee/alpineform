@@ -79,6 +79,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 		}
 		appendAPKNodes(graph, host, hostAddress)
 		appendPackageNodes(graph, host, hostAddress)
+		appendSystemNodes(graph, host, hostAddress)
 		for _, group := range host.Groups {
 			deleteBehavior := group.OnRemove
 			if deleteBehavior == "forget" {
@@ -285,6 +286,28 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 		return nil, err
 	}
 	return graph, nil
+}
+
+func appendSystemNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddress string) {
+	if host.System == nil {
+		return
+	}
+	if host.System.Hostname != "" {
+		resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
+			Host: host.Name, Address: hostAddress + ".system.hostname", Kind: "system_hostname", Managed: true,
+			Summary: "manage system hostname " + host.System.Hostname, Source: host.System.HostnameSource,
+			Desired:   map[string]any{"hostname": host.System.Hostname, "delete_behavior": ""},
+			DependsOn: []string{hostAddress}, DigestSafe: true,
+		})
+	}
+	if host.System.Timezone != "" {
+		resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
+			Host: host.Name, Address: hostAddress + ".system.timezone", Kind: "system_timezone", Managed: true,
+			Summary: "manage system timezone " + host.System.Timezone, Source: host.System.TimezoneSource,
+			Desired:   map[string]any{"timezone": host.System.Timezone, "delete_behavior": ""},
+			DependsOn: []string{hostAddress, packageResourceAddress(host.Name, "tzdata")}, DigestSafe: true,
+		})
+	}
 }
 
 func appendServiceNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddress string) {

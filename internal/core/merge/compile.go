@@ -296,7 +296,17 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 			return ir.HostSpec{}, err
 		}
 	}
+	if host.System != nil {
+		out.System, err = compileSystem(*host.System, host, facts, hostContext)
+		if err != nil {
+			return ir.HostSpec{}, err
+		}
+	}
 	out.Files, out.Directories, out.Groups, out.Users, out.Packages, out.Services, err = compileHostNativeResources(host, out.APK, facts, hostContext)
+	if err != nil {
+		return ir.HostSpec{}, err
+	}
+	out.Packages, err = ensureTimezonePackage(out.Packages, out.System)
 	if err != nil {
 		return ir.HostSpec{}, err
 	}

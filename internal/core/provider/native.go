@@ -43,6 +43,10 @@ func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.Obs
 		return inspectPackage(ctx, runner, node)
 	case "service":
 		return inspectService(ctx, runner, node)
+	case "system_hostname":
+		return inspectSystemHostname(ctx, runner, node)
+	case "system_timezone":
+		return inspectSystemTimezone(ctx, runner, node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", node.Kind)
 	}
@@ -76,6 +80,10 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 		return applyPackage(ctx, runner, step.Node)
 	case "service":
 		return applyService(ctx, runner, step)
+	case "system_hostname":
+		return applySystemHostname(ctx, runner, step.Node)
+	case "system_timezone":
+		return applySystemTimezone(ctx, runner, step.Node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", step.Node.Kind)
 	}
@@ -113,6 +121,8 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 		return deletePackage(ctx, runner, step)
 	case "service":
 		return fmt.Errorf("OpenRC service declarations can only be forgotten; disable or stop the service explicitly first")
+	case "system_hostname", "system_timezone":
+		return fmt.Errorf("system declarations can only be forgotten when removed")
 	default:
 		return fmt.Errorf("no Alpine provider is registered for resource kind %q", kind)
 	}

@@ -52,6 +52,7 @@ type HostSpec struct {
 	Facts       *HostFacts              `json:"facts,omitempty"`
 	APK         *APKSpec                `json:"apk,omitempty"`
 	OpenRC      []OpenRCServiceSpec     `json:"openrc,omitempty"`
+	System      *SystemSpec             `json:"system,omitempty"`
 	Components  []ComponentInstanceSpec `json:"components,omitempty"`
 	Files       []ManagedFileSpec       `json:"files,omitempty"`
 	Directories []ManagedDirectorySpec  `json:"directories,omitempty"`
@@ -60,6 +61,14 @@ type HostSpec struct {
 	Packages    []PackageSpec           `json:"packages,omitempty"`
 	Services    []ServiceSpec           `json:"services,omitempty"`
 	Source      SourceRef               `json:"source"`
+}
+
+type SystemSpec struct {
+	Hostname       string    `json:"hostname,omitempty"`
+	Timezone       string    `json:"timezone,omitempty"`
+	HostnameSource SourceRef `json:"hostname_source,omitempty"`
+	TimezoneSource SourceRef `json:"timezone_source,omitempty"`
+	Source         SourceRef `json:"source"`
 }
 
 type ServiceSpec struct {
