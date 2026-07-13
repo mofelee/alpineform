@@ -10,6 +10,6 @@ directory, writes stdin to a mode `0600` temporary file in the same directory,
 and atomically renames that file over the state path. Traps remove incomplete
 temporary files on failure or cancellation.
 
-State command stdin is marked for debug redaction. Sensitive resources persist
-only a protected marker; ephemeral resources persist neither values nor their
-desired digest.
+State command stdin and remote error output are marked for redaction. Sensitive
+resources persist only a protected marker; ephemeral resources persist neither
+values nor their desired digest.

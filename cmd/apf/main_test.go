@@ -536,6 +536,30 @@ func TestOnlinePlanRejectsUnsupportedTargetBeforeBackendAccess(t *testing.T) {
 	}
 }
 
+func TestOnlinePlanRejectsPlatformMismatchBeforeBackendAccess(t *testing.T) {
+	dir := t.TempDir()
+	content := `
+host "node" {
+  platform {
+    architecture = "amd64"
+    version      = "3.24.2"
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.apf.hcl"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	transport := newFakeOnlineTransport("alpine")
+	err := runPlanWithRuntime(nil, &bytes.Buffer{}, dir, nil, fakeOnlineRuntime(transport, ""))
+	if err == nil || !strings.Contains(err.Error(), `declares "3.24.2", but detected exact version is "3.24.1"`) {
+		t.Fatalf("platform mismatch error = %v", err)
+	}
+	wantEvents := []string{"facts:cat /etc/os-release", "facts:apk --print-arch", "facts:uname -m"}
+	if !reflect.DeepEqual(transport.events, wantEvents) || transport.stateWrites != 0 {
+		t.Fatalf("platform mismatch events = %#v, writes=%d", transport.events, transport.stateWrites)
+	}
+}
+
 func TestApplyRebuildsUnderLockAndPersistsFactsAfterApproval(t *testing.T) {
 	dir := t.TempDir()
 	writeOnlineHostConfig(t, dir)
@@ -652,5 +676,18 @@ func TestCheckReportsOrphanedStateAsDrift(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "forget host.node.file.orphan") || transport.stateWrites != 0 {
 		t.Fatalf("drift output = %s, writes=%d", output.String(), transport.stateWrites)
+	}
+}
+
+func TestCheckReturnsCleanWithoutWritingState(t *testing.T) {
+	dir := t.TempDir()
+	writeOnlineHostConfig(t, dir)
+	transport := newFakeOnlineTransport("alpine")
+	var output bytes.Buffer
+	if err := runCheckWithRuntime(nil, &output, dir, nil, fakeOnlineRuntime(transport, "")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "No remote resource changes.") || transport.stateWrites != 0 {
+		t.Fatalf("clean check output = %s, writes=%d", output.String(), transport.stateWrites)
 	}
 }

@@ -1,11 +1,13 @@
 # AlpineForm
 
 AlpineForm is a declarative configuration tool for Alpine Linux hosts. The
-project is currently being bootstrapped. Typed variables, locals, variable
-input precedence, and local validation are available; Alpine resource
-management is not yet available.
+current core implements the configuration language, deterministic offline
+plans, Alpine 3.24 fact discovery, root SSH, remote state, renewable locks, and
+reviewed online plan/apply/check workflows. Provider-backed Alpine resource
+domains are being added separately; structural declarations do not pretend to
+be remote changes.
 
-The future workflow is:
+The workflow is:
 
 ```text
 apf validate -> apf plan -> apf apply -> apf check
@@ -24,18 +26,29 @@ make build
 ./apf validate -f examples/model.apf.hcl
 ./apf component inspect -f examples/model.apf.hcl web_app
 ./apf plan --offline -f examples/model.apf.hcl --format json --html plan.html
+# Online commands use the host SSH identities declared in configuration:
+./apf plan -f path/to/hosts.apf.hcl
+./apf apply -f path/to/hosts.apf.hcl
+./apf check -f path/to/hosts.apf.hcl
 ./apf fmt -f examples/variables.apf.hcl
 make check
 ```
 
 See [docs/development.md](docs/development.md) for the package boundaries and
-current bootstrap scope. AlpineForm is derived from the architecture and
+current core scope. AlpineForm is derived from the architecture and
 selected code patterns of DebianForm v0.6.0; see [NOTICE.md](NOTICE.md).
 
 The current model accepts reusable profiles, typed component metadata,
 component instances, assertions, lifecycle metadata, and offline Alpine
 platform declarations. It does not yet turn those declarations into remote
 resource changes.
+
+Online commands first discover and validate Alpine 3.24 facts through fixed
+read-only commands. `apply` shows a preview, acquires each host's runtime lease,
+rebuilds the plan, and requires approval of the locked plan before persisting
+facts, state, or provider changes. `--parallel` bounds concurrent hosts;
+`--lock-timeout` bounds lease acquisition; `apply --debug` emits structural,
+redacted lifecycle events.
 
 Offline plans include a deterministic structural graph. Host, platform, and
 component declarations are marked unmanaged until their Alpine providers are
