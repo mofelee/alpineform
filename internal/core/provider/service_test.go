@@ -67,6 +67,18 @@ func TestServiceProviderRunsOneRequestedOperationForChangedFiles(t *testing.T) {
 	}
 }
 
+func TestServiceProviderRestartsCrashedServiceForRecovery(t *testing.T) {
+	node := testServiceNode("worker", true, "running")
+	runner := &commandRunner{outputs: map[string][]byte{"inspect.service": []byte("service\ntrue\nstarted\n0\n")}}
+	step := engine.Step{Action: engine.ActionUpdate, Node: node, Observed: engine.ObservedResource{Values: map[string]any{"runtime_status": "crashed"}}}
+	if _, err := applyService(context.Background(), runner, step); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(runner.commands[0].Arguments, ","); got != "worker,default,true,running,restarted," {
+		t.Fatalf("crashed service recovery arguments = %q", got)
+	}
+}
+
 func TestServiceProviderRejectsUnsafeIdentityAndScriptsHaveValidSyntax(t *testing.T) {
 	if _, err := applyService(context.Background(), &commandRunner{}, engine.Step{Node: testServiceNode("worker;reboot", true, "running")}); err == nil {
 		t.Fatal("unsafe service identity was accepted")

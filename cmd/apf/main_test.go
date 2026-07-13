@@ -1693,7 +1693,7 @@ host "node" {
 	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
 		t.Fatalf("service drift repair = %v", err)
 	}
-	if !transport.serviceEnabled || transport.serviceRunlevel != "default" || transport.serviceRuntime != "started" || transport.serviceApplyCount != 3 || transport.serviceOperationCount != 1 {
+	if !transport.serviceEnabled || transport.serviceRunlevel != "default" || transport.serviceRuntime != "started" || transport.serviceApplyCount != 3 || transport.serviceOperationCount != 2 || transport.serviceLastOperation != "restarted" {
 		t.Fatalf("service drift repair result = %#v", transport)
 	}
 
@@ -1701,7 +1701,7 @@ host "node" {
 	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
 		t.Fatalf("stopped disabled service apply = %v", err)
 	}
-	if transport.serviceEnabled || transport.serviceRuntime != "stopped" || transport.serviceApplyCount != 4 || transport.serviceOperationCount != 1 {
+	if transport.serviceEnabled || transport.serviceRuntime != "stopped" || transport.serviceApplyCount != 4 || transport.serviceOperationCount != 2 {
 		t.Fatalf("stopped disabled service result = %#v", transport)
 	}
 
@@ -1709,7 +1709,7 @@ host "node" {
 	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
 		t.Fatalf("service declaration forget = %v", err)
 	}
-	if transport.serviceEnabled || transport.serviceRuntime != "stopped" || transport.serviceApplyCount != 4 || transport.serviceOperationCount != 1 {
+	if transport.serviceEnabled || transport.serviceRuntime != "stopped" || transport.serviceApplyCount != 4 || transport.serviceOperationCount != 2 {
 		t.Fatalf("service forget changed remote state = %#v", transport)
 	}
 	if _, exists := transport.state.Resources[`host.node.services.service["worker"]`]; exists {

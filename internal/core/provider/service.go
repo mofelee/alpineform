@@ -153,6 +153,9 @@ func applyService(ctx context.Context, runner backend.Runner, step engine.Step) 
 			return engine.ObservedResource{}, fmt.Errorf("OpenRC service %q has unsupported operation %q", name, operation)
 		}
 	}
+	if operation == "" && state == "running" && stringValue(step.Observed.Values, "runtime_status") == "crashed" {
+		operation = "restarted"
+	}
 	if _, err := runner.Run(ctx, backend.Command{
 		Name: "apply.service", Script: serviceApplyScript,
 		Arguments: []string{name, runlevel, strconv.FormatBool(enabled), state, operation, previousRunlevel},
