@@ -114,12 +114,13 @@ if [ -z "$entry" ]; then
   exit 0
 fi
 uid=$(printf '%s\n' "$entry" | awk -F: '{ print $3 }')
+primary_gid=$(printf '%s\n' "$entry" | awk -F: '{ print $4 }')
 if [ "$uid" = 0 ]; then
   echo 'refusing to delete a uid 0 user' >&2
   exit 1
 fi
-if awk -F: -v name="$name" '
-{
+if awk -F: -v name="$name" -v primary_gid="$primary_gid" '
+$3 != primary_gid {
   count=split($4, members, ",")
   for (index=1; index<=count; index++) {
     if (members[index] == name) found=1

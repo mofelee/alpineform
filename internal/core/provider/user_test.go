@@ -130,3 +130,34 @@ func TestUserProviderScriptsUseValidShellSyntax(t *testing.T) {
 		})
 	}
 }
+
+func TestUserDeleteMembershipScanIgnoresBusyBoxPrimaryEntry(t *testing.T) {
+	program := `$3 != primary_gid {
+  count=split($4, members, ",")
+  for (i=1; i<=count; i++) {
+    if (members[i] == name) found=1
+  }
+}
+END { exit found ? 0 : 1 }`
+	tests := []struct {
+		name    string
+		groups  string
+		present bool
+	}{
+		{name: "primary only", groups: "af_primary:x:24000:af_user\n", present: false},
+		{name: "supplementary", groups: "af_primary:x:24000:af_user\naf_extra:x:24001:af_user\n", present: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command := exec.Command("awk", "-F:", "-v", "name=af_user", "-v", "primary_gid=24000", program)
+			command.Stdin = strings.NewReader(test.groups)
+			output, err := command.CombinedOutput()
+			if test.present && err != nil {
+				t.Fatalf("supplementary membership was missed: %v: %s", err, output)
+			}
+			if !test.present && err == nil {
+				t.Fatal("BusyBox primary membership was treated as supplementary")
+			}
+		})
+	}
+}
