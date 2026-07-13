@@ -17,4 +17,8 @@ host "alpine_apk" {
       url = "https://dl-cdn.alpinelinux.org/alpine"
     }
   }
+
+  packages {
+    package "curl" {}
+  }
 }

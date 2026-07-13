@@ -66,9 +66,40 @@ The graph orders custom keys before repositories and repositories before one
 synthetic APK index refresh. Any create, adopt, update, drift repair, or
 explicit deletion among those dependencies causes exactly one quiet
 `apk update` for the host. A clean plan performs none, and declaration-only
-forgets perform none. The host lease and graph scheduler serialize all of
-these APK mutations.
+forgets perform none. Package nodes run after that refresh. The host lease and
+graph scheduler serialize all of these APK mutations.
 
 This surface never invokes `apk upgrade`, `apk fix`, changes the target branch,
-or accepts package version constraints. Package intent is documented
-separately when the `packages` surface is enabled.
+or accepts package version constraints.
+
+## Package world intent
+
+Host-level `packages` declarations manage unversioned package names:
+
+```hcl
+packages {
+  package "curl" {}
+
+  package "vendor-agent" {
+    repository = "vendor"
+  }
+}
+```
+
+`ensure = "present"` installs the package with quiet, non-interactive
+`apk add` and requires both an installed package and an exact entry in
+`/etc/apk/world`. Installed package metadata is observed but not pinned. The
+optional `repository` value is an APK tag and must match the `tag` of a
+declared present repository; the resulting world intent is `name@tag`.
+
+Removing a package declaration only forgets its AlpineForm state. It never
+runs `apk del` and leaves the package and world entry untouched. The only path
+that executes quiet `apk del` is a current declaration with
+`ensure = "absent"`; the provider rejects orphan-destroy calls even if invoked
+directly. APK removes only that named world intent and is never asked to edit
+the world file itself, so unrelated external or declared world entries remain
+owned by their respective tools.
+
+Package names and tags reject whitespace, shell syntax, version operators,
+and constraints. Package names, world intents, repository lines, key paths,
+and digests are always provider argv rather than generated shell source.

@@ -39,6 +39,16 @@ func compileAPK(declaration parser.APK, host parser.Host, facts *ir.HostFacts, c
 		}
 		out.Keys = append(out.Keys, key)
 	}
+	seenTags := map[string]ir.SourceRef{}
+	for _, repository := range out.Repositories {
+		if repository.Tag == "" {
+			continue
+		}
+		if previous, exists := seenTags[repository.Tag]; exists {
+			return nil, resourceError(repository.Source, "repository tag %q duplicates the tag declared at %s:%d", repository.Tag, previous.File, previous.Line)
+		}
+		seenTags[repository.Tag] = repository.Source
+	}
 	return out, nil
 }
 

@@ -39,6 +39,8 @@ func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.Obs
 		return inspectAPKRepository(ctx, runner, node)
 	case "apk_update":
 		return inspectAPKUpdate(ctx, runner, node)
+	case "package":
+		return inspectPackage(ctx, runner, node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", node.Kind)
 	}
@@ -68,6 +70,8 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 		return applyAPKRepository(ctx, runner, step.Node)
 	case "apk_update":
 		return applyAPKUpdate(ctx, runner, step.Node)
+	case "package":
+		return applyPackage(ctx, runner, step.Node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", step.Node.Kind)
 	}
@@ -101,6 +105,8 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 		return deleteAPKRepository(ctx, runner, step)
 	case "apk_repositories", "apk_update":
 		return fmt.Errorf("resource kind %q can only be forgotten when its declaration is removed", kind)
+	case "package":
+		return deletePackage(ctx, runner, step)
 	default:
 		return fmt.Errorf("no Alpine provider is registered for resource kind %q", kind)
 	}

@@ -56,7 +56,17 @@ type HostSpec struct {
 	Directories []ManagedDirectorySpec  `json:"directories,omitempty"`
 	Groups      []ManagedGroupSpec      `json:"groups,omitempty"`
 	Users       []ManagedUserSpec       `json:"users,omitempty"`
+	Packages    []PackageSpec           `json:"packages,omitempty"`
 	Source      SourceRef               `json:"source"`
+}
+
+type PackageSpec struct {
+	Name          string        `json:"name"`
+	RepositoryTag string        `json:"repository,omitempty"`
+	WorldIntent   string        `json:"world_intent"`
+	Ensure        string        `json:"ensure"`
+	Lifecycle     LifecycleSpec `json:"lifecycle"`
+	Source        SourceRef     `json:"source"`
 }
 
 type APKSpec struct {

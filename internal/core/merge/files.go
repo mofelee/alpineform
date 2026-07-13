@@ -15,45 +15,52 @@ import (
 
 var accountNamePattern = regexp.MustCompile(`^(?:[a-z_][a-z0-9_-]{0,31}|[0-9]{1,10})$`)
 
-func compileHostNativeResources(host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) ([]ir.ManagedFileSpec, []ir.ManagedDirectorySpec, []ir.ManagedGroupSpec, []ir.ManagedUserSpec, error) {
+func compileHostNativeResources(host parser.Host, apk *ir.APKSpec, facts *ir.HostFacts, ctx parser.EvalContext) ([]ir.ManagedFileSpec, []ir.ManagedDirectorySpec, []ir.ManagedGroupSpec, []ir.ManagedUserSpec, []ir.PackageSpec, error) {
 	files := make([]ir.ManagedFileSpec, 0)
 	directories := make([]ir.ManagedDirectorySpec, 0)
 	groups := make([]ir.ManagedGroupSpec, 0)
 	users := make([]ir.ManagedUserSpec, 0)
+	packages := make([]ir.PackageSpec, 0)
 	for _, declaration := range host.Resources {
 		switch declaration.Kind {
 		case parser.ResourceFile:
 			file, err := compileFile(declaration, host, facts, ctx)
 			if err != nil {
-				return nil, nil, nil, nil, err
+				return nil, nil, nil, nil, nil, err
 			}
 			files = append(files, file)
 		case parser.ResourceDirectory:
 			directory, err := compileDirectory(declaration, host, facts, ctx)
 			if err != nil {
-				return nil, nil, nil, nil, err
+				return nil, nil, nil, nil, nil, err
 			}
 			directories = append(directories, directory)
 		case parser.ResourceGroup:
 			group, err := compileGroup(declaration, host, facts, ctx)
 			if err != nil {
-				return nil, nil, nil, nil, err
+				return nil, nil, nil, nil, nil, err
 			}
 			groups = append(groups, group)
 		case parser.ResourceUser:
 			user, err := compileUser(declaration, host, facts, ctx)
 			if err != nil {
-				return nil, nil, nil, nil, err
+				return nil, nil, nil, nil, nil, err
 			}
 			users = append(users, user)
+		case parser.ResourcePackage:
+			pkg, err := compilePackage(declaration, apk, host, facts, ctx)
+			if err != nil {
+				return nil, nil, nil, nil, nil, err
+			}
+			packages = append(packages, pkg)
 		default:
-			return nil, nil, nil, nil, fmt.Errorf("%s:%d:%s: unsupported compiled host resource kind %q", declaration.Source.File, declaration.Source.Line, declaration.Source.Path, declaration.Kind)
+			return nil, nil, nil, nil, nil, fmt.Errorf("%s:%d:%s: unsupported compiled host resource kind %q", declaration.Source.File, declaration.Source.Line, declaration.Source.Path, declaration.Kind)
 		}
 	}
 	if err := validateNativeResourceRelationships(files, directories, groups, users); err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
-	return files, directories, groups, users, nil
+	return files, directories, groups, users, packages, nil
 }
 
 func compileDirectory(declaration parser.ResourceDeclaration, host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) (ir.ManagedDirectorySpec, error) {

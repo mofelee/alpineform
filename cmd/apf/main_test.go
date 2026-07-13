@@ -461,10 +461,15 @@ type fakeOnlineTransport struct {
 	apkKeyDigests           map[string]string
 	apkUpdateFingerprint    string
 	apkUpdateCount          int
+	apkPackages             map[string]bool
+	apkWorld                map[string]bool
 }
 
 func newFakeOnlineTransport(osID string) *fakeOnlineTransport {
-	return &fakeOnlineTransport{osID: osID, state: corestate.Empty("node"), groupGIDs: map[string]string{}, apkRepositories: map[string]string{}, apkKeyDigests: map[string]string{}}
+	return &fakeOnlineTransport{
+		osID: osID, state: corestate.Empty("node"), groupGIDs: map[string]string{},
+		apkRepositories: map[string]string{}, apkKeyDigests: map[string]string{}, apkPackages: map[string]bool{}, apkWorld: map[string]bool{},
+	}
 }
 
 func (transport *fakeOnlineTransport) Read(_ context.Context, command string) (string, error) {
@@ -654,6 +659,30 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 	case "apply.apk_update":
 		transport.apkUpdateFingerprint = command.Arguments[1]
 		transport.apkUpdateCount++
+		return nil, nil
+	case "inspect.package":
+		name := command.Arguments[0]
+		intent := command.Arguments[1]
+		installed := transport.apkPackages[name]
+		world := transport.apkWorld[intent]
+		if !installed && !world {
+			return []byte("missing\n"), nil
+		}
+		return []byte(fmt.Sprintf("package\n%t\n%t\n%s-1.0-r0\n", installed, world, name)), nil
+	case "apply.package":
+		intent := command.Arguments[0]
+		name := strings.SplitN(intent, "@", 2)[0]
+		transport.apkPackages[name] = true
+		transport.apkWorld[intent] = true
+		return nil, nil
+	case "delete.package":
+		name := command.Arguments[0]
+		delete(transport.apkPackages, name)
+		for intent := range transport.apkWorld {
+			if intent == name || strings.HasPrefix(intent, name+"@") {
+				delete(transport.apkWorld, intent)
+			}
+		}
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected backend command %q", command.Name)
@@ -1484,5 +1513,68 @@ host "node" {
 	}
 	if _, exists := transport.apkKeyDigests["vendor.rsa.pub"]; exists || transport.apkUpdateCount != 3 {
 		t.Fatalf("explicit APK key removal result = keys=%#v updates=%d", transport.apkKeyDigests, transport.apkUpdateCount)
+	}
+}
+
+func TestNativePackageWorkflowOwnsExplicitWorldIntentAndDefaultsToForget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.apf.hcl")
+	writeConfig := func(mode string) {
+		t.Helper()
+		declaration := ""
+		if mode == "present" || mode == "absent" {
+			declaration = fmt.Sprintf("    package \"curl\" { ensure = %q }\n", mode)
+		}
+		content := fmt.Sprintf(`
+host "node" {
+  packages {
+%s  }
+}
+`, declaration)
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport := newFakeOnlineTransport("alpine")
+	transport.apkPackages["busybox"] = true
+	transport.apkWorld["busybox"] = true
+	runtime := fakeNativeRuntime(transport, "")
+	writeConfig("present")
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if !transport.apkPackages["curl"] || !transport.apkWorld["curl"] {
+		t.Fatalf("package present result = packages=%#v world=%#v", transport.apkPackages, transport.apkWorld)
+	}
+	if err := runCheckWithRuntime(nil, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("package no-op check = %v", err)
+	}
+	delete(transport.apkWorld, "curl")
+	var drift bytes.Buffer
+	if err := runCheckWithRuntime(nil, &drift, dir, nil, runtime); err == nil || !strings.Contains(drift.String(), `update host.node.packages.package["curl"]`) {
+		t.Fatalf("package world drift check error = %v, output = %s", err, drift.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("package world repair = %v", err)
+	}
+
+	writeConfig("removed")
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("package declaration forget = %v", err)
+	}
+	packageAddress := `host.node.packages.package["curl"]`
+	if !transport.apkPackages["curl"] || !transport.apkWorld["curl"] {
+		t.Fatalf("package forget changed remote state = packages=%#v world=%#v", transport.apkPackages, transport.apkWorld)
+	}
+	if _, exists := transport.state.Resources[packageAddress]; exists {
+		t.Fatalf("forgotten package remained in state: %#v", transport.state.Resources)
+	}
+
+	writeConfig("absent")
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("explicit package absence = %v", err)
+	}
+	if transport.apkPackages["curl"] || transport.apkWorld["curl"] || !transport.apkPackages["busybox"] || !transport.apkWorld["busybox"] {
+		t.Fatalf("explicit package removal affected other world intent: packages=%#v world=%#v", transport.apkPackages, transport.apkWorld)
 	}
 }

@@ -77,6 +77,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 			})
 		}
 		appendAPKNodes(graph, host, hostAddress)
+		appendPackageNodes(graph, host, hostAddress)
 		for _, group := range host.Groups {
 			deleteBehavior := group.OnRemove
 			if deleteBehavior == "forget" {
@@ -282,6 +283,42 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 		return nil, err
 	}
 	return graph, nil
+}
+
+func appendPackageNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddress string) {
+	for _, pkg := range host.Packages {
+		dependencies := []string{hostAddress}
+		if host.APK != nil && (len(host.APK.Keys) > 0 || len(host.APK.Repositories) > 0 || host.APK.Ownership == "authoritative") {
+			dependencies = append(dependencies, hostAddress+".apk.update")
+		}
+		resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
+			Host: host.Name, Address: packageResourceAddress(host.Name, pkg.Name), Kind: "package", Managed: true,
+			Summary: packageSummary(pkg), Source: pkg.Source, Lifecycle: &pkg.Lifecycle,
+			Desired: map[string]any{
+				"name":            pkg.Name,
+				"repository":      pkg.RepositoryTag,
+				"world_intent":    pkg.WorldIntent,
+				"installed":       true,
+				"world":           true,
+				"ensure":          pkg.Ensure,
+				"delete_behavior": "",
+				"delete":          map[string]any{"name": pkg.Name},
+				"prevent_destroy": pkg.Lifecycle.PreventDestroy,
+			},
+			DependsOn: dependencies, DigestSafe: true,
+		})
+	}
+}
+
+func packageSummary(pkg ir.PackageSpec) string {
+	if pkg.Ensure == "absent" {
+		return "explicitly remove APK package " + pkg.Name
+	}
+	return "install explicit APK world intent " + pkg.WorldIntent
+}
+
+func packageResourceAddress(host, name string) string {
+	return "host." + host + ".packages.package[" + strconv.Quote(name) + "]"
 }
 
 func appendAPKNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddress string) {

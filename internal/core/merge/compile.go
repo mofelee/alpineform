@@ -296,7 +296,7 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 			return ir.HostSpec{}, err
 		}
 	}
-	out.Files, out.Directories, out.Groups, out.Users, err = compileHostNativeResources(host, facts, hostContext)
+	out.Files, out.Directories, out.Groups, out.Users, out.Packages, err = compileHostNativeResources(host, out.APK, facts, hostContext)
 	if err != nil {
 		return ir.HostSpec{}, err
 	}
