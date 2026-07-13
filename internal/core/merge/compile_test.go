@@ -10,6 +10,7 @@ import (
 
 	"github.com/mofelee/alpineform/internal/core/ir"
 	"github.com/mofelee/alpineform/internal/core/parser"
+	"github.com/mofelee/alpineform/internal/product"
 )
 
 func compileConfig(t *testing.T, content string) (*parser.Config, error) {
@@ -406,6 +407,7 @@ host "node" {
     error_message = "unexpected detected platform"
   }
 }
+
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -420,6 +422,39 @@ host "node" {
 	}
 	if len(program.Hosts) != 1 || program.Hosts[0].Facts == nil || *program.Hosts[0].Facts != facts {
 		t.Fatalf("compiled facts = %#v", program.Hosts)
+	}
+}
+
+func TestConnectionTargetsPrecedeFactDependentCompile(t *testing.T) {
+	config, err := compileConfig(t, `
+host "node" {
+  ssh {
+    host          = "alpine-alias"
+    port          = 2222
+    user          = "root"
+    identity_file = "~/.ssh/alpine"
+  }
+  assert {
+    condition     = target.platform.branch == "3.24"
+    error_message = "requires Alpine 3.24"
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Compile(config); err == nil || !strings.Contains(err.Error(), "offline evaluation") {
+		t.Fatalf("first-phase full Compile() error = %v", err)
+	}
+	targets, err := ConnectionTargets(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Name != "node" || targets[0].SSH.Host != "alpine-alias" || targets[0].SSH.Port != 2222 || targets[0].SSH.User != "root" || targets[0].SSH.IdentityFile != "~/.ssh/alpine" {
+		t.Fatalf("connection targets = %#v", targets)
+	}
+	if targets[0].State.Path != product.DefaultStatePath || targets[0].State.LockPath != product.DefaultLockPath {
+		t.Fatalf("connection target state defaults = %#v", targets[0].State)
 	}
 }
 

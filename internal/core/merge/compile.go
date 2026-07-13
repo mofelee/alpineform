@@ -24,6 +24,32 @@ type CompileOptions struct {
 	HostFacts map[string]ir.HostFacts
 }
 
+// ConnectionTargets returns only the read-only transport identities needed for
+// fact discovery. Full host assertions and component evaluation remain in the
+// second compile phase after detected facts are available.
+func ConnectionTargets(config *parser.Config) ([]ir.HostSpec, error) {
+	if config == nil {
+		return nil, fmt.Errorf("cannot build connection targets from a nil configuration")
+	}
+	targets := make([]ir.HostSpec, 0, len(config.Hosts))
+	for _, hostName := range sortedHostNames(config.Hosts) {
+		host := config.Hosts[hostName]
+		targets = append(targets, ir.HostSpec{
+			Name: host.Name,
+			SSH: ir.SSHSpec{
+				Host:         host.SSH.Host,
+				Port:         host.SSH.Port,
+				User:         host.SSH.User,
+				IdentityFile: host.SSH.IdentityFile,
+				Source:       host.SSH.Source,
+			},
+			State:  ir.StateSpec{Path: product.DefaultStatePath, LockPath: product.DefaultLockPath},
+			Source: host.Source,
+		})
+	}
+	return targets, nil
+}
+
 func Compile(config *parser.Config) (*ir.Program, error) {
 	return CompileWithOptions(config, CompileOptions{})
 }
