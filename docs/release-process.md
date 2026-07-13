@@ -1,8 +1,8 @@
 # Release Process
 
-The first complete public contract is `v0.1.0-alpha.3`. Alpha.1 and alpha.2 are
-retained as incomplete prereleases for auditability. Releases are built from a
-commit whose core CI and release dry-run both passed.
+The first complete public contract is `v0.1.0-alpha.4`. Alpha.1 through alpha.3
+are retained as incomplete prereleases for auditability. Releases are built
+from a commit whose core CI and release dry-run both passed.
 
 ## Artifacts
 

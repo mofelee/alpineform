@@ -9,9 +9,9 @@ apf validate -> apf plan -> apf apply -> apf check
 ```
 
 AlpineForm is pre-release software and is not an official Alpine Linux project.
-The first complete preview is `v0.1.0-alpha.3`. Alpha.1 and alpha.2 are retained
-as incomplete prereleases and must not be used. Compatibility guarantees are
-documented in [the compatibility policy](docs/compatibility-policy.md).
+The first complete preview is `v0.1.0-alpha.4`. Alpha.1 through alpha.3 are
+retained as incomplete prereleases and must not be used. Compatibility
+guarantees are documented in [the compatibility policy](docs/compatibility-policy.md).
 
 ## Supported Core
 
@@ -35,7 +35,7 @@ verifies SHA-256, and atomically installs `apf`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mofelee/alpineform/main/scripts/install.sh |
-  sh -s -- --version v0.1.0-alpha.3
+  sh -s -- --version v0.1.0-alpha.4
 apf version
 ```
 
@@ -43,7 +43,7 @@ Install into a private prefix:
 
 ```sh
 sh scripts/install.sh \
-  --version v0.1.0-alpha.3 \
+  --version v0.1.0-alpha.4 \
   --prefix "$HOME/.local"
 ```
 

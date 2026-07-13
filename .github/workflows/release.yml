@@ -245,6 +245,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Download verification results
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v6.0.0
         with:
@@ -253,24 +255,9 @@ jobs:
           merge-multiple: true
       - name: Build verification matrix
         run: |
-          linux_amd64_installer=failed
-          darwin_amd64_installer=failed
-          darwin_arm64_installer=failed
-          supply_chain=failed
-          alpine_3_24_x86_64_quickstart=failed
-          for result in "${RUNNER_TEMP}"/verification/*.env; do
-            test ! -f "$result" || . "$result"
-          done
-          cat > "${RUNNER_TEMP}/matrix.md" <<EOF
-          | Verification | linux/amd64 | linux/arm64 | darwin/amd64 | darwin/arm64 |
-          | --- | --- | --- | --- | --- |
-          | Artifact build | yes | yes | yes | yes |
-          | Installer | ${linux_amd64_installer} | build-only | ${darwin_amd64_installer} | ${darwin_arm64_installer} |
-          | Supply chain | ${supply_chain} | ${supply_chain} | ${supply_chain} | ${supply_chain} |
-          | Alpine 3.24 x86_64 quickstart | ${alpine_3_24_x86_64_quickstart} | n/a | n/a | n/a |
-          EOF
+          scripts/build-release-verification-matrix.sh \
+            "${RUNNER_TEMP}/verification" "${RUNNER_TEMP}/matrix.md"
           cat "${RUNNER_TEMP}/matrix.md" >> "$GITHUB_STEP_SUMMARY"
-          ! grep -q failed "${RUNNER_TEMP}/matrix.md"
       - name: Add matrix to release notes
         env:
           GH_TOKEN: ${{ github.token }}

@@ -6,6 +6,16 @@ All notable user-visible changes to AlpineForm are recorded here.
 
 None.
 
+## [v0.1.0-alpha.4] - 2026-07-13
+
+### Fixed
+
+- Recursively discover verification result artifacts, parse only known
+  `key=yes` records, and reject missing or unknown results before publishing the
+  release matrix.
+- Preserve alpha.3 as an auditable incomplete release after its publisher and
+  all platform verification jobs passed but its final matrix aggregation failed.
+
 ## [v0.1.0-alpha.3] - 2026-07-13
 
 ### Changed
@@ -22,6 +32,13 @@ None.
 
 - Preserve alpha.1 and alpha.2 as auditable incomplete releases while advancing
   the complete preview to a new immutable prerelease tag.
+
+### Known Issues
+
+- The publisher, GitHub attestation, Linux supply-chain verification, both
+  macOS installers, and fresh-Alpine quickstart all passed. The final summary
+  failed because downloaded result files were nested below artifact directories
+  while the workflow scanned only the top level. The release is incomplete.
 
 ## [v0.1.0-alpha.2] - 2026-07-13
 
@@ -71,7 +88,8 @@ None.
   checksum signing, SBOM generation, provenance, and post-release verification.
   This prerelease is incomplete and must not be used.
 
-[Unreleased]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.3...HEAD
+[Unreleased]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.4...HEAD
+[v0.1.0-alpha.4]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.3...v0.1.0-alpha.4
 [v0.1.0-alpha.3]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.2...v0.1.0-alpha.3
 [v0.1.0-alpha.2]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [v0.1.0-alpha.1]: https://github.com/mofelee/alpineform/releases/tag/v0.1.0-alpha.1

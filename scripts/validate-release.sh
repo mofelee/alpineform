@@ -7,18 +7,23 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 for file in README.md LICENSE NOTICE.md CHANGELOG.md .goreleaser.yaml \
   scripts/install.sh scripts/check-attestation-eligibility.sh \
   scripts/test-attestation-eligibility.sh \
+  scripts/build-release-verification-matrix.sh \
+  scripts/test-release-verification-matrix.sh \
   docs/support-matrix.md docs/compatibility-policy.md \
   docs/security-model.md docs/operations-runbook.md docs/release-process.md \
   docs/releases/v0.1.0-alpha.1.md docs/releases/v0.1.0-alpha.2.md \
-  docs/releases/v0.1.0-alpha.3.md; do
+  docs/releases/v0.1.0-alpha.3.md docs/releases/v0.1.0-alpha.4.md; do
   test -s "$ROOT_DIR/$file"
 done
 
 bash -n "$ROOT_DIR/scripts/check-attestation-eligibility.sh" \
   "$ROOT_DIR/scripts/test-attestation-eligibility.sh" \
+  "$ROOT_DIR/scripts/build-release-verification-matrix.sh" \
+  "$ROOT_DIR/scripts/test-release-verification-matrix.sh" \
   "$ROOT_DIR/scripts/test-install.sh" "$ROOT_DIR/scripts/validate-release.sh"
 sh -n "$ROOT_DIR/scripts/install.sh"
 "$ROOT_DIR/scripts/test-attestation-eligibility.sh"
+"$ROOT_DIR/scripts/test-release-verification-matrix.sh"
 cmp "$ROOT_DIR/examples/quickstart.apf.hcl" "$ROOT_DIR/test/release/quickstart/1.apf.hcl"
 
 require_step_before() {

@@ -11,7 +11,8 @@ this file, no release receives security fixes under a published SLA.
 
 | Version | Security fixes |
 | --- | --- |
-| `v0.1.0-alpha.3` | Best effort while this prerelease is current; no SLA |
+| `v0.1.0-alpha.4` | Best effort while this prerelease is current; no SLA |
+| `v0.1.0-alpha.3` | Unsupported; incomplete release, do not use |
 | `v0.1.0-alpha.2` | Unsupported; incomplete release, do not use |
 | `v0.1.0-alpha.1` | Unsupported; incomplete release, do not use |
 | older or untagged builds | Unsupported |
