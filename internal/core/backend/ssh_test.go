@@ -85,6 +85,19 @@ func TestSSHRunnerReadUsesRemoteScript(t *testing.T) {
 	}
 }
 
+func TestSSHRunnerReadRedactsRemoteErrors(t *testing.T) {
+	secret := "not-a-real-fact-error-secret"
+	executor := &fakeSSHExecutor{stderr: []byte(secret), err: errors.New("exit status 1")}
+	runner, err := NewSSHRunner(sshHost(), SSHOptions{Executor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runner.Read(context.Background(), "cat /etc/os-release")
+	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), `SSH command "facts.read" failed`) {
+		t.Fatalf("fact read error = %v", err)
+	}
+}
+
 func TestSSHRunnerRedactsProtectedErrors(t *testing.T) {
 	secret := "not-a-real-ssh-secret"
 	executor := &fakeSSHExecutor{stderr: []byte(secret), err: errors.New("exit status 1")}

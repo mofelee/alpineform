@@ -25,7 +25,7 @@ func (store StateStore) Read(ctx context.Context, host string) (corestate.State,
 	if store.Runner == nil {
 		return corestate.State{}, fmt.Errorf("state store requires a backend runner")
 	}
-	data, err := store.Runner.Run(ctx, Command{Name: "state.read", Script: stateReadScript(path)})
+	data, err := store.Runner.Run(ctx, Command{Name: "state.read", Script: stateReadScript(path), RedactOutput: true})
 	if err != nil {
 		return corestate.State{}, fmt.Errorf("read remote AlpineForm state for host %q: %w", host, err)
 	}
@@ -57,10 +57,11 @@ func (store StateStore) Write(ctx context.Context, host string, input corestate.
 		return corestate.State{}, err
 	}
 	command := Command{
-		Name:        "state.write",
-		Script:      stateWriteScript(path),
-		Stdin:       append(data, '\n'),
-		RedactStdin: true,
+		Name:         "state.write",
+		Script:       stateWriteScript(path),
+		Stdin:        append(data, '\n'),
+		RedactStdin:  true,
+		RedactOutput: true,
 	}
 	if _, err := store.Runner.Run(ctx, command); err != nil {
 		return corestate.State{}, fmt.Errorf("atomically write remote AlpineForm state for host %q: %w", host, err)

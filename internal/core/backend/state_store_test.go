@@ -55,7 +55,7 @@ func TestStateStoreReadValidatesAlpineFormEnvelope(t *testing.T) {
 	if state.Product != corestate.Product || state.Host != "node" {
 		t.Fatalf("state = %#v", state)
 	}
-	if len(runner.commands) != 1 || runner.commands[0].Name != "state.read" || runner.commands[0].Stdin != nil {
+	if len(runner.commands) != 1 || runner.commands[0].Name != "state.read" || runner.commands[0].Stdin != nil || !runner.commands[0].RedactOutput {
 		t.Fatalf("commands = %#v", runner.commands)
 	}
 	for _, want := range []string{"set -eu", "/var/lib/alpineform/state.json", "[ -f", "cat"} {
@@ -90,7 +90,7 @@ func TestStateStoreWriteIsAtomicAndAdvancesSerial(t *testing.T) {
 		t.Fatalf("commands = %#v", runner.commands)
 	}
 	command := runner.commands[0]
-	if command.Name != "state.write" || !command.RedactStdin || len(command.Stdin) == 0 {
+	if command.Name != "state.write" || !command.RedactStdin || !command.RedactOutput || len(command.Stdin) == 0 {
 		t.Fatalf("write command = %#v", command)
 	}
 	for _, want := range []string{"umask 077", "mkdir -p '/var/lib/alpineform'", "mktemp '/var/lib/alpineform/.state.json.tmp.XXXXXX'", "trap cleanup", "cat >\"$tmp\"", "chmod 0600", "mv -f \"$tmp\" '/var/lib/alpineform/state.json'", "trap - EXIT"} {

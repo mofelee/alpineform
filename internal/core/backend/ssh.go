@@ -62,7 +62,7 @@ func NewSSHRunner(host ir.HostSpec, options SSHOptions) (*SSHRunner, error) {
 }
 
 func (runner *SSHRunner) Read(ctx context.Context, command string) (string, error) {
-	output, err := runner.Run(ctx, Command{Name: "facts.read", Script: command})
+	output, err := runner.Run(ctx, Command{Name: "facts.read", Script: command, RedactOutput: true})
 	return string(output), err
 }
 

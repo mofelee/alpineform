@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	corebackend "github.com/mofelee/alpineform/internal/core/backend"
+	coreengine "github.com/mofelee/alpineform/internal/core/engine"
+	coregraph "github.com/mofelee/alpineform/internal/core/graph"
 	"github.com/mofelee/alpineform/internal/core/ir"
 	corestate "github.com/mofelee/alpineform/internal/core/state"
 )
@@ -572,6 +576,67 @@ func TestApplyRequiresPreviewAndLockedApproval(t *testing.T) {
 	}
 	if len(transport.events) == 0 || transport.events[len(transport.events)-1] != "lock.release" {
 		t.Fatalf("approval rejection events = %#v", transport.events)
+	}
+}
+
+func TestApplyDebugCoversRemotePhasesWithoutValues(t *testing.T) {
+	dir := t.TempDir()
+	writeOnlineHostConfig(t, dir)
+	transport := newFakeOnlineTransport("alpine")
+	var output bytes.Buffer
+	err := runApplyWithRuntime([]string{"--auto-approve", "--debug", "--lock-timeout", "0"}, &output, dir, nil, fakeOnlineRuntime(transport, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	for _, phase := range []string{"facts", "state", "lock", "apply", "cleanup"} {
+		if !strings.Contains(text, "debug phase="+phase+" ") {
+			t.Fatalf("debug output missing %s phase:\n%s", phase, text)
+		}
+	}
+	for _, operation := range []string{"os-release", "state.read", "lock.acquire", "preview-review", "locked-review", "state.write", "lock.release"} {
+		if !strings.Contains(text, "operation="+operation+" ") {
+			t.Fatalf("debug output missing %s operation:\n%s", operation, text)
+		}
+	}
+}
+
+type debugFailingProvider struct {
+	err error
+}
+
+func (provider debugFailingProvider) Inspect(context.Context, coregraph.Node) (coreengine.ObservedResource, error) {
+	return coreengine.ObservedResource{}, provider.err
+}
+
+func (provider debugFailingProvider) Apply(context.Context, coreengine.Step) (coreengine.ObservedResource, error) {
+	return coreengine.ObservedResource{}, provider.err
+}
+
+func (provider debugFailingProvider) Delete(context.Context, coreengine.Step) error {
+	return provider.err
+}
+
+func TestDebugProviderRedactsProtectedErrorsAndEvents(t *testing.T) {
+	secret := "not-a-real-provider-error-secret"
+	var output bytes.Buffer
+	var outputMu sync.Mutex
+	logger := debugLogger{output: &output, mu: &outputMu}
+	provider := debugProvider{delegate: debugFailingProvider{err: errors.New(secret)}, events: logger}
+	node := coregraph.Node{Host: "node", Address: "host.node.file.secret", Sensitive: true, Desired: map[string]any{"content": secret}}
+	if _, err := provider.Inspect(context.Background(), node); err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("protected inspect error = %v", err)
+	}
+	step := coreengine.Step{Host: "node", Address: node.Address, Action: coreengine.ActionUpdate, Node: node, Prior: &corestate.Resource{Protected: true}}
+	if _, err := provider.Apply(context.Background(), step); err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("protected apply error = %v", err)
+	}
+	if err := provider.Delete(context.Background(), step); err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("protected delete error = %v", err)
+	}
+	text := output.String()
+	if strings.Contains(text, secret) || !strings.Contains(text, "debug phase=inspect") || strings.Count(text, "debug phase=operation") != 4 || strings.Count(text, "status=failed") != 3 {
+		t.Fatalf("protected debug output = %s", text)
 	}
 }
 

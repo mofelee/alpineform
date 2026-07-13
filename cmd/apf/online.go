@@ -17,6 +17,7 @@ import (
 	coremerge "github.com/mofelee/alpineform/internal/core/merge"
 	coreparser "github.com/mofelee/alpineform/internal/core/parser"
 	coreplan "github.com/mofelee/alpineform/internal/core/plan"
+	corestate "github.com/mofelee/alpineform/internal/core/state"
 )
 
 const defaultOnlineParallel = 4
@@ -31,6 +32,36 @@ type onlineRuntime struct {
 	Stdin     io.Reader
 	NewRunner func(ir.HostSpec) (onlineRunner, error)
 	Provider  coreengine.Provider
+	Events    debugEventSink
+}
+
+type debugEvent struct {
+	Phase     string
+	Host      string
+	Operation string
+	Address   string
+	Status    string
+}
+
+type debugEventSink interface {
+	Emit(debugEvent)
+}
+
+type debugLogger struct {
+	output io.Writer
+	mu     *sync.Mutex
+}
+
+func (logger debugLogger) Emit(event debugEvent) {
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+	fmt.Fprintf(logger.output, "debug phase=%s host=%q operation=%s address=%q status=%s\n", event.Phase, event.Host, event.Operation, event.Address, event.Status)
+}
+
+func emitDebug(sink debugEventSink, event debugEvent) {
+	if sink != nil {
+		sink.Emit(event)
+	}
 }
 
 func defaultOnlineRuntime() onlineRuntime {
@@ -72,6 +103,105 @@ func (unavailableProvider) Apply(context.Context, coreengine.Step) (coreengine.O
 
 func (unavailableProvider) Delete(context.Context, coreengine.Step) error {
 	return fmt.Errorf("no provider is registered for this managed resource")
+}
+
+type debugRunner struct {
+	host     string
+	delegate onlineRunner
+	events   debugEventSink
+}
+
+func (runner debugRunner) Read(ctx context.Context, command string) (string, error) {
+	operation := factOperation(command)
+	event := debugEvent{Phase: "facts", Host: runner.host, Operation: operation, Status: "started"}
+	emitDebug(runner.events, event)
+	output, err := runner.delegate.Read(ctx, command)
+	event.Status = debugStatus(err)
+	emitDebug(runner.events, event)
+	return output, err
+}
+
+func (runner debugRunner) Run(ctx context.Context, command corebackend.Command) ([]byte, error) {
+	phase := "operation"
+	switch {
+	case strings.HasPrefix(command.Name, "state."):
+		phase = "state"
+	case command.Name == "lock.release":
+		phase = "cleanup"
+	case strings.HasPrefix(command.Name, "lock."):
+		phase = "lock"
+	}
+	event := debugEvent{Phase: phase, Host: runner.host, Operation: command.Name, Status: "started"}
+	emitDebug(runner.events, event)
+	output, err := runner.delegate.Run(ctx, command)
+	event.Status = debugStatus(err)
+	emitDebug(runner.events, event)
+	return output, err
+}
+
+func factOperation(command string) string {
+	switch command {
+	case "cat /etc/os-release":
+		return "os-release"
+	case "apk --print-arch":
+		return "apk-architecture"
+	case "uname -m":
+		return "kernel-architecture"
+	default:
+		return "fixed-read"
+	}
+}
+
+func debugStatus(err error) string {
+	if err != nil {
+		return "failed"
+	}
+	return "completed"
+}
+
+type debugProvider struct {
+	delegate coreengine.Provider
+	events   debugEventSink
+}
+
+func (provider debugProvider) Inspect(ctx context.Context, node coregraph.Node) (coreengine.ObservedResource, error) {
+	event := debugEvent{Phase: "inspect", Host: node.Host, Operation: "inspect", Address: node.Address, Status: "started"}
+	emitDebug(provider.events, event)
+	observed, err := provider.delegate.Inspect(ctx, node)
+	event.Status = debugStatus(err)
+	emitDebug(provider.events, event)
+	if err != nil && (node.Sensitive || node.Ephemeral) {
+		return coreengine.ObservedResource{}, fmt.Errorf("inspect protected resource %q failed", node.Address)
+	}
+	return observed, err
+}
+
+func (provider debugProvider) Apply(ctx context.Context, step coreengine.Step) (coreengine.ObservedResource, error) {
+	event := debugEvent{Phase: "operation", Host: step.Host, Operation: step.Action, Address: step.Address, Status: "started"}
+	emitDebug(provider.events, event)
+	observed, err := provider.delegate.Apply(ctx, step)
+	event.Status = debugStatus(err)
+	emitDebug(provider.events, event)
+	if err != nil && (step.Node.Sensitive || step.Node.Ephemeral) {
+		return coreengine.ObservedResource{}, fmt.Errorf("%s protected resource %q failed", step.Action, step.Address)
+	}
+	return observed, err
+}
+
+func (provider debugProvider) Delete(ctx context.Context, step coreengine.Step) error {
+	event := debugEvent{Phase: "operation", Host: step.Host, Operation: step.Action, Address: step.Address, Status: "started"}
+	emitDebug(provider.events, event)
+	err := provider.delegate.Delete(ctx, step)
+	event.Status = debugStatus(err)
+	emitDebug(provider.events, event)
+	if err != nil && (step.Node.Sensitive || step.Node.Ephemeral || priorProtected(step.Prior)) {
+		return fmt.Errorf("%s protected resource %q failed", step.Action, step.Address)
+	}
+	return err
+}
+
+func priorProtected(resource *corestate.Resource) bool {
+	return resource != nil && (resource.Protected || resource.Sensitive || resource.Ephemeral)
 }
 
 type onlineConfigFlags struct {
@@ -151,10 +281,24 @@ func newOnlineWorkflow(loader onlineConfigLoader, runtime onlineRuntime, paralle
 	if err != nil {
 		return onlineWorkflow{}, err
 	}
+	newRunner := func(host ir.HostSpec) (onlineRunner, error) {
+		runner, err := runtime.NewRunner(host)
+		if err != nil {
+			return nil, err
+		}
+		if runtime.Events != nil {
+			return debugRunner{host: host.Name, delegate: runner, events: runtime.Events}, nil
+		}
+		return runner, nil
+	}
 	remote := corebackend.RemoteBackend{NewRunner: func(host ir.HostSpec) (corebackend.Runner, error) {
-		return runtime.NewRunner(host)
+		return newRunner(host)
 	}}
-	actionEngine := &coreengine.Engine{Backend: remote, Provider: runtime.Provider, Parallel: parallel}
+	provider := runtime.Provider
+	if runtime.Events != nil {
+		provider = debugProvider{delegate: provider, events: runtime.Events}
+	}
+	actionEngine := &coreengine.Engine{Backend: remote, Provider: provider, Parallel: parallel}
 	build := func(ctx context.Context) (*ir.Program, *coregraph.ResourceGraph, error) {
 		_, config, err := loader.load()
 		if err != nil {
@@ -166,7 +310,7 @@ func newOnlineWorkflow(loader onlineConfigLoader, runtime onlineRuntime, paralle
 		}
 		facts := make(map[string]ir.HostFacts, len(targets))
 		for _, host := range targets {
-			runner, err := runtime.NewRunner(host)
+			runner, err := newRunner(host)
 			if err != nil {
 				return nil, nil, fmt.Errorf("create fact reader for host %q: %w", host.Name, err)
 			}
@@ -267,7 +411,7 @@ func runApplyWithRuntime(args []string, stdout io.Writer, workingDir string, env
 	var configFlags onlineConfigFlags
 	configFlags.bind(fs)
 	autoApprove := fs.Bool("auto-approve", false, "approve preview and locked plans")
-	_ = fs.Bool("debug", false, "emit detailed operation events")
+	debug := fs.Bool("debug", false, "emit detailed operation events")
 	lockTimeout := fs.Duration("lock-timeout", 30*time.Second, "maximum time to wait for each host lock")
 	colorMode := fs.String("color", "auto", "color mode: auto, always, or never")
 	parallel := fs.Int("parallel", defaultOnlineParallel, "maximum concurrent hosts")
@@ -288,15 +432,18 @@ func runApplyWithRuntime(args []string, stdout io.Writer, workingDir string, env
 	if err != nil {
 		return err
 	}
+	var outputMu sync.Mutex
+	if *debug {
+		runtime.Events = debugLogger{output: stdout, mu: &outputMu}
+	}
 	workflow, err := newOnlineWorkflow(configFlags.loader(workingDir, environ), runtime, *parallel)
 	if err != nil {
 		return err
 	}
 	input := bufio.NewReader(runtime.Stdin)
-	var reviewMu sync.Mutex
 	review := func(label string, actionPlan coreengine.Plan) error {
-		reviewMu.Lock()
-		defer reviewMu.Unlock()
+		outputMu.Lock()
+		defer outputMu.Unlock()
 		fmt.Fprintln(stdout, label)
 		document := coreplan.NewOnline(actionPlan, coreplan.Options{Files: workflow.files})
 		if err := printOnlineDocument(stdout, document, "text", color); err != nil {
@@ -307,24 +454,43 @@ func runApplyWithRuntime(args []string, stdout io.Writer, workingDir string, env
 		}
 		return confirmPlan(input, stdout)
 	}
+	emitDebug(runtime.Events, debugEvent{Phase: "apply", Operation: "apply", Status: "started"})
 	actual, err := workflow.engine.Apply(workflow.ctx, workflow.build, coreengine.ApplyOptions{
 		LockTimeout: *lockTimeout,
 		Parallel:    *parallel,
 		ReviewPreview: func(_ context.Context, plan coreengine.Plan) error {
-			return review("Preview before lock:", plan)
+			event := debugEvent{Phase: "apply", Operation: "preview-review", Status: "started"}
+			emitDebug(runtime.Events, event)
+			err := review("Preview before lock:", plan)
+			event.Status = debugStatus(err)
+			emitDebug(runtime.Events, event)
+			return err
 		},
 		ReviewLocked: func(_ context.Context, _, locked coreengine.Plan, changed bool) error {
+			host := ""
+			if len(locked.Hosts) == 1 {
+				host = locked.Hosts[0].Host.Name
+			}
+			event := debugEvent{Phase: "apply", Host: host, Operation: "locked-review", Status: "started"}
+			emitDebug(runtime.Events, event)
 			label := "Locked execution plan:"
 			if changed {
 				label = "Locked execution plan changed; review the replacement plan:"
 			}
-			return review(label, locked)
+			err := review(label, locked)
+			event.Status = debugStatus(err)
+			emitDebug(runtime.Events, event)
+			return err
 		},
 	})
 	if err != nil {
+		emitDebug(runtime.Events, debugEvent{Phase: "apply", Operation: "apply", Status: "failed"})
 		return err
 	}
+	emitDebug(runtime.Events, debugEvent{Phase: "apply", Operation: "apply", Status: "completed"})
+	outputMu.Lock()
 	fmt.Fprintf(stdout, "Apply complete: %d host(s).\n", len(actual.Hosts))
+	outputMu.Unlock()
 	return nil
 }
 

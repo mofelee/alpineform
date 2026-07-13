@@ -268,6 +268,9 @@ func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []gra
 		current[node.Address] = true
 		observed, err := engine.Provider.Inspect(ctx, node)
 		if err != nil {
+			if node.Sensitive || node.Ephemeral {
+				return HostPlan{}, fmt.Errorf("inspect protected resource %q failed", node.Address)
+			}
 			return HostPlan{}, fmt.Errorf("inspect %s: %w", node.Address, err)
 		}
 		priorResource, exists := prior.Resources[node.Address]
@@ -389,6 +392,9 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 			delete(state.Resources, step.Address)
 		case ActionDelete, ActionDestroy:
 			if err := engine.Provider.Delete(ctx, step); err != nil {
+				if stepIsProtected(step) {
+					return fmt.Errorf("%s protected resource %q failed", step.Action, step.Address)
+				}
 				return fmt.Errorf("%s %s: %w", step.Action, step.Address, err)
 			}
 			delete(state.Resources, step.Address)
@@ -397,6 +403,9 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 		case ActionCreate, ActionUpdate:
 			observed, err := engine.Provider.Apply(ctx, step)
 			if err != nil {
+				if stepIsProtected(step) {
+					return fmt.Errorf("%s protected resource %q failed", step.Action, step.Address)
+				}
 				return fmt.Errorf("%s %s: %w", step.Action, step.Address, err)
 			}
 			state.Resources[step.Address] = resourceForStep(step, observed)
@@ -438,6 +447,10 @@ func resourceForStep(step Step, observed ObservedResource) corestate.Resource {
 
 func resourceIsProtected(resource *corestate.Resource) bool {
 	return resource != nil && (resource.Protected || resource.Sensitive || resource.Ephemeral)
+}
+
+func stepIsProtected(step Step) bool {
+	return step.Node.Sensitive || step.Node.Ephemeral || resourceIsProtected(step.Prior)
 }
 
 func copyState(input corestate.State) corestate.State {

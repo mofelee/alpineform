@@ -135,6 +135,25 @@ type memoryProvider struct {
 	deleted  []Step
 }
 
+type failingProvider struct {
+	inspectError error
+	applyError   error
+	deleteError  error
+	observed     ObservedResource
+}
+
+func (provider failingProvider) Inspect(context.Context, graph.Node) (ObservedResource, error) {
+	return provider.observed, provider.inspectError
+}
+
+func (provider failingProvider) Apply(context.Context, Step) (ObservedResource, error) {
+	return ObservedResource{}, provider.applyError
+}
+
+func (provider failingProvider) Delete(context.Context, Step) error {
+	return provider.deleteError
+}
+
 func newMemoryProvider() *memoryProvider {
 	return &memoryProvider{observed: map[string]ObservedResource{}}
 }
@@ -572,6 +591,39 @@ func TestProtectedPlanJSONDoesNotRetainObservedContent(t *testing.T) {
 	}
 	if strings.Contains(string(data), secret) || !strings.Contains(string(data), `"protected":true`) {
 		t.Fatalf("protected online plan JSON = %s", data)
+	}
+}
+
+func TestProtectedProviderErrorsNeverExposeDetails(t *testing.T) {
+	secret := "not-a-real-provider-error-secret"
+	node := testNode(map[string]any{"content": secret})
+	node.Sensitive = true
+	actionEngine := Engine{Backend: newMemoryBackend(), Provider: failingProvider{inspectError: errors.New(secret)}}
+	if _, err := actionEngine.Plan(context.Background(), staticBuild(testHost(), node)); err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "inspect protected resource") {
+		t.Fatalf("protected inspect error = %v", err)
+	}
+
+	provider := failingProvider{observed: ObservedResource{}, applyError: errors.New(secret)}
+	actionEngine.Provider = provider
+	_, err := actionEngine.Apply(context.Background(), staticBuild(testHost(), node), ApplyOptions{
+		ReviewPreview: func(context.Context, Plan) error { return nil },
+		ReviewLocked:  func(context.Context, Plan, Plan, bool) error { return nil },
+	})
+	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "create protected resource") {
+		t.Fatalf("protected apply error = %v", err)
+	}
+
+	backend := newMemoryBackend()
+	backend.states["node"] = corestate.State{Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node", Resources: map[string]corestate.Resource{
+		"orphan": {Protected: true, DeleteBehavior: ActionDestroy},
+	}}
+	actionEngine = Engine{Backend: backend, Provider: failingProvider{deleteError: errors.New(secret)}}
+	_, err = actionEngine.Apply(context.Background(), staticBuild(testHost()), ApplyOptions{
+		ReviewPreview: func(context.Context, Plan) error { return nil },
+		ReviewLocked:  func(context.Context, Plan, Plan, bool) error { return nil },
+	})
+	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "destroy protected resource") {
+		t.Fatalf("protected delete error = %v", err)
 	}
 }
 
