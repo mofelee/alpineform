@@ -1,6 +1,7 @@
 package merge
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/mofelee/alpineform/internal/core/ir"
 	"github.com/mofelee/alpineform/internal/core/parser"
 	"github.com/mofelee/alpineform/internal/product"
+	"golang.org/x/crypto/ssh"
 )
 
 func compileConfig(t *testing.T, content string) (*parser.Config, error) {
@@ -24,6 +26,15 @@ func compileConfig(t *testing.T, content string) (*parser.Config, error) {
 		return nil, err
 	}
 	return config, nil
+}
+
+func validTestAuthorizedKey(t *testing.T) string {
+	t.Helper()
+	publicKey, err := ssh.NewPublicKey(ed25519.PublicKey(make([]byte, ed25519.PublicKeySize)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(publicKey)))
 }
 
 func TestCompileResolvesProfilesComponentsAndProtectedMetadata(t *testing.T) {
@@ -883,5 +894,103 @@ func TestCompileUserResourceValidation(t *testing.T) {
 				t.Fatalf("Compile() error = %v, want %q", err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestCompileUserMembershipsAndAuthorizedKeysNormalizeAndDeduplicate(t *testing.T) {
+	key := validTestAuthorizedKey(t)
+	config, err := compileConfig(t, `
+host "node" {
+  groups {
+    group "app" { gid = 1500 }
+    group "wheel" {}
+  }
+  users {
+    user "app" {
+      group  = "app"
+      groups = ["wheel", "wheel"]
+      ssh_authorized_keys = [
+        "`+key+` first-comment",
+        "`+key+` second-comment",
+      ]
+    }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := program.Hosts[0].Users[0]
+	if len(user.Groups) != 1 || user.Groups[0].Group != "wheel" || user.Groups[0].Ensure != "present" {
+		t.Fatalf("supplementary groups = %#v", user.Groups)
+	}
+	if len(user.AuthorizedKeys) != 1 || user.AuthorizedKeys[0].Fingerprint == "" || user.AuthorizedKeys[0].KeyType != "ssh-ed25519" || !strings.HasSuffix(user.AuthorizedKeys[0].Line, " first-comment") || user.AuthorizedKeys[0].Ensure != "present" {
+		t.Fatalf("authorized keys = %#v", user.AuthorizedKeys)
+	}
+}
+
+func TestCompileUserMembershipAndAuthorizedKeyValidation(t *testing.T) {
+	key := validTestAuthorizedKey(t)
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "primary in supplementary", body: `users { user "app" {
+      group = "app"
+      groups = ["app"]
+    } }`, wantErr: "must not contain the primary group"},
+		{name: "managed primary alias in supplementary", body: `groups { group "app" { gid = 1500 } }
+  users { user "app" {
+    group = "1500"
+    groups = ["app"]
+  } }`, wantErr: "resolves to its primary group"},
+		{name: "absent supplementary group", body: `groups { group "wheel" { ensure = "absent" } }
+  users { user "app" { groups = ["wheel"] } }`, wantErr: "membership for user \"app\" uses group \"wheel\" declared absent"},
+		{name: "numeric supplementary group", body: `users { user "app" { groups = ["1500"] } }`, wantErr: "valid Alpine group names"},
+		{name: "invalid key", body: `users { user "app" { ssh_authorized_keys = ["not-a-key"] } }`, wantErr: "invalid SSH public key"},
+		{name: "key options", body: `users { user "app" { ssh_authorized_keys = ["restrict ` + key + `"] } }`, wantErr: "does not support authorized_keys options"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := strings.ReplaceAll(test.body, "users { user", "users {\n    user")
+			body = strings.ReplaceAll(body, "groups { group", "groups {\n    group")
+			body = strings.ReplaceAll(body, " } }", " }\n  }")
+			config, err := compileConfig(t, "host \"node\" {\n  "+body+"\n}\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Compile(config)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Compile() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestCompileRejectsProtectedAuthorizedKeyListWithoutValueDisclosure(t *testing.T) {
+	key := validTestAuthorizedKey(t) + " protected-comment"
+	config, err := compileConfig(t, `
+variable "keys" {
+  type      = list(string)
+  default   = ["`+key+`"]
+  sensitive = true
+}
+host "node" {
+  users {
+    user "app" { ssh_authorized_keys = var.keys }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Compile(config)
+	if err == nil || !strings.Contains(err.Error(), "non-protected list of strings") || strings.Contains(err.Error(), key) {
+		t.Fatalf("Compile() protected key error = %v", err)
 	}
 }

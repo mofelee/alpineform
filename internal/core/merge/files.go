@@ -136,6 +136,19 @@ func validateNativeResourceRelationships(files []ir.ManagedFileSpec, directories
 		if group, exists := managedGroupForReference(user.PrimaryGroup, groups); exists && user.Ensure == "present" && group.Ensure == "absent" {
 			return resourceError(user.Source, "present user %q uses primary group %q declared absent", user.Name, group.Name)
 		}
+		for _, membership := range user.Groups {
+			if membership.Group == user.PrimaryGroup {
+				return resourceError(membership.Source, "user %q supplementary groups must not contain its primary group %q", user.Name, membership.Group)
+			}
+			membershipGroup, membershipManaged := managedGroupForReference(membership.Group, groups)
+			primaryGroup, primaryManaged := managedGroupForReference(user.PrimaryGroup, groups)
+			if membershipManaged && primaryManaged && membershipGroup.Name == primaryGroup.Name {
+				return resourceError(membership.Source, "user %q supplementary group %q resolves to its primary group", user.Name, membership.Group)
+			}
+			if membershipManaged && membership.Ensure == "present" && membershipGroup.Ensure == "absent" {
+				return resourceError(membership.Source, "present membership for user %q uses group %q declared absent", user.Name, membershipGroup.Name)
+			}
+		}
 	}
 	for _, file := range files {
 		for _, directory := range directories {

@@ -63,7 +63,7 @@ var hostResourceCollections = map[string]resourceCollectionSchema{
 		block:    "users",
 		resource: ResourceUser,
 		attributes: attributeSet(
-			"uid", "group", "home", "shell", "system", "ensure", "on_remove",
+			"uid", "group", "groups", "home", "shell", "system", "ssh_authorized_keys", "ensure", "on_remove",
 		),
 	},
 }

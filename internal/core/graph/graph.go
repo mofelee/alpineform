@@ -129,6 +129,54 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 				DependsOn:  userDependencies(host.Name, hostAddress, user, host.Groups, host.Directories, host.Files),
 				DigestSafe: true,
 			})
+			for _, membership := range user.Groups {
+				graph.Nodes = append(graph.Nodes, Node{
+					Host:      host.Name,
+					Address:   membershipResourceAddress(host.Name, user.Name, membership.Group),
+					Kind:      "membership",
+					Managed:   true,
+					Summary:   membershipSummary(user.Name, membership),
+					Source:    membership.Source,
+					Lifecycle: &user.Lifecycle,
+					Desired: map[string]any{
+						"user":            user.Name,
+						"group":           membership.Group,
+						"ensure":          membership.Ensure,
+						"delete_behavior": "destroy",
+						"delete":          map[string]any{"user": user.Name, "group": membership.Group},
+						"prevent_destroy": user.Lifecycle.PreventDestroy,
+					},
+					DependsOn:  membershipDependencies(host.Name, hostAddress, user, membership, host.Groups),
+					DigestSafe: true,
+				})
+			}
+			for _, key := range user.AuthorizedKeys {
+				graph.Nodes = append(graph.Nodes, Node{
+					Host:      host.Name,
+					Address:   authorizedKeyResourceAddress(host.Name, user.Name, key.Fingerprint),
+					Kind:      "authorized_key",
+					Managed:   true,
+					Summary:   authorizedKeySummary(user.Name, key),
+					Source:    key.Source,
+					Lifecycle: &user.Lifecycle,
+					Desired: map[string]any{
+						"user":            user.Name,
+						"fingerprint":     key.Fingerprint,
+						"metadata_ok":     true,
+						"ensure":          key.Ensure,
+						"delete_behavior": "destroy",
+						"delete":          map[string]any{"user": user.Name, "key_type": key.KeyType, "key_blob": key.KeyBlob},
+						"prevent_destroy": user.Lifecycle.PreventDestroy,
+					},
+					Payload: map[string]any{
+						"line":     key.Line,
+						"key_type": key.KeyType,
+						"key_blob": key.KeyBlob,
+					},
+					DependsOn:  authorizedKeyDependencies(host.Name, hostAddress, user, key),
+					DigestSafe: true,
+				})
+			}
 		}
 		for _, directory := range host.Directories {
 			deleteBehavior := directory.OnRemove
@@ -262,6 +310,20 @@ func userSummary(user ir.ManagedUserSpec) string {
 	return "manage user " + user.Name
 }
 
+func membershipSummary(user string, membership ir.ManagedMembershipSpec) string {
+	if membership.Ensure == "absent" {
+		return "ensure supplementary membership is absent " + user + ":" + membership.Group
+	}
+	return "manage supplementary membership " + user + ":" + membership.Group
+}
+
+func authorizedKeySummary(user string, key ir.ManagedAuthorizedKeySpec) string {
+	if key.Ensure == "absent" {
+		return "ensure authorized key is absent for " + user + " " + key.Fingerprint
+	}
+	return "manage authorized key for " + user + " " + key.Fingerprint
+}
+
 func fileDependencies(host, hostAddress string, file ir.ManagedFileSpec, directories []ir.ManagedDirectorySpec, groups []ir.ManagedGroupSpec, users []ir.ManagedUserSpec) []string {
 	dependencies := []string{hostAddress}
 	if file.Ensure != "present" {
@@ -275,6 +337,7 @@ func fileDependencies(host, hostAddress string, file ir.ManagedFileSpec, directo
 	}
 	if user, exists := managedUser(file.Owner, users); exists && user.Ensure == "present" {
 		dependencies = append(dependencies, userResourceAddress(host, user.Name))
+		dependencies = append(dependencies, presentUserChildAddresses(host, user)...)
 	}
 	sort.Strings(dependencies)
 	return dependencies
@@ -291,6 +354,7 @@ func directoryDependencies(host, hostAddress string, directory ir.ManagedDirecto
 		}
 		if user, exists := managedUser(directory.Owner, users); exists && user.Ensure == "present" {
 			dependencies = append(dependencies, userResourceAddress(host, user.Name))
+			dependencies = append(dependencies, presentUserChildAddresses(host, user)...)
 		}
 		sort.Strings(dependencies)
 		return dependencies
@@ -328,6 +392,11 @@ func groupDependencies(host, hostAddress string, group ir.ManagedGroupSpec, dire
 		if user.Ensure == "absent" && groupMatchesReference(group, user.PrimaryGroup) {
 			dependencies = append(dependencies, userResourceAddress(host, user.Name))
 		}
+		for _, membership := range user.Groups {
+			if membership.Ensure == "absent" && groupMatchesReference(group, membership.Group) {
+				dependencies = append(dependencies, membershipResourceAddress(host, user.Name, membership.Group))
+			}
+		}
 	}
 	sort.Strings(dependencies)
 	return dependencies
@@ -352,8 +421,54 @@ func userDependencies(host, hostAddress string, user ir.ManagedUserSpec, groups 
 			dependencies = append(dependencies, fileResourceAddress(host, file.Path))
 		}
 	}
+	for _, membership := range user.Groups {
+		if membership.Ensure == "absent" {
+			dependencies = append(dependencies, membershipResourceAddress(host, user.Name, membership.Group))
+		}
+	}
+	for _, key := range user.AuthorizedKeys {
+		if key.Ensure == "absent" {
+			dependencies = append(dependencies, authorizedKeyResourceAddress(host, user.Name, key.Fingerprint))
+		}
+	}
 	sort.Strings(dependencies)
 	return dependencies
+}
+
+func membershipDependencies(host, hostAddress string, user ir.ManagedUserSpec, membership ir.ManagedMembershipSpec, groups []ir.ManagedGroupSpec) []string {
+	dependencies := []string{hostAddress}
+	if membership.Ensure != "present" {
+		return dependencies
+	}
+	dependencies = append(dependencies, userResourceAddress(host, user.Name))
+	if group, exists := managedGroup(membership.Group, groups); exists && group.Ensure == "present" {
+		dependencies = append(dependencies, groupResourceAddress(host, group.Name))
+	}
+	sort.Strings(dependencies)
+	return dependencies
+}
+
+func authorizedKeyDependencies(host, hostAddress string, user ir.ManagedUserSpec, key ir.ManagedAuthorizedKeySpec) []string {
+	dependencies := []string{hostAddress}
+	if key.Ensure == "present" {
+		dependencies = append(dependencies, userResourceAddress(host, user.Name))
+	}
+	return dependencies
+}
+
+func presentUserChildAddresses(host string, user ir.ManagedUserSpec) []string {
+	addresses := make([]string, 0, len(user.Groups)+len(user.AuthorizedKeys))
+	for _, membership := range user.Groups {
+		if membership.Ensure == "present" {
+			addresses = append(addresses, membershipResourceAddress(host, user.Name, membership.Group))
+		}
+	}
+	for _, key := range user.AuthorizedKeys {
+		if key.Ensure == "present" {
+			addresses = append(addresses, authorizedKeyResourceAddress(host, user.Name, key.Fingerprint))
+		}
+	}
+	return addresses
 }
 
 func managedGroup(reference string, groups []ir.ManagedGroupSpec) (ir.ManagedGroupSpec, bool) {
@@ -415,6 +530,14 @@ func groupResourceAddress(host, name string) string {
 
 func userResourceAddress(host, name string) string {
 	return "host." + host + ".users.user[" + strconv.Quote(name) + "]"
+}
+
+func membershipResourceAddress(host, user, group string) string {
+	return userResourceAddress(host, user) + ".groups.group[" + strconv.Quote(group) + "]"
+}
+
+func authorizedKeyResourceAddress(host, user, fingerprint string) string {
+	return userResourceAddress(host, user) + ".ssh_authorized_keys.key[" + strconv.Quote(fingerprint) + "]"
 }
 
 func fileResourceAddress(host, path string) string {

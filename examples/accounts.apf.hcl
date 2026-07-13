@@ -9,12 +9,16 @@ host "alpine_accounts" {
       gid    = 1500
       system = true
     }
+    group "metrics" {
+      system = true
+    }
   }
 
   users {
     user "example_app" {
       uid    = 1500
       group  = "example_app"
+      groups = ["metrics"]
       home   = "/var/lib/example-app"
       shell  = "/sbin/nologin"
       system = true

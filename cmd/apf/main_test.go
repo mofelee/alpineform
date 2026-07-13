@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	coregraph "github.com/mofelee/alpineform/internal/core/graph"
 	"github.com/mofelee/alpineform/internal/core/ir"
 	corestate "github.com/mofelee/alpineform/internal/core/state"
+	"golang.org/x/crypto/ssh"
 )
 
 func TestVersionUsesAPFProductName(t *testing.T) {
@@ -429,32 +431,36 @@ func TestPlanSupportsOnlineAndDoesNotOverwriteInput(t *testing.T) {
 }
 
 type fakeOnlineTransport struct {
-	osID              string
-	state             corestate.State
-	events            []string
-	stateWrites       int
-	fileExists        bool
-	fileContent       []byte
-	fileOwner         string
-	fileGroup         string
-	fileMode          string
-	directoryExists   bool
-	directoryNonEmpty bool
-	directoryOwner    string
-	directoryGroup    string
-	directoryMode     string
-	groupExists       bool
-	groupGID          string
-	userExists        bool
-	userUID           string
-	userGroup         string
-	userGroupGID      string
-	userHome          string
-	userShell         string
+	osID                    string
+	state                   corestate.State
+	events                  []string
+	stateWrites             int
+	fileExists              bool
+	fileContent             []byte
+	fileOwner               string
+	fileGroup               string
+	fileMode                string
+	directoryExists         bool
+	directoryNonEmpty       bool
+	directoryOwner          string
+	directoryGroup          string
+	directoryMode           string
+	groupExists             bool
+	groupGID                string
+	groupGIDs               map[string]string
+	userExists              bool
+	userUID                 string
+	userGroup               string
+	userGroupGID            string
+	userHome                string
+	userShell               string
+	membershipExists        bool
+	authorizedKeyExists     bool
+	authorizedKeyMetadataOK bool
 }
 
 func newFakeOnlineTransport(osID string) *fakeOnlineTransport {
-	return &fakeOnlineTransport{osID: osID, state: corestate.Empty("node")}
+	return &fakeOnlineTransport{osID: osID, state: corestate.Empty("node"), groupGIDs: map[string]string{}}
 }
 
 func (transport *fakeOnlineTransport) Read(_ context.Context, command string) (string, error) {
@@ -524,10 +530,11 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 		transport.directoryNonEmpty = false
 		return nil, nil
 	case "inspect.group":
-		if !transport.groupExists {
+		gid, exists := transport.groupGIDs[command.Arguments[0]]
+		if !exists {
 			return []byte("missing\n"), nil
 		}
-		return []byte("group\n" + transport.groupGID + "\n"), nil
+		return []byte("group\n" + gid + "\n"), nil
 	case "apply.group":
 		transport.groupExists = true
 		if command.Arguments[1] != "" {
@@ -535,10 +542,14 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 		} else if transport.groupGID == "" {
 			transport.groupGID = "1000"
 		}
+		transport.groupGIDs[command.Arguments[0]] = transport.groupGID
 		return nil, nil
 	case "delete.group":
-		transport.groupExists = false
-		transport.groupGID = ""
+		delete(transport.groupGIDs, command.Arguments[0])
+		transport.groupExists = len(transport.groupGIDs) != 0
+		if !transport.groupExists {
+			transport.groupGID = ""
+		}
 		return nil, nil
 	case "inspect.user":
 		if !transport.userExists {
@@ -554,7 +565,7 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 		}
 		if command.Arguments[2] != "" {
 			transport.userGroup = command.Arguments[2]
-			transport.userGroupGID = transport.groupGID
+			transport.userGroupGID = transport.groupGIDs[command.Arguments[2]]
 		} else if transport.userGroup == "" {
 			transport.userGroup = command.Arguments[0]
 			transport.userGroupGID = transport.userUID
@@ -577,6 +588,30 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 		transport.userGroupGID = ""
 		transport.userHome = ""
 		transport.userShell = ""
+		return nil, nil
+	case "inspect.membership":
+		if transport.membershipExists {
+			return []byte("membership\n"), nil
+		}
+		return []byte("missing\n"), nil
+	case "apply.membership":
+		transport.membershipExists = true
+		return nil, nil
+	case "delete.membership":
+		transport.membershipExists = false
+		return nil, nil
+	case "inspect.authorized_key":
+		if !transport.authorizedKeyExists {
+			return []byte("missing\n"), nil
+		}
+		return []byte(fmt.Sprintf("key\n%t\n", transport.authorizedKeyMetadataOK)), nil
+	case "apply.authorized_key":
+		transport.authorizedKeyExists = true
+		transport.authorizedKeyMetadataOK = true
+		return nil, nil
+	case "delete.authorized_key":
+		transport.authorizedKeyExists = false
+		transport.authorizedKeyMetadataOK = false
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected backend command %q", command.Name)
@@ -1062,6 +1097,7 @@ host "node" {
 		t.Fatalf("group second check = %v", err)
 	}
 	transport.groupGID = "1600"
+	transport.groupGIDs["app"] = "1600"
 	var driftOutput bytes.Buffer
 	if err := runCheckWithRuntime(nil, &driftOutput, dir, nil, runtime); err == nil || !strings.Contains(err.Error(), "drift") || !strings.Contains(driftOutput.String(), "update "+address) {
 		t.Fatalf("group drift check error = %v, output = %s", err, driftOutput.String())
@@ -1156,5 +1192,101 @@ host "node" {
 	}
 	if transport.userExists || transport.groupExists || len(transport.state.Resources) != 0 {
 		t.Fatalf("account delete result: user=%v group=%v state=%#v", transport.userExists, transport.groupExists, transport.state)
+	}
+}
+
+func testAuthorizedKeyLine(t *testing.T) (string, string) {
+	t.Helper()
+	publicKey, err := ssh.NewPublicKey(ed25519.PublicKey(make([]byte, ed25519.PublicKeySize)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(publicKey))) + " cli-test", ssh.FingerprintSHA256(publicKey)
+}
+
+func TestNativeMembershipAndAuthorizedKeyWorkflowRepairsDriftAndRemovesListItems(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.apf.hcl")
+	key, fingerprint := testAuthorizedKeyLine(t)
+	writeConfig := func(withChildren bool) {
+		t.Helper()
+		children := ""
+		if withChildren {
+			children = fmt.Sprintf("      groups = [\"wheel\"]\n      ssh_authorized_keys = [%q]\n", key)
+		}
+		content := fmt.Sprintf(`
+host "node" {
+  groups {
+    group "app" { gid = 1500 }
+    group "wheel" { gid = 1600 }
+  }
+  users {
+    user "app" {
+      uid   = 1500
+      group = "app"
+      home  = "/srv/app"
+%s    }
+  }
+}
+`, children)
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport := newFakeOnlineTransport("alpine")
+	runtime := fakeNativeRuntime(transport, "")
+	writeConfig(true)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	membershipAddress := `host.node.users.user["app"].groups.group["wheel"]`
+	keyAddress := `host.node.users.user["app"].ssh_authorized_keys.key[` + fmt.Sprintf("%q", fingerprint) + `]`
+	membershipState, membershipTracked := transport.state.Resources[membershipAddress]
+	keyState, keyTracked := transport.state.Resources[keyAddress]
+	if !transport.membershipExists || !transport.authorizedKeyExists || !transport.authorizedKeyMetadataOK || !membershipTracked || !keyTracked || membershipState.Delete["group"] != "wheel" || keyState.Delete["key_type"] != "ssh-ed25519" {
+		t.Fatalf("membership/key state = membership=%#v key=%#v transport=%#v", membershipState, keyState, transport)
+	}
+	stateData, err := corestate.Encode(transport.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stateData), "cli-test") {
+		t.Fatalf("authorized key comment entered state: %s", stateData)
+	}
+	if err := runCheckWithRuntime(nil, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("membership/key second check = %v", err)
+	}
+
+	transport.membershipExists = false
+	transport.authorizedKeyExists = false
+	var driftOutput bytes.Buffer
+	if err := runCheckWithRuntime(nil, &driftOutput, dir, nil, runtime); err == nil || !strings.Contains(driftOutput.String(), "create "+membershipAddress) || !strings.Contains(driftOutput.String(), "create "+keyAddress) {
+		t.Fatalf("membership/key drift check error = %v, output = %s", err, driftOutput.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("membership/key repair apply = %v", err)
+	}
+	transport.authorizedKeyMetadataOK = false
+	var metadataOutput bytes.Buffer
+	if err := runCheckWithRuntime(nil, &metadataOutput, dir, nil, runtime); err == nil || !strings.Contains(metadataOutput.String(), "update "+keyAddress) {
+		t.Fatalf("authorized key metadata check error = %v, output = %s", err, metadataOutput.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("authorized key metadata repair = %v", err)
+	}
+
+	writeConfig(false)
+	eventStart := len(transport.events)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("managed list item removal = %v", err)
+	}
+	deleteEvents := []string{}
+	for _, event := range transport.events[eventStart:] {
+		if strings.HasPrefix(event, "delete.") {
+			deleteEvents = append(deleteEvents, event)
+		}
+	}
+	if !reflect.DeepEqual(deleteEvents, []string{"delete.authorized_key", "delete.membership"}) || transport.membershipExists || transport.authorizedKeyExists || len(transport.state.Resources) != 3 {
+		t.Fatalf("managed child removal = events=%#v transport=%#v state=%#v", deleteEvents, transport, transport.state)
 	}
 }

@@ -59,16 +59,33 @@ type HostSpec struct {
 }
 
 type ManagedUserSpec struct {
-	Name         string        `json:"name"`
-	UID          string        `json:"uid,omitempty"`
-	PrimaryGroup string        `json:"group,omitempty"`
-	Home         string        `json:"home,omitempty"`
-	Shell        string        `json:"shell,omitempty"`
-	System       bool          `json:"system,omitempty"`
-	Ensure       string        `json:"ensure"`
-	OnRemove     string        `json:"on_remove"`
-	Lifecycle    LifecycleSpec `json:"lifecycle"`
-	Source       SourceRef     `json:"source"`
+	Name           string                     `json:"name"`
+	UID            string                     `json:"uid,omitempty"`
+	PrimaryGroup   string                     `json:"group,omitempty"`
+	Groups         []ManagedMembershipSpec    `json:"groups,omitempty"`
+	AuthorizedKeys []ManagedAuthorizedKeySpec `json:"ssh_authorized_keys,omitempty"`
+	Home           string                     `json:"home,omitempty"`
+	Shell          string                     `json:"shell,omitempty"`
+	System         bool                       `json:"system,omitempty"`
+	Ensure         string                     `json:"ensure"`
+	OnRemove       string                     `json:"on_remove"`
+	Lifecycle      LifecycleSpec              `json:"lifecycle"`
+	Source         SourceRef                  `json:"source"`
+}
+
+type ManagedMembershipSpec struct {
+	Group  string    `json:"group"`
+	Ensure string    `json:"ensure"`
+	Source SourceRef `json:"source"`
+}
+
+type ManagedAuthorizedKeySpec struct {
+	Line        string    `json:"-"`
+	KeyType     string    `json:"key_type"`
+	KeyBlob     string    `json:"key_blob"`
+	Fingerprint string    `json:"fingerprint"`
+	Ensure      string    `json:"ensure"`
+	Source      SourceRef `json:"source"`
 }
 
 type ManagedGroupSpec struct {

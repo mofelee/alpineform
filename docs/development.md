@@ -21,7 +21,8 @@ parser -> merge -> IR -> graph -> plan -> engine -> provider -> backend
 The current core implements source discovery, typed variables, locals, input
 precedence, product constants, version metadata, deterministic offline plans,
 Alpine facts, root SSH, remote state, runtime leases, online plan/apply/check,
-and provider-backed host files, directories, groups, and user identities.
+and provider-backed host files, directories, groups, users, supplementary
+memberships, and authorized keys.
 `apf variable inspect` emits stable JSON and redacts sensitive and ephemeral
 defaults. `apf fmt` validates every selected file before writing any formatted
 content and is idempotent. No Debian resource schema is exposed.
@@ -34,7 +35,7 @@ content and is idempotent. No Debian resource schema is exposed.
 - metadata-only `script` declarations; execution is intentionally unavailable
 - `host` imports and optional offline `platform.architecture` / `version`
 - `lifecycle.prevent_destroy` metadata on component instances
-- host-level file, directory, group, and user identity resources
+- host-level file, directory, group, user, membership, and authorized-key resources
 
 Platform architecture is normalized to `amd64` or `arm64`. Alpine branch,
 `libc=musl`, and native APK architecture are derived read-only facts. Offline

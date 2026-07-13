@@ -343,3 +343,54 @@ func TestCompileOrdersAbsentOwnedPathsUserAndGroup(t *testing.T) {
 		t.Fatalf("absent account schedule = %#v, want %#v", got, want)
 	}
 }
+
+func TestCompileOrdersMembershipAndAuthorizedKeyBeforeOwnedPath(t *testing.T) {
+	keyLine := "ssh-ed25519 AAAA graph-only-comment"
+	user := ir.ManagedUserSpec{
+		Name: "app", PrimaryGroup: "app", Ensure: "present", Source: source(3),
+		Groups: []ir.ManagedMembershipSpec{{Group: "wheel", Ensure: "present", Source: source(4)}},
+		AuthorizedKeys: []ir.ManagedAuthorizedKeySpec{{
+			Fingerprint: "SHA256:test", KeyType: "ssh-ed25519", KeyBlob: "AAAA", Line: keyLine, Ensure: "present", Source: source(5),
+		}},
+	}
+	program := &ir.Program{Hosts: []ir.HostSpec{{
+		Name:   "node",
+		Source: source(1),
+		Groups: []ir.ManagedGroupSpec{{Name: "app", Ensure: "present", Source: source(2)}, {Name: "wheel", Ensure: "present", Source: source(2)}},
+		Users:  []ir.ManagedUserSpec{user},
+		Directories: []ir.ManagedDirectorySpec{{
+			Path: "/srv/app", Owner: "app", Group: "app", Ensure: "present", Source: source(6),
+		}},
+	}}}
+	compiled, err := Compile(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered, err := compiled.Schedule()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"host.node",
+		`host.node.groups.group["app"]`,
+		`host.node.groups.group["wheel"]`,
+		`host.node.users.user["app"]`,
+		`host.node.users.user["app"].groups.group["wheel"]`,
+		`host.node.users.user["app"].ssh_authorized_keys.key["SHA256:test"]`,
+		`host.node.directories.directory["/srv/app"]`,
+	}
+	got := make([]string, 0, len(ordered))
+	for _, node := range ordered {
+		got = append(got, node.Address)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("user child schedule = %#v, want %#v", got, want)
+	}
+	data, err := json.Marshal(compiled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), keyLine) || strings.Contains(string(data), "graph-only-comment") {
+		t.Fatalf("graph JSON exposed authorized key line: %s", data)
+	}
+}

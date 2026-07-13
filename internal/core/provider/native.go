@@ -29,6 +29,10 @@ func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.Obs
 		return inspectGroup(ctx, runner, node)
 	case "user":
 		return inspectUser(ctx, runner, node)
+	case "membership":
+		return inspectMembership(ctx, runner, node)
+	case "authorized_key":
+		return inspectAuthorizedKey(ctx, runner, node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", node.Kind)
 	}
@@ -48,6 +52,10 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 		return applyGroup(ctx, runner, step.Node)
 	case "user":
 		return applyUser(ctx, runner, step.Node)
+	case "membership":
+		return applyMembership(ctx, runner, step.Node)
+	case "authorized_key":
+		return applyAuthorizedKey(ctx, runner, step.Node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", step.Node.Kind)
 	}
@@ -71,6 +79,10 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 		return deleteGroup(ctx, runner, step)
 	case "user":
 		return deleteUser(ctx, runner, step)
+	case "membership":
+		return deleteMembership(ctx, runner, step)
+	case "authorized_key":
+		return deleteAuthorizedKey(ctx, runner, step)
 	default:
 		return fmt.Errorf("no Alpine provider is registered for resource kind %q", kind)
 	}
