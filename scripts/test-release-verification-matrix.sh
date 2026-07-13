@@ -32,6 +32,16 @@ grep -Fq '| Supply chain | yes | yes | yes | yes |' "$WORK/matrix.md"
 grep -Fq '| Alpine 3.24 x86_64 quickstart | yes | n/a | n/a | n/a |' \
   "$WORK/matrix.md"
 
+mkdir "$WORK/flat"
+cp "$WORK/results/release-verification-linux/linux.env" "$WORK/flat/linux.env"
+cp "$WORK/results/release-verification-darwin-amd64/macos.env" \
+  "$WORK/flat/darwin-amd64.env"
+cp "$WORK/results/release-verification-darwin-arm64/macos.env" \
+  "$WORK/flat/darwin-arm64.env"
+cp "$WORK/results/release-verification-alpine/alpine.env" "$WORK/flat/alpine.env"
+"$BUILD" "$WORK/flat" "$WORK/flat-matrix.md"
+! grep -q failed "$WORK/flat-matrix.md"
+
 rm "$WORK/results/release-verification-alpine/alpine.env"
 if "$BUILD" "$WORK/results" "$WORK/incomplete.md" >"$WORK/incomplete.log" 2>&1; then
   printf 'incomplete verification results were accepted\n' >&2

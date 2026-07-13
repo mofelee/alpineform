@@ -12,7 +12,8 @@ for file in README.md LICENSE NOTICE.md CHANGELOG.md .goreleaser.yaml \
   docs/support-matrix.md docs/compatibility-policy.md \
   docs/security-model.md docs/operations-runbook.md docs/release-process.md \
   docs/releases/v0.1.0-alpha.1.md docs/releases/v0.1.0-alpha.2.md \
-  docs/releases/v0.1.0-alpha.3.md docs/releases/v0.1.0-alpha.4.md; do
+  docs/releases/v0.1.0-alpha.3.md docs/releases/v0.1.0-alpha.4.md \
+  docs/releases/v0.1.0-alpha.5.md; do
   test -s "$ROOT_DIR/$file"
 done
 
@@ -36,6 +37,8 @@ require_step_before "$ROOT_DIR/.github/workflows/release-dry-run.yml" \
   "Check GitHub attestation eligibility" "Build snapshot release"
 require_step_before "$ROOT_DIR/.github/workflows/release.yml" \
   "Check GitHub attestation eligibility" "Publish release"
+test "$(grep -Fc 'darwin-${{ matrix.arch }}.env' \
+  "$ROOT_DIR/.github/workflows/release.yml")" -eq 2
 
 for example in "$ROOT_DIR"/examples/*.apf.hcl; do
   go run "$ROOT_DIR/cmd/apf" validate -f "$example" >/dev/null

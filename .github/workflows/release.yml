@@ -188,12 +188,13 @@ jobs:
           grep -Fq "${{ needs.release.outputs.tag }}" "${RUNNER_TEMP}/version.txt"
           "$prefix/bin/apf" validate -f examples/quickstart.apf.hcl
           "$prefix/bin/apf" plan --offline -f examples/quickstart.apf.hcl
-          printf 'darwin_%s_installer=yes\n' "${{ matrix.arch }}" > "${RUNNER_TEMP}/macos.env"
+          printf 'darwin_%s_installer=yes\n' "${{ matrix.arch }}" \
+            > "${RUNNER_TEMP}/darwin-${{ matrix.arch }}.env"
       - name: Upload verification result
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-verification-darwin-${{ matrix.arch }}-${{ needs.release.outputs.tag }}
-          path: ${{ runner.temp }}/macos.env
+          path: ${{ runner.temp }}/darwin-${{ matrix.arch }}.env
           if-no-files-found: error
 
   verify-alpine:

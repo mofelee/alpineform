@@ -50,6 +50,7 @@ cat > "$OUTPUT" <<EOF
 EOF
 
 if grep -q failed "$OUTPUT"; then
+  cat "$OUTPUT" >&2
   printf 'release verification matrix contains failed checks\n' >&2
   exit 1
 fi

@@ -6,6 +6,16 @@ All notable user-visible changes to AlpineForm are recorded here.
 
 None.
 
+## [v0.1.0-alpha.5] - 2026-07-13
+
+### Fixed
+
+- Give each macOS verification result a unique architecture-specific filename
+  so `download-artifact` can safely flatten multiple artifacts without
+  overwriting one result.
+- Include the failed matrix in summary diagnostics while continuing to reject
+  incomplete release verification.
+
 ## [v0.1.0-alpha.4] - 2026-07-13
 
 ### Fixed
@@ -15,6 +25,13 @@ None.
   release matrix.
 - Preserve alpha.3 as an auditable incomplete release after its publisher and
   all platform verification jobs passed but its final matrix aggregation failed.
+
+### Known Issues
+
+- Publisher, supply-chain, both macOS installers, and fresh-Alpine verification
+  passed. The final summary flattened two files both named `macos.env`, so one
+  architecture result was overwritten and the matrix correctly remained
+  failed. The release is incomplete.
 
 ## [v0.1.0-alpha.3] - 2026-07-13
 
@@ -88,7 +105,8 @@ None.
   checksum signing, SBOM generation, provenance, and post-release verification.
   This prerelease is incomplete and must not be used.
 
-[Unreleased]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.4...HEAD
+[Unreleased]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.5...HEAD
+[v0.1.0-alpha.5]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.4...v0.1.0-alpha.5
 [v0.1.0-alpha.4]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.3...v0.1.0-alpha.4
 [v0.1.0-alpha.3]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.2...v0.1.0-alpha.3
 [v0.1.0-alpha.2]: https://github.com/mofelee/alpineform/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
