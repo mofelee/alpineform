@@ -21,12 +21,36 @@ host "cihost" {
     }
   }
 
+  files {
+    file "/etc/init.d/apf-ci-raw" {
+      content = <<-EOT
+        #!/sbin/openrc-run
+        description="AlpineForm raw integration worker"
+        command="/bin/sleep"
+        command_args="600"
+        command_background=true
+        pidfile="/run/apf-ci-raw.pid"
+        extra_started_commands="reload"
+        description_reload="Reload raw integration worker"
+        reload() { :; }
+      EOT
+      mode = "0755"
+    }
+  }
+
   services {
     service "apf-ci-worker" {
       enabled   = true
       runlevel  = "default"
       state     = "running"
       operation = "restarted"
+    }
+
+    service "apf-ci-raw" {
+      enabled   = true
+      runlevel  = "default"
+      state     = "running"
+      operation = "reloaded"
     }
   }
 }
