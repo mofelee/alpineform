@@ -50,7 +50,7 @@ cleanup() { rm -f "$tmp"; }
 trap cleanup EXIT HUP INT TERM
 printf '%s\n' "$fingerprint" >"$tmp"
 chmod 0600 "$tmp"
-chown 0:0 "$tmp"
+if [ "$(id -u)" -eq 0 ]; then chown 0:0 "$tmp"; fi
 mv -f "$tmp" "$path"
 trap - EXIT HUP INT TERM
 `

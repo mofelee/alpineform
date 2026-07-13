@@ -90,7 +90,7 @@ if [ -f "$path" ]; then
 fi
 printf '%s\n%s\n%s\n' "$begin" "$line" "$end" >>"$tmp"
 chmod 0644 "$tmp"
-chown 0:0 "$tmp"
+if [ "$(id -u)" -eq 0 ]; then chown 0:0 "$tmp"; fi
 mv -f "$tmp" "$path"
 trap - EXIT HUP INT TERM
 `
@@ -112,7 +112,7 @@ cleanup() { rm -f "$tmp"; }
 trap cleanup EXIT HUP INT TERM
 cat >"$tmp"
 chmod 0644 "$tmp"
-chown 0:0 "$tmp"
+if [ "$(id -u)" -eq 0 ]; then chown 0:0 "$tmp"; fi
 mv -f "$tmp" "$path"
 trap - EXIT HUP INT TERM
 `
@@ -144,7 +144,7 @@ $0 == end { if (!inside) bad=1; inside=0; next }
 END { if (inside || bad) exit 42 }
 ' "$path" >"$tmp"
 chmod 0644 "$tmp"
-chown 0:0 "$tmp"
+if [ "$(id -u)" -eq 0 ]; then chown 0:0 "$tmp"; fi
 mv -f "$tmp" "$path"
 trap - EXIT HUP INT TERM
 `

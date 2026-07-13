@@ -59,7 +59,7 @@ if [ "$actual" != "$expected" ]; then
   exit 1
 fi
 chmod 0644 "$tmp"
-chown 0:0 "$tmp"
+if [ "$(id -u)" -eq 0 ]; then chown 0:0 "$tmp"; fi
 mv -f "$tmp" "$path"
 trap - EXIT HUP INT TERM
 `
