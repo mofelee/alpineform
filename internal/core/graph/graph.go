@@ -4,6 +4,7 @@ package graph
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,8 +75,39 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 				},
 			})
 		}
+		for _, directory := range host.Directories {
+			deleteBehavior := directory.OnRemove
+			if deleteBehavior == "forget" {
+				deleteBehavior = ""
+			}
+			graph.Nodes = append(graph.Nodes, Node{
+				Host:      host.Name,
+				Address:   directoryResourceAddress(host.Name, directory.Path),
+				Kind:      "directory",
+				Managed:   true,
+				Summary:   directorySummary(directory),
+				Source:    directory.Source,
+				Lifecycle: &directory.Lifecycle,
+				Desired: map[string]any{
+					"path":             directory.Path,
+					"owner":            directory.Owner,
+					"group":            directory.Group,
+					"mode":             directory.Mode,
+					"ensure":           directory.Ensure,
+					"recursive_delete": directory.RecursiveDelete,
+					"delete_behavior":  deleteBehavior,
+					"delete": map[string]any{
+						"path":      directory.Path,
+						"recursive": directory.RecursiveDelete,
+					},
+					"prevent_destroy": directory.Lifecycle.PreventDestroy,
+				},
+				DependsOn:  directoryDependencies(host.Name, hostAddress, directory, host.Directories, host.Files),
+				DigestSafe: true,
+			})
+		}
 		for _, file := range host.Files {
-			address := hostAddress + ".files.file[" + strconv.Quote(file.Path) + "]"
+			address := fileResourceAddress(host.Name, file.Path)
 			deleteBehavior := file.OnRemove
 			if deleteBehavior == "forget" {
 				deleteBehavior = ""
@@ -110,7 +142,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 				Payload: map[string]any{
 					"content": file.Content,
 				},
-				DependsOn:  []string{hostAddress},
+				DependsOn:  fileDependencies(host.Name, hostAddress, file, host.Directories),
 				Sensitive:  file.Sensitive,
 				Ephemeral:  file.Ephemeral,
 				DigestSafe: true,
@@ -152,6 +184,77 @@ func fileSummary(file ir.ManagedFileSpec) string {
 		return "ensure file is absent " + file.Path
 	}
 	return "manage file " + file.Path
+}
+
+func directorySummary(directory ir.ManagedDirectorySpec) string {
+	if directory.Ensure == "absent" {
+		return "ensure directory is absent " + directory.Path
+	}
+	return "manage directory " + directory.Path
+}
+
+func fileDependencies(host, hostAddress string, file ir.ManagedFileSpec, directories []ir.ManagedDirectorySpec) []string {
+	dependencies := []string{hostAddress}
+	if file.Ensure != "present" {
+		return dependencies
+	}
+	if parent, exists := nearestPresentDirectory(file.Path, directories); exists {
+		dependencies = append(dependencies, directoryResourceAddress(host, parent.Path))
+	}
+	return dependencies
+}
+
+func directoryDependencies(host, hostAddress string, directory ir.ManagedDirectorySpec, directories []ir.ManagedDirectorySpec, files []ir.ManagedFileSpec) []string {
+	dependencies := []string{hostAddress}
+	if directory.Ensure == "present" {
+		if parent, exists := nearestPresentDirectory(directory.Path, directories); exists {
+			dependencies = append(dependencies, directoryResourceAddress(host, parent.Path))
+		}
+		return dependencies
+	}
+	for _, child := range directories {
+		if child.Ensure == "absent" && pathWithin(directory.Path, child.Path) {
+			dependencies = append(dependencies, directoryResourceAddress(host, child.Path))
+		}
+	}
+	for _, file := range files {
+		if file.Ensure == "absent" && pathWithin(directory.Path, file.Path) {
+			dependencies = append(dependencies, fileResourceAddress(host, file.Path))
+		}
+	}
+	sort.Strings(dependencies)
+	return dependencies
+}
+
+func nearestPresentDirectory(path string, directories []ir.ManagedDirectorySpec) (ir.ManagedDirectorySpec, bool) {
+	var nearest ir.ManagedDirectorySpec
+	found := false
+	for _, directory := range directories {
+		if directory.Ensure != "present" || !pathWithin(directory.Path, path) {
+			continue
+		}
+		if !found || len(directory.Path) > len(nearest.Path) {
+			nearest = directory
+			found = true
+		}
+	}
+	return nearest, found
+}
+
+func pathWithin(parent, child string) bool {
+	if parent == child {
+		return false
+	}
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func directoryResourceAddress(host, path string) string {
+	return "host." + host + ".directories.directory[" + strconv.Quote(path) + "]"
+}
+
+func fileResourceAddress(host, path string) string {
+	return "host." + host + ".files.file[" + strconv.Quote(path) + "]"
 }
 
 func (graph *ResourceGraph) Validate() error {

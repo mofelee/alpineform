@@ -225,6 +225,12 @@ variable "motd" {
   default = "Alpine"
 }
 host "node" {
+  directories {
+    directory "/etc/app" {
+      owner = "root"
+      mode  = "0750"
+    }
+  }
   files {
     file "/etc/app/motd" {
       content   = var.motd
@@ -239,12 +245,16 @@ host "node" {
 		t.Fatal(err)
 	}
 	resources := config.Hosts["node"].Resources
-	if len(resources) != 1 {
+	if len(resources) != 2 {
 		t.Fatalf("resources = %#v", resources)
 	}
-	file := resources[0]
+	file := resources[1]
 	if file.Kind != ResourceFile || file.Label != "/etc/app/motd" || file.Attributes["content"].Expression == nil || !file.Lifecycle.PreventDestroy {
 		t.Fatalf("file declaration = %#v", file)
+	}
+	directory := resources[0]
+	if directory.Kind != ResourceDirectory || directory.Label != "/etc/app" || directory.Attributes["mode"].Expression == nil {
+		t.Fatalf("directory declaration = %#v", directory)
 	}
 }
 
@@ -260,6 +270,7 @@ func TestParseHostNativeResourcesRejectInvalidShapeAndDuplicates(t *testing.T) {
 		{name: "duplicate", content: "host \"node\" {\n  files {\n    file \"/tmp/x\" {}\n  }\n  files {\n    file \"/tmp/x\" {}\n  }\n}\n", want: `duplicate file label "/tmp/x"`},
 		{name: "control label", content: "host \"node\" {\n  files {\n    file \"bad\\nname\" {}\n  }\n}\n", want: "contain no control characters"},
 		{name: "deferred domain", content: "host \"node\" {\n  users {\n    user \"app\" {}\n  }\n}\n", want: "unsupported block"},
+		{name: "directory unknown attribute", content: "host \"node\" {\n  directories {\n    directory \"/tmp/x\" { content = \"x\" }\n  }\n}\n", want: "unsupported attribute"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

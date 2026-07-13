@@ -23,6 +23,8 @@ func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.Obs
 	switch node.Kind {
 	case "file":
 		return inspectFile(ctx, runner, node)
+	case "directory":
+		return inspectDirectory(ctx, runner, node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", node.Kind)
 	}
@@ -36,6 +38,8 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 	switch step.Node.Kind {
 	case "file":
 		return applyFile(ctx, runner, step.Node)
+	case "directory":
+		return applyDirectory(ctx, runner, step.Node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", step.Node.Kind)
 	}
@@ -53,6 +57,8 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 	switch kind {
 	case "file":
 		return deleteFile(ctx, runner, step)
+	case "directory":
+		return deleteDirectory(ctx, runner, step)
 	default:
 		return fmt.Errorf("no Alpine provider is registered for resource kind %q", kind)
 	}

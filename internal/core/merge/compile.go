@@ -290,7 +290,7 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 			Source:             host.Platform.Source,
 		}
 	}
-	out.Files, err = compileHostFiles(host, facts, hostContext)
+	out.Files, out.Directories, err = compileHostPathResources(host, facts, hostContext)
 	if err != nil {
 		return ir.HostSpec{}, err
 	}

@@ -15,19 +15,121 @@ import (
 
 var accountNamePattern = regexp.MustCompile(`^(?:[a-z_][a-z0-9_-]{0,31}|[0-9]{1,10})$`)
 
-func compileHostFiles(host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) ([]ir.ManagedFileSpec, error) {
+func compileHostPathResources(host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) ([]ir.ManagedFileSpec, []ir.ManagedDirectorySpec, error) {
 	files := make([]ir.ManagedFileSpec, 0)
+	directories := make([]ir.ManagedDirectorySpec, 0)
 	for _, declaration := range host.Resources {
-		if declaration.Kind != parser.ResourceFile {
-			return nil, fmt.Errorf("%s:%d:%s: unsupported compiled host resource kind %q", declaration.Source.File, declaration.Source.Line, declaration.Source.Path, declaration.Kind)
+		switch declaration.Kind {
+		case parser.ResourceFile:
+			file, err := compileFile(declaration, host, facts, ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			files = append(files, file)
+		case parser.ResourceDirectory:
+			directory, err := compileDirectory(declaration, host, facts, ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			directories = append(directories, directory)
+		default:
+			return nil, nil, fmt.Errorf("%s:%d:%s: unsupported compiled host resource kind %q", declaration.Source.File, declaration.Source.Line, declaration.Source.Path, declaration.Kind)
 		}
-		file, err := compileFile(declaration, host, facts, ctx)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, file)
 	}
-	return files, nil
+	if err := validatePathResourceRelationships(files, directories); err != nil {
+		return nil, nil, err
+	}
+	return files, directories, nil
+}
+
+func compileDirectory(declaration parser.ResourceDeclaration, host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) (ir.ManagedDirectorySpec, error) {
+	path := declaration.Label
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
+		return ir.ManagedDirectorySpec{}, resourceError(declaration.Source, "directory path %q must be a clean absolute non-root path", path)
+	}
+	ensure, err := resourceStringDefault(declaration, "ensure", "present", host, facts, ctx)
+	if err != nil {
+		return ir.ManagedDirectorySpec{}, err
+	}
+	if ensure != "present" && ensure != "absent" {
+		return ir.ManagedDirectorySpec{}, resourceAttributeError(declaration, "ensure", "must be \"present\" or \"absent\"")
+	}
+	onRemove, err := resourceStringDefault(declaration, "on_remove", "forget", host, facts, ctx)
+	if err != nil {
+		return ir.ManagedDirectorySpec{}, err
+	}
+	if onRemove != "forget" && onRemove != "destroy" {
+		return ir.ManagedDirectorySpec{}, resourceAttributeError(declaration, "on_remove", "must be \"forget\" or \"destroy\"")
+	}
+	owner, err := resourceStringDefault(declaration, "owner", "root", host, facts, ctx)
+	if err != nil {
+		return ir.ManagedDirectorySpec{}, err
+	}
+	group, err := resourceStringDefault(declaration, "group", "root", host, facts, ctx)
+	if err != nil {
+		return ir.ManagedDirectorySpec{}, err
+	}
+	if !accountNamePattern.MatchString(owner) {
+		return ir.ManagedDirectorySpec{}, resourceAttributeError(declaration, "owner", "must be a valid Alpine account name or numeric ID")
+	}
+	if !accountNamePattern.MatchString(group) {
+		return ir.ManagedDirectorySpec{}, resourceAttributeError(declaration, "group", "must be a valid Alpine group name or numeric ID")
+	}
+	mode, err := resourceStringDefault(declaration, "mode", "0755", host, facts, ctx)
+	if err != nil {
+		return ir.ManagedDirectorySpec{}, err
+	}
+	mode, err = normalizeFileMode(mode)
+	if err != nil {
+		return ir.ManagedDirectorySpec{}, resourceAttributeError(declaration, "mode", "%v", err)
+	}
+	recursiveDelete, err := resourceBoolDefault(declaration, "recursive_delete", false, host, facts, ctx)
+	if err != nil {
+		return ir.ManagedDirectorySpec{}, err
+	}
+	return ir.ManagedDirectorySpec{
+		Path:            path,
+		Owner:           owner,
+		Group:           group,
+		Mode:            mode,
+		Ensure:          ensure,
+		OnRemove:        onRemove,
+		RecursiveDelete: recursiveDelete,
+		Lifecycle:       ir.LifecycleSpec{PreventDestroy: declaration.Lifecycle.PreventDestroy, Source: declaration.Lifecycle.Source},
+		Source:          declaration.Source,
+	}, nil
+}
+
+func validatePathResourceRelationships(files []ir.ManagedFileSpec, directories []ir.ManagedDirectorySpec) error {
+	for _, file := range files {
+		for _, directory := range directories {
+			if file.Path == directory.Path {
+				return resourceError(file.Source, "file path %q conflicts with directory declared at %s:%d", file.Path, directory.Source.File, directory.Source.Line)
+			}
+			if file.Ensure == "present" && directory.Ensure == "absent" && pathIsWithin(directory.Path, file.Path) {
+				return resourceError(file.Source, "present file %q is inside directory %q declared absent", file.Path, directory.Path)
+			}
+		}
+	}
+	for _, child := range directories {
+		if child.Ensure != "present" {
+			continue
+		}
+		for _, parent := range directories {
+			if parent.Ensure == "absent" && pathIsWithin(parent.Path, child.Path) {
+				return resourceError(child.Source, "present directory %q is inside directory %q declared absent", child.Path, parent.Path)
+			}
+		}
+	}
+	return nil
+}
+
+func pathIsWithin(parent, child string) bool {
+	if parent == child {
+		return false
+	}
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func compileFile(declaration parser.ResourceDeclaration, host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) (ir.ManagedFileSpec, error) {

@@ -429,15 +429,20 @@ func TestPlanSupportsOnlineAndDoesNotOverwriteInput(t *testing.T) {
 }
 
 type fakeOnlineTransport struct {
-	osID        string
-	state       corestate.State
-	events      []string
-	stateWrites int
-	fileExists  bool
-	fileContent []byte
-	fileOwner   string
-	fileGroup   string
-	fileMode    string
+	osID              string
+	state             corestate.State
+	events            []string
+	stateWrites       int
+	fileExists        bool
+	fileContent       []byte
+	fileOwner         string
+	fileGroup         string
+	fileMode          string
+	directoryExists   bool
+	directoryNonEmpty bool
+	directoryOwner    string
+	directoryGroup    string
+	directoryMode     string
 }
 
 func newFakeOnlineTransport(osID string) *fakeOnlineTransport {
@@ -491,6 +496,24 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 	case "delete.file":
 		transport.fileExists = false
 		transport.fileContent = nil
+		return nil, nil
+	case "inspect.directory":
+		if !transport.directoryExists {
+			return []byte("missing\n"), nil
+		}
+		return []byte(fmt.Sprintf("directory\n%s\n0\n%s\n0\n%s\n", transport.directoryOwner, transport.directoryGroup, strings.TrimPrefix(transport.directoryMode, "0"))), nil
+	case "apply.directory":
+		transport.directoryExists = true
+		transport.directoryOwner = command.Arguments[1]
+		transport.directoryGroup = command.Arguments[2]
+		transport.directoryMode = command.Arguments[3]
+		return nil, nil
+	case "delete.directory":
+		if transport.directoryNonEmpty && command.Arguments[1] != "true" {
+			return nil, fmt.Errorf("directory not empty")
+		}
+		transport.directoryExists = false
+		transport.directoryNonEmpty = false
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected backend command %q", command.Name)
@@ -832,5 +855,110 @@ func TestNativeFileRemovalDefaultsToForgetAndSupportsDestroy(t *testing.T) {
 	}
 	if transport.fileExists || len(transport.state.Resources) != 0 {
 		t.Fatalf("destroy result: exists=%v state=%#v", transport.fileExists, transport.state)
+	}
+}
+
+func TestNativeDirectoryWorkflowConvergesAndRequiresExplicitRecursiveDelete(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.apf.hcl")
+	writeDirectoryConfig := func(mode, ensure string, recursive bool) {
+		t.Helper()
+		content := fmt.Sprintf(`
+host "node" {
+  directories {
+    directory "/srv/app" {
+      mode             = %q
+      ensure           = %q
+      recursive_delete = %t
+    }
+  }
+}
+`, mode, ensure, recursive)
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	transport := newFakeOnlineTransport("alpine")
+	runtime := fakeNativeRuntime(transport, "")
+	writeDirectoryConfig("0750", "present", false)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	address := `host.node.directories.directory["/srv/app"]`
+	resource, exists := transport.state.Resources[address]
+	if !transport.directoryExists || transport.directoryMode != "0750" || !exists || resource.Delete["path"] != "/srv/app" || resource.Delete["recursive"] != false {
+		t.Fatalf("directory/state after create = exists=%v mode=%q resource=%#v", transport.directoryExists, transport.directoryMode, resource)
+	}
+	if err := runCheckWithRuntime(nil, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("second check = %v", err)
+	}
+
+	transport.directoryMode = "0700"
+	var driftOutput bytes.Buffer
+	if err := runCheckWithRuntime(nil, &driftOutput, dir, nil, runtime); err == nil || !strings.Contains(err.Error(), "drift") || !strings.Contains(driftOutput.String(), "update "+address) {
+		t.Fatalf("directory drift check error = %v, output = %s", err, driftOutput.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("directory repair apply = %v", err)
+	}
+	if transport.directoryMode != "0750" {
+		t.Fatalf("repaired directory mode = %q", transport.directoryMode)
+	}
+
+	transport.directoryNonEmpty = true
+	writeDirectoryConfig("0750", "absent", false)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err == nil || !strings.Contains(err.Error(), "directory not empty") {
+		t.Fatalf("safe non-empty delete error = %v", err)
+	}
+	if !transport.directoryExists {
+		t.Fatal("safe delete failure removed the directory")
+	}
+
+	writeDirectoryConfig("0750", "absent", true)
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("recursive directory delete = %v", err)
+	}
+	if transport.directoryExists || len(transport.state.Resources) != 0 {
+		t.Fatalf("recursive delete result: exists=%v state=%#v", transport.directoryExists, transport.state)
+	}
+}
+
+func TestNativeDirectoryWorkflowAdoptsMatchingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	content := `
+host "node" {
+  directories {
+    directory "/srv/app" {}
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.apf.hcl"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	transport := newFakeOnlineTransport("alpine")
+	transport.directoryExists = true
+	transport.directoryOwner = "root"
+	transport.directoryGroup = "root"
+	transport.directoryMode = "0755"
+	runtime := fakeNativeRuntime(transport, "")
+	address := `host.node.directories.directory["/srv/app"]`
+	var checkOutput bytes.Buffer
+	if err := runCheckWithRuntime(nil, &checkOutput, dir, nil, runtime); err == nil || !strings.Contains(checkOutput.String(), "adopt "+address) {
+		t.Fatalf("directory adoption check error = %v, output = %s", err, checkOutput.String())
+	}
+	if err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := transport.state.Resources[address]; !exists {
+		t.Fatalf("adopted directory state = %#v", transport.state)
+	}
+	for _, event := range transport.events {
+		if event == "apply.directory" {
+			t.Fatalf("adoption changed the matching remote directory: events=%#v", transport.events)
+		}
+	}
+	if err := runCheckWithRuntime(nil, &bytes.Buffer{}, dir, nil, runtime); err != nil {
+		t.Fatalf("adopted directory second check = %v", err)
 	}
 }

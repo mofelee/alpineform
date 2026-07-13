@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	ResourceFile = "file"
+	ResourceFile      = "file"
+	ResourceDirectory = "directory"
 )
 
 type ResourceAttribute struct {
@@ -40,6 +41,13 @@ var hostResourceCollections = map[string]resourceCollectionSchema{
 		attributes: attributeSet(
 			"content", "source", "content_version", "owner", "group", "mode",
 			"sensitive", "ensure", "on_remove",
+		),
+	},
+	"directories": {
+		block:    "directories",
+		resource: ResourceDirectory,
+		attributes: attributeSet(
+			"owner", "group", "mode", "ensure", "recursive_delete", "on_remove",
 		),
 	},
 }

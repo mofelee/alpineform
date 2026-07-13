@@ -644,3 +644,81 @@ host "node" {
 		t.Fatalf("source-backed file = %#v", file)
 	}
 }
+
+func TestCompileDirectoryResourceDefaultsAndPolicy(t *testing.T) {
+	config, err := compileConfig(t, `
+host "node" {
+  directories {
+    directory "/srv/app" {}
+    directory "/srv/app/data" {
+      owner            = "1000"
+      group            = "app"
+      mode             = "750"
+      recursive_delete = true
+      on_remove        = "destroy"
+      lifecycle { prevent_destroy = true }
+    }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directories := program.Hosts[0].Directories
+	if len(directories) != 2 {
+		t.Fatalf("directories = %#v", directories)
+	}
+	parent := directories[0]
+	if parent.Path != "/srv/app" || parent.Owner != "root" || parent.Group != "root" || parent.Mode != "0755" || parent.Ensure != "present" || parent.OnRemove != "forget" || parent.RecursiveDelete || parent.Lifecycle.PreventDestroy {
+		t.Fatalf("default directory = %#v", parent)
+	}
+	child := directories[1]
+	if child.Path != "/srv/app/data" || child.Owner != "1000" || child.Group != "app" || child.Mode != "0750" || child.Ensure != "present" || child.OnRemove != "destroy" || !child.RecursiveDelete || !child.Lifecycle.PreventDestroy {
+		t.Fatalf("configured directory = %#v", child)
+	}
+}
+
+func TestCompileDirectoryResourceValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "relative path", body: "directories {\n    directory \"relative\" {}\n  }", wantErr: "clean absolute non-root"},
+		{name: "root path", body: "directories {\n    directory \"/\" {}\n  }", wantErr: "clean absolute non-root"},
+		{name: "unclean path", body: "directories {\n    directory \"/srv/../app\" {}\n  }", wantErr: "clean absolute non-root"},
+		{name: "invalid mode", body: "directories {\n    directory \"/srv/app\" { mode = \"0988\" }\n  }", wantErr: "octal string"},
+		{name: "file conflict", body: `directories {
+    directory "/srv/app" {}
+  }
+  files {
+    file "/srv/app" { content = "x" }
+  }`, wantErr: "conflicts with directory"},
+		{name: "present file under absent directory", body: `directories {
+    directory "/srv/app" { ensure = "absent" }
+  }
+  files {
+    file "/srv/app/config" { content = "x" }
+  }`, wantErr: "inside directory"},
+		{name: "present directory under absent directory", body: `directories {
+    directory "/srv/app" { ensure = "absent" }
+    directory "/srv/app/data" {}
+  }`, wantErr: "inside directory"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := compileConfig(t, "host \"node\" {\n  "+test.body+"\n}\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Compile(config)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Compile() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}

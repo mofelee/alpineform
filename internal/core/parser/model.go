@@ -341,7 +341,7 @@ func parseHost(file string, block *hclsyntax.Block, ctx EvalContext) (Host, erro
 	}
 	for _, child := range block.Body.Blocks {
 		switch child.Type {
-		case "files":
+		case "files", "directories":
 			resources, err := parseHostResourceCollection(file, path, child, ctx)
 			if err != nil {
 				return Host{}, err

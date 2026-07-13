@@ -45,14 +45,27 @@ type ScriptSpec struct {
 }
 
 type HostSpec struct {
-	Name       string                  `json:"name"`
-	SSH        SSHSpec                 `json:"ssh"`
-	State      StateSpec               `json:"state"`
-	Platform   *PlatformSpec           `json:"platform,omitempty"`
-	Facts      *HostFacts              `json:"facts,omitempty"`
-	Components []ComponentInstanceSpec `json:"components,omitempty"`
-	Files      []ManagedFileSpec       `json:"files,omitempty"`
-	Source     SourceRef               `json:"source"`
+	Name        string                  `json:"name"`
+	SSH         SSHSpec                 `json:"ssh"`
+	State       StateSpec               `json:"state"`
+	Platform    *PlatformSpec           `json:"platform,omitempty"`
+	Facts       *HostFacts              `json:"facts,omitempty"`
+	Components  []ComponentInstanceSpec `json:"components,omitempty"`
+	Files       []ManagedFileSpec       `json:"files,omitempty"`
+	Directories []ManagedDirectorySpec  `json:"directories,omitempty"`
+	Source      SourceRef               `json:"source"`
+}
+
+type ManagedDirectorySpec struct {
+	Path            string        `json:"path"`
+	Owner           string        `json:"owner"`
+	Group           string        `json:"group"`
+	Mode            string        `json:"mode"`
+	Ensure          string        `json:"ensure"`
+	OnRemove        string        `json:"on_remove"`
+	RecursiveDelete bool          `json:"recursive_delete,omitempty"`
+	Lifecycle       LifecycleSpec `json:"lifecycle"`
+	Source          SourceRef     `json:"source"`
 }
 
 type ManagedFileSpec struct {

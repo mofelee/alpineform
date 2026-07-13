@@ -20,11 +20,11 @@ parser -> merge -> IR -> graph -> plan -> engine -> provider -> backend
 
 The current core implements source discovery, typed variables, locals, input
 precedence, product constants, version metadata, deterministic offline plans,
-Alpine facts, root SSH, remote state, runtime leases, and online
-plan/apply/check. `apf variable inspect` emits stable JSON and redacts sensitive
-and ephemeral defaults. `apf fmt` validates every selected file before writing
-any formatted content and is idempotent. No Alpine resource domain schema is
-public yet, and no Debian resource schema will be exposed.
+Alpine facts, root SSH, remote state, runtime leases, online plan/apply/check,
+and provider-backed host files and directories. `apf variable inspect` emits
+stable JSON and redacts sensitive and ephemeral defaults. `apf fmt` validates
+every selected file before writing any formatted content and is idempotent. No
+Debian resource schema is exposed.
 
 ## Implemented language subset
 
@@ -34,6 +34,7 @@ public yet, and no Debian resource schema will be exposed.
 - metadata-only `script` declarations; execution is intentionally unavailable
 - `host` imports and optional offline `platform.architecture` / `version`
 - `lifecycle.prevent_destroy` metadata on component instances
+- host-level `files.file` and `directories.directory` resources
 
 Platform architecture is normalized to `amd64` or `arm64`. Alpine branch,
 `libc=musl`, and native APK architecture are derived read-only facts. Offline
@@ -79,6 +80,7 @@ Remote state persistence is described in [state-backend.md](state-backend.md).
 Runtime lock behavior is described in [locking.md](locking.md).
 Root SSH transport behavior is described in [ssh.md](ssh.md).
 Managed file behavior is described in [files.md](files.md).
+Managed directory behavior is described in [directories.md](directories.md).
 
 ## Product names
 

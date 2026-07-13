@@ -137,3 +137,69 @@ func TestCompileBuildsStructuralGraph(t *testing.T) {
 		t.Fatalf("worker node = %#v", worker)
 	}
 }
+
+func TestCompileOrdersPresentPathResourcesParentFirst(t *testing.T) {
+	program := &ir.Program{Hosts: []ir.HostSpec{{
+		Name:   "node",
+		Source: source(1),
+		Directories: []ir.ManagedDirectorySpec{
+			{Path: "/srv/app", Ensure: "present", Source: source(2)},
+			{Path: "/srv/app/data", Ensure: "present", Source: source(3)},
+		},
+		Files: []ir.ManagedFileSpec{{Path: "/srv/app/data/config", Ensure: "present", Source: source(4)}},
+	}}}
+	compiled, err := Compile(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered, err := compiled.Schedule()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"host.node",
+		`host.node.directories.directory["/srv/app"]`,
+		`host.node.directories.directory["/srv/app/data"]`,
+		`host.node.files.file["/srv/app/data/config"]`,
+	}
+	got := make([]string, 0, len(ordered))
+	for _, node := range ordered {
+		got = append(got, node.Address)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("present path schedule = %#v, want %#v", got, want)
+	}
+}
+
+func TestCompileOrdersAbsentPathResourcesLeafFirst(t *testing.T) {
+	program := &ir.Program{Hosts: []ir.HostSpec{{
+		Name:   "node",
+		Source: source(1),
+		Directories: []ir.ManagedDirectorySpec{
+			{Path: "/srv/app", Ensure: "absent", Source: source(2)},
+			{Path: "/srv/app/data", Ensure: "absent", Source: source(3)},
+		},
+		Files: []ir.ManagedFileSpec{{Path: "/srv/app/data/config", Ensure: "absent", Source: source(4)}},
+	}}}
+	compiled, err := Compile(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered, err := compiled.Schedule()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"host.node",
+		`host.node.files.file["/srv/app/data/config"]`,
+		`host.node.directories.directory["/srv/app/data"]`,
+		`host.node.directories.directory["/srv/app"]`,
+	}
+	got := make([]string, 0, len(ordered))
+	for _, node := range ordered {
+		got = append(got, node.Address)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("absent path schedule = %#v, want %#v", got, want)
+	}
+}
