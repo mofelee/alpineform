@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	corebackend "github.com/mofelee/alpineform/internal/core/backend"
@@ -17,6 +18,8 @@ import (
 	coreparser "github.com/mofelee/alpineform/internal/core/parser"
 	coreplan "github.com/mofelee/alpineform/internal/core/plan"
 )
+
+const defaultOnlineParallel = 4
 
 type onlineRunner interface {
 	corebackend.Runner
@@ -136,7 +139,10 @@ type onlineWorkflow struct {
 	ctx    context.Context
 }
 
-func newOnlineWorkflow(loader onlineConfigLoader, runtime onlineRuntime) (onlineWorkflow, error) {
+func newOnlineWorkflow(loader onlineConfigLoader, runtime onlineRuntime, parallel int) (onlineWorkflow, error) {
+	if parallel < 1 {
+		return onlineWorkflow{}, fmt.Errorf("parallelism must be at least 1")
+	}
 	runtime, err := runtime.normalized()
 	if err != nil {
 		return onlineWorkflow{}, err
@@ -148,7 +154,7 @@ func newOnlineWorkflow(loader onlineConfigLoader, runtime onlineRuntime) (online
 	remote := corebackend.RemoteBackend{NewRunner: func(host ir.HostSpec) (corebackend.Runner, error) {
 		return runtime.NewRunner(host)
 	}}
-	actionEngine := &coreengine.Engine{Backend: remote, Provider: runtime.Provider}
+	actionEngine := &coreengine.Engine{Backend: remote, Provider: runtime.Provider, Parallel: parallel}
 	build := func(ctx context.Context) (*ir.Program, *coregraph.ResourceGraph, error) {
 		_, config, err := loader.load()
 		if err != nil {
@@ -183,8 +189,8 @@ func newOnlineWorkflow(loader onlineConfigLoader, runtime onlineRuntime) (online
 	return onlineWorkflow{engine: actionEngine, build: build, files: files, ctx: runtime.Context}, nil
 }
 
-func runOnlinePlan(loader onlineConfigLoader, stdout io.Writer, format string, htmlPath string, color bool, runtime onlineRuntime) error {
-	workflow, err := newOnlineWorkflow(loader, runtime)
+func runOnlinePlan(loader onlineConfigLoader, stdout io.Writer, format string, htmlPath string, color bool, parallel int, runtime onlineRuntime) error {
+	workflow, err := newOnlineWorkflow(loader, runtime, parallel)
 	if err != nil {
 		return err
 	}
@@ -223,6 +229,7 @@ func runCheckWithRuntime(args []string, stdout io.Writer, workingDir string, env
 	configFlags.bind(fs)
 	format := fs.String("format", "text", "output format: text or json")
 	colorMode := fs.String("color", "auto", "color mode: auto, always, or never")
+	parallel := fs.Int("parallel", defaultOnlineParallel, "maximum concurrent hosts")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("check arguments: %w", err)
 	}
@@ -236,7 +243,7 @@ func runCheckWithRuntime(args []string, stdout io.Writer, workingDir string, env
 	if err != nil {
 		return err
 	}
-	workflow, err := newOnlineWorkflow(configFlags.loader(workingDir, environ), runtime)
+	workflow, err := newOnlineWorkflow(configFlags.loader(workingDir, environ), runtime, *parallel)
 	if err != nil {
 		return err
 	}
@@ -263,6 +270,7 @@ func runApplyWithRuntime(args []string, stdout io.Writer, workingDir string, env
 	_ = fs.Bool("debug", false, "emit detailed operation events")
 	lockTimeout := fs.Duration("lock-timeout", 30*time.Second, "maximum time to wait for each host lock")
 	colorMode := fs.String("color", "auto", "color mode: auto, always, or never")
+	parallel := fs.Int("parallel", defaultOnlineParallel, "maximum concurrent hosts")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("apply arguments: %w", err)
 	}
@@ -280,12 +288,15 @@ func runApplyWithRuntime(args []string, stdout io.Writer, workingDir string, env
 	if err != nil {
 		return err
 	}
-	workflow, err := newOnlineWorkflow(configFlags.loader(workingDir, environ), runtime)
+	workflow, err := newOnlineWorkflow(configFlags.loader(workingDir, environ), runtime, *parallel)
 	if err != nil {
 		return err
 	}
 	input := bufio.NewReader(runtime.Stdin)
+	var reviewMu sync.Mutex
 	review := func(label string, actionPlan coreengine.Plan) error {
+		reviewMu.Lock()
+		defer reviewMu.Unlock()
 		fmt.Fprintln(stdout, label)
 		document := coreplan.NewOnline(actionPlan, coreplan.Options{Files: workflow.files})
 		if err := printOnlineDocument(stdout, document, "text", color); err != nil {
@@ -298,6 +309,7 @@ func runApplyWithRuntime(args []string, stdout io.Writer, workingDir string, env
 	}
 	actual, err := workflow.engine.Apply(workflow.ctx, workflow.build, coreengine.ApplyOptions{
 		LockTimeout: *lockTimeout,
+		Parallel:    *parallel,
 		ReviewPreview: func(_ context.Context, plan coreengine.Plan) error {
 			return review("Preview before lock:", plan)
 		},

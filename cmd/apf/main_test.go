@@ -51,6 +51,30 @@ func TestApplyRejectsPositionalArguments(t *testing.T) {
 	}
 }
 
+func TestOnlineCommandsRejectInvalidParallelism(t *testing.T) {
+	dir := t.TempDir()
+	for _, test := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "plan", run: func() error {
+			return runPlanWithRuntime([]string{"--parallel", "0"}, &bytes.Buffer{}, dir, nil, defaultOnlineRuntime())
+		}},
+		{name: "apply", run: func() error {
+			return runApplyWithRuntime([]string{"--parallel", "0"}, &bytes.Buffer{}, dir, nil, defaultOnlineRuntime())
+		}},
+		{name: "check", run: func() error {
+			return runCheckWithRuntime([]string{"--parallel", "0"}, &bytes.Buffer{}, dir, nil, defaultOnlineRuntime())
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.run(); err == nil || !strings.Contains(err.Error(), "parallelism must be at least 1") {
+				t.Fatalf("invalid parallelism error = %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateLoadsAlpineFormVariableInputs(t *testing.T) {
 	dir := t.TempDir()
 	config := `

@@ -25,6 +25,38 @@ type memoryBackend struct {
 	lockHook func()
 }
 
+type blockingBackend struct {
+	*memoryBackend
+	mu      sync.Mutex
+	active  int
+	maximum int
+	started chan string
+	release chan struct{}
+}
+
+func (backend *blockingBackend) WithLease(ctx context.Context, host ir.HostSpec, timeout time.Duration, work func(context.Context) error) error {
+	return backend.memoryBackend.WithLease(ctx, host, timeout, func(leaseContext context.Context) error {
+		backend.mu.Lock()
+		backend.active++
+		if backend.active > backend.maximum {
+			backend.maximum = backend.active
+		}
+		backend.mu.Unlock()
+		defer func() {
+			backend.mu.Lock()
+			backend.active--
+			backend.mu.Unlock()
+		}()
+		backend.started <- host.Name
+		select {
+		case <-backend.release:
+			return work(leaseContext)
+		case <-leaseContext.Done():
+			return leaseContext.Err()
+		}
+	})
+}
+
 func newMemoryBackend() *memoryBackend {
 	return &memoryBackend{states: map[string]corestate.State{}, locked: map[string]bool{}}
 }
@@ -154,6 +186,12 @@ func testNode(desired map[string]any) graph.Node {
 func staticBuild(host ir.HostSpec, nodes ...graph.Node) BuildFunc {
 	return func(context.Context) (*ir.Program, *graph.ResourceGraph, error) {
 		return &ir.Program{Hosts: []ir.HostSpec{host}}, &graph.ResourceGraph{Nodes: nodes}, nil
+	}
+}
+
+func multiHostBuild(hosts ...ir.HostSpec) BuildFunc {
+	return func(context.Context) (*ir.Program, *graph.ResourceGraph, error) {
+		return &ir.Program{Hosts: hosts}, &graph.ResourceGraph{}, nil
 	}
 }
 
@@ -307,6 +345,80 @@ func TestApplyExecutesOnlyReviewedLockedPlan(t *testing.T) {
 	}
 	if len(actual.Hosts[0].PriorState.Resources) != 0 {
 		t.Fatalf("execution mutated prior state: %#v", actual.Hosts[0].PriorState)
+	}
+}
+
+func TestApplyRunsHostsWithBoundedParallelismAndStableResults(t *testing.T) {
+	first := testHost()
+	first.Name = "a"
+	first.SSH.Host = "a"
+	second := testHost()
+	second.Name = "b"
+	second.SSH.Host = "b"
+	backend := &blockingBackend{
+		memoryBackend: newMemoryBackend(),
+		started:       make(chan string, 2),
+		release:       make(chan struct{}),
+	}
+	actionEngine := Engine{Backend: backend, Provider: newMemoryProvider(), Parallel: 2}
+	result := make(chan struct {
+		plan Plan
+		err  error
+	}, 1)
+	go func() {
+		plan, err := actionEngine.Apply(context.Background(), multiHostBuild(first, second), ApplyOptions{
+			Parallel:      2,
+			ReviewPreview: func(context.Context, Plan) error { return nil },
+			ReviewLocked:  func(context.Context, Plan, Plan, bool) error { return nil },
+		})
+		result <- struct {
+			plan Plan
+			err  error
+		}{plan: plan, err: err}
+	}()
+	for range 2 {
+		select {
+		case <-backend.started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("parallel apply did not acquire two host leases")
+		}
+	}
+	close(backend.release)
+	got := <-result
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if backend.maximum != 2 {
+		t.Fatalf("maximum parallel leases = %d, want 2", backend.maximum)
+	}
+	if names := planHostNames(got.plan); !reflect.DeepEqual(names, []string{"a", "b"}) || got.plan.Hosts[0].Host.Name != "a" {
+		t.Fatalf("parallel apply result = %#v", got.plan.Hosts)
+	}
+}
+
+func TestBoundedWorkCancelsSiblingOnFailure(t *testing.T) {
+	want := errors.New("host failed")
+	started := make(chan struct{}, 2)
+	bothStarted := make(chan struct{})
+	var once sync.Once
+	err := runBounded(context.Background(), 2, 2, func(ctx context.Context, index int) error {
+		started <- struct{}{}
+		if len(started) == 2 {
+			once.Do(func() { close(bothStarted) })
+		}
+		select {
+		case <-bothStarted:
+		case <-time.After(2 * time.Second):
+			return errors.New("workers did not start together")
+		}
+		if index == 0 {
+			return want
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("runBounded() error = %v", err)
 	}
 }
 

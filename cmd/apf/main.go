@@ -115,6 +115,7 @@ func runPlanWithRuntime(args []string, stdout io.Writer, workingDir string, envi
 	format := fs.String("format", "text", "output format: text or json")
 	htmlPath := fs.String("html", "", "write a standalone HTML plan")
 	colorMode := fs.String("color", "auto", "color mode: auto, always, or never")
+	parallel := fs.Int("parallel", defaultOnlineParallel, "maximum concurrent hosts")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("plan arguments: %w", err)
 	}
@@ -123,6 +124,9 @@ func runPlanWithRuntime(args []string, stdout io.Writer, workingDir string, envi
 	}
 	if *format != "text" && *format != "json" {
 		return fmt.Errorf("unsupported plan format %q; use text or json", *format)
+	}
+	if *parallel < 1 {
+		return fmt.Errorf("parallelism must be at least 1")
 	}
 	color, err := resolveColor(*colorMode, stdout, environ)
 	if err != nil {
@@ -153,7 +157,7 @@ func runPlanWithRuntime(args []string, stdout io.Writer, workingDir string, envi
 		if *htmlPath != "" {
 			path = resolvePath(workingDir, *htmlPath)
 		}
-		return runOnlinePlan(loader, stdout, *format, path, color, runtime)
+		return runOnlinePlan(loader, stdout, *format, path, color, *parallel, runtime)
 	}
 	external, err := coreparser.CollectExternalVariableValues(files, environ, resolvedVariableFiles, variables)
 	if err != nil {
@@ -612,9 +616,9 @@ func printUsage(w io.Writer) {
 
 Usage:
   apf validate
-  apf plan [--offline] [--format text|json] [--html path] [--color auto|always|never]
-  apf apply [--auto-approve] [--lock-timeout duration] [--debug] [--color auto|always|never]
-  apf check [--format text|json] [--color auto|always|never]
+  apf plan [--offline] [--parallel n] [--format text|json] [--html path] [--color auto|always|never]
+  apf apply [--auto-approve] [--parallel n] [--lock-timeout duration] [--debug] [--color auto|always|never]
+  apf check [--parallel n] [--format text|json] [--color auto|always|never]
   apf fmt
   apf component inspect
   apf variable inspect

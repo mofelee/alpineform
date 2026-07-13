@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mofelee/alpineform/internal/core/graph"
@@ -62,6 +63,7 @@ type ReviewLockedFunc func(context.Context, Plan, Plan, bool) error
 
 type ApplyOptions struct {
 	LockTimeout   time.Duration
+	Parallel      int
 	ReviewPreview ReviewPreviewFunc
 	ReviewLocked  ReviewLockedFunc
 }
@@ -69,6 +71,7 @@ type ApplyOptions struct {
 type Engine struct {
 	Backend  Backend
 	Provider Provider
+	Parallel int
 }
 
 type Plan struct {
@@ -150,6 +153,10 @@ func (engine Engine) Apply(ctx context.Context, build BuildFunc, options ApplyOp
 	if options.ReviewPreview == nil || options.ReviewLocked == nil {
 		return Plan{}, fmt.Errorf("apply requires preview and locked-plan review callbacks")
 	}
+	parallel, err := engine.parallelism(options.Parallel)
+	if err != nil {
+		return Plan{}, err
+	}
 	preview, err := engine.Plan(ctx, build)
 	if err != nil {
 		return Plan{}, err
@@ -157,10 +164,12 @@ func (engine Engine) Apply(ctx context.Context, build BuildFunc, options ApplyOp
 	if err := options.ReviewPreview(ctx, preview); err != nil {
 		return preview, err
 	}
-	actual := Plan{}
-	for _, previewHost := range preview.Hosts {
+	actualHosts := make([]HostPlan, len(preview.Hosts))
+	completed := make([]bool, len(preview.Hosts))
+	err = runBounded(ctx, len(preview.Hosts), parallel, func(workContext context.Context, index int) error {
+		previewHost := preview.Hosts[index]
 		hostName := previewHost.Host.Name
-		err := engine.Backend.WithLease(ctx, previewHost.Host, options.LockTimeout, func(leaseContext context.Context) error {
+		err := engine.Backend.WithLease(workContext, previewHost.Host, options.LockTimeout, func(leaseContext context.Context) error {
 			program, resourceGraph, err := build(leaseContext)
 			if err != nil {
 				return err
@@ -189,14 +198,19 @@ func (engine Engine) Apply(ctx context.Context, build BuildFunc, options ApplyOp
 			if err := engine.executeHost(leaseContext, locked.Hosts[0]); err != nil {
 				return err
 			}
-			actual.Hosts = append(actual.Hosts, locked.Hosts[0])
+			actualHosts[index] = locked.Hosts[0]
+			completed[index] = true
 			return nil
 		})
-		if err != nil {
-			return actual, err
+		return err
+	})
+	actual := Plan{}
+	for index, host := range actualHosts {
+		if completed[index] {
+			actual.Hosts = append(actual.Hosts, host)
 		}
 	}
-	return actual, nil
+	return actual, err
 }
 
 func (engine Engine) planBuilt(ctx context.Context, program *ir.Program, resourceGraph *graph.ResourceGraph, hostFilter string) (Plan, error) {
@@ -213,25 +227,38 @@ func (engine Engine) planBuilt(ctx context.Context, program *ir.Program, resourc
 			nodesByHost[node.Host] = append(nodesByHost[node.Host], node)
 		}
 	}
-	plan := Plan{}
+	hosts := make([]ir.HostSpec, 0, len(program.Hosts))
 	for _, host := range program.Hosts {
 		if hostFilter != "" && host.Name != hostFilter {
 			continue
 		}
-		state, err := engine.Backend.Read(ctx, host)
-		if err != nil {
-			return Plan{}, err
-		}
-		hostPlan, err := engine.planHost(ctx, host, nodesByHost[host.Name], state)
-		if err != nil {
-			return Plan{}, err
-		}
-		plan.Hosts = append(plan.Hosts, hostPlan)
+		hosts = append(hosts, host)
 	}
-	if hostFilter != "" && len(plan.Hosts) == 0 {
+	if hostFilter != "" && len(hosts) == 0 {
 		return Plan{}, fmt.Errorf("host %q disappeared while rebuilding the locked plan", hostFilter)
 	}
-	return plan, nil
+	parallel, err := engine.parallelism(0)
+	if err != nil {
+		return Plan{}, err
+	}
+	planned := make([]HostPlan, len(hosts))
+	err = runBounded(ctx, len(hosts), parallel, func(workContext context.Context, index int) error {
+		host := hosts[index]
+		state, err := engine.Backend.Read(workContext, host)
+		if err != nil {
+			return err
+		}
+		hostPlan, err := engine.planHost(workContext, host, nodesByHost[host.Name], state)
+		if err != nil {
+			return err
+		}
+		planned[index] = hostPlan
+		return nil
+	})
+	if err != nil {
+		return Plan{}, err
+	}
+	return Plan{Hosts: planned}, nil
 }
 
 func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []graph.Node, prior corestate.State) (HostPlan, error) {
@@ -455,5 +482,65 @@ func (engine Engine) validate() error {
 	if engine.Provider == nil {
 		return errors.New("online engine requires a provider")
 	}
+	if engine.Parallel < 0 {
+		return errors.New("online engine parallelism must not be negative")
+	}
 	return nil
+}
+
+func (engine Engine) parallelism(override int) (int, error) {
+	if override < 0 {
+		return 0, fmt.Errorf("online engine parallelism must not be negative")
+	}
+	parallel := override
+	if parallel == 0 {
+		parallel = engine.Parallel
+	}
+	if parallel == 0 {
+		parallel = 1
+	}
+	return parallel, nil
+}
+
+func runBounded(ctx context.Context, count, parallel int, work func(context.Context, int) error) error {
+	if count == 0 {
+		return nil
+	}
+	workContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan int)
+	var wait sync.WaitGroup
+	var firstErr error
+	var firstErrOnce sync.Once
+	if parallel > count {
+		parallel = count
+	}
+	for range parallel {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for index := range jobs {
+				if err := work(workContext, index); err != nil {
+					firstErrOnce.Do(func() {
+						firstErr = err
+						cancel()
+					})
+				}
+			}
+		}()
+	}
+sendLoop:
+	for index := range count {
+		select {
+		case jobs <- index:
+		case <-workContext.Done():
+			break sendLoop
+		}
+	}
+	close(jobs)
+	wait.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
 }
