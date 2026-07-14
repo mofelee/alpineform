@@ -1,7 +1,7 @@
 assert_remote "Docker packages have exact world intent" \
   "apk info -e docker && apk info -e docker-cli-compose && grep -qx docker /etc/apk/world && grep -qx docker-cli-compose /etc/apk/world"
 assert_remote "Docker package versions are recorded from Alpine community" \
-  "versions=\$(apk info -v docker docker-cli-compose); printf '%s\n' \"\$versions\"; printf '%s\n' \"\$versions\" | grep -Eq '^docker-[0-9]' && printf '%s\n' \"\$versions\" | grep -Eq '^docker-cli-compose-[0-9]'"
+  "versions=\$(apk info -v | grep -E '^(docker|docker-cli-compose)-[0-9]'); printf '%s\n' \"\$versions\"; printf '%s\n' \"\$versions\" | grep -Eq '^docker-[0-9]' && printf '%s\n' \"\$versions\" | grep -Eq '^docker-cli-compose-[0-9]'"
 assert_remote "Docker community repository is managed" \
   "grep -Fq '# BEGIN ALPINEFORM REPOSITORY alpineform-docker-community' /etc/apk/repositories && grep -Fq 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' /etc/apk/repositories"
 assert_remote "Docker OpenRC service is enabled and running" \
