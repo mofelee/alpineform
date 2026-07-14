@@ -332,6 +332,12 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 			return ir.HostSpec{}, err
 		}
 	}
+	if host.Nftables != nil {
+		out.Nftables, err = compileNftables(*host.Nftables, host, facts, hostContext)
+		if err != nil {
+			return ir.HostSpec{}, err
+		}
+	}
 	out.Files, out.Directories, out.Groups, out.Users, out.Packages, out.Services, err = compileHostNativeResources(host, out.APK, facts, hostContext)
 	if err != nil {
 		return ir.HostSpec{}, err

@@ -81,6 +81,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 		appendPackageNodes(graph, host, hostAddress)
 		appendSystemNodes(graph, host, hostAddress)
 		appendKernelNodes(graph, host, hostAddress)
+		appendNftablesNodes(graph, host, hostAddress)
 		for _, group := range host.Groups {
 			deleteBehavior := group.OnRemove
 			if deleteBehavior == "forget" {

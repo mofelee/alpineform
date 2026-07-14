@@ -98,6 +98,7 @@ type HostSpec struct {
 	OpenRC      []OpenRCServiceSpec     `json:"openrc,omitempty"`
 	System      *SystemSpec             `json:"system,omitempty"`
 	Kernel      *KernelSpec             `json:"kernel,omitempty"`
+	Nftables    *NftablesSpec           `json:"nftables,omitempty"`
 	Docker      *DockerSpec             `json:"docker,omitempty"`
 	Components  []ComponentInstanceSpec `json:"components,omitempty"`
 	Scripts     map[string]ScriptSpec   `json:"scripts,omitempty"`
@@ -108,6 +109,29 @@ type HostSpec struct {
 	Packages    []PackageSpec           `json:"packages,omitempty"`
 	Services    []ServiceSpec           `json:"services,omitempty"`
 	Source      SourceRef               `json:"source"`
+}
+
+type NftablesSpec struct {
+	Tables []NftablesTableSpec `json:"tables,omitempty"`
+	Source SourceRef           `json:"source"`
+}
+
+type NftablesTableSpec struct {
+	Name                   string        `json:"name"`
+	Family                 string        `json:"family"`
+	Content                string        `json:"-"`
+	ContentSHA256          string        `json:"content_sha256,omitempty"`
+	ContentBytes           int64         `json:"content_bytes,omitempty"`
+	ContentVersion         string        `json:"content_version,omitempty"`
+	ContentWriteOnly       bool          `json:"content_write_only,omitempty"`
+	Sensitive              bool          `json:"sensitive,omitempty"`
+	Ephemeral              bool          `json:"ephemeral,omitempty"`
+	Ensure                 string        `json:"ensure"`
+	AdoptExisting          bool          `json:"adopt_existing"`
+	OnRemove               string        `json:"on_remove"`
+	RollbackTimeoutSeconds int64         `json:"rollback_timeout_seconds"`
+	Lifecycle              LifecycleSpec `json:"lifecycle"`
+	Source                 SourceRef     `json:"source"`
 }
 
 type DockerSpec struct {

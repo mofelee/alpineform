@@ -117,6 +117,7 @@ type Host struct {
 	OpenRC     *OpenRC
 	System     *System
 	Kernel     *Kernel
+	Nftables   *Nftables
 	Docker     *Docker
 	Components []ComponentInstance
 	Resources  []ResourceDeclaration
@@ -529,6 +530,15 @@ func parseHost(file string, block *hclsyntax.Block, ctx EvalContext) (Host, erro
 				return Host{}, err
 			}
 			host.Kernel = &kernel
+		case "nftables":
+			if host.Nftables != nil {
+				return Host{}, fmt.Errorf("%s:%d: duplicate %s.nftables block", file, child.TypeRange.Start.Line, path)
+			}
+			nftables, err := parseNftables(file, path+".nftables", child, ctx)
+			if err != nil {
+				return Host{}, err
+			}
+			host.Nftables = &nftables
 		case "docker":
 			if host.Docker != nil {
 				return Host{}, fmt.Errorf("%s:%d: duplicate %s.docker block", file, child.TypeRange.Start.Line, path)
