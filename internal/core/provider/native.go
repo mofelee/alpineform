@@ -12,7 +12,8 @@ import (
 type RunnerFactory func(host string) (backend.Runner, error)
 
 type Native struct {
-	NewRunner RunnerFactory
+	NewRunner        RunnerFactory
+	NewNFTablesToken func() (string, error)
 }
 
 func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.ObservedResource, error) {
@@ -123,7 +124,7 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 	case "sysctl_runtime":
 		return applySysctlRuntime(ctx, runner, step.Node)
 	case "nftables_table":
-		return applyNftablesPersistence(ctx, runner, step)
+		return applyNftablesTransaction(ctx, runner, step, provider.NewNFTablesToken)
 	case "nftables_service":
 		return applyNftablesService(ctx, runner, step.Node)
 	case "component_artifact_source":
@@ -186,7 +187,7 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 	case "sysctl":
 		return deleteSysctl(ctx, runner, step)
 	case "nftables_table":
-		return deleteNftablesPersistence(ctx, runner, step)
+		return deleteNftablesTransaction(ctx, runner, step, provider.NewNFTablesToken)
 	case "nftables_service":
 		return fmt.Errorf("AlpineForm nftables service declarations can only be forgotten")
 	case "component_artifact_source":

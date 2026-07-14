@@ -96,6 +96,8 @@ func appendNftablesNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAdd
 			contentBytes = 0
 		}
 		persistencePath := nftablesPersistencePath(table.Family, table.Name)
+		markerPath := nftablesObservedMarkerPath(table.Family, table.Name)
+		activationFingerprint := nftablesActivationFingerprint(table)
 		persistenceContent := ""
 		persistenceSHA256 := ""
 		persistenceBytes := int64(0)
@@ -122,8 +124,13 @@ func appendNftablesNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAdd
 				"persistence_sha256": persistenceSHA256, "persistence_bytes": persistenceBytes,
 				"persistence_owner": "root", "persistence_group": "root", "persistence_mode": "0600",
 				"persistence_path": persistencePath, "external_rules": "preserve",
+				"observed_marker_path": markerPath, "activation_fingerprint": activationFingerprint,
 				"transaction_protocol": "rollback_watchdog_v1", "delete_behavior": deleteBehavior,
-				"delete":          map[string]any{"family": table.Family, "name": table.Name, "persistence_path": persistencePath},
+				"delete": map[string]any{
+					"family": table.Family, "name": table.Name, "persistence_path": persistencePath,
+					"observed_marker_path": markerPath, "activation_fingerprint": activationFingerprint,
+					"rollback_timeout_seconds": table.RollbackTimeoutSeconds,
+				},
 				"prevent_destroy": table.Lifecycle.PreventDestroy,
 			},
 			Payload: map[string]any{
@@ -165,6 +172,19 @@ func nftablesResourceAddresses(host, family, name string) nftablesAddresses {
 
 func nftablesPersistencePath(family, name string) string {
 	return filepath.Join("/etc/nftables.d/alpineform", fmt.Sprintf("%s-%s.nft", family, name))
+}
+
+func nftablesObservedMarkerPath(family, name string) string {
+	return filepath.Join("/var/lib/alpineform/nftables/observed", fmt.Sprintf("%s-%s.digest", family, name))
+}
+
+func nftablesActivationFingerprint(table ir.NftablesTableSpec) string {
+	contentIdentity := table.ContentSHA256
+	if table.ContentWriteOnly {
+		contentIdentity = "version:" + table.ContentVersion
+	}
+	sum := sha256.Sum256([]byte(table.Family + "\x00" + table.Name + "\x00" + table.Ensure + "\x00" + contentIdentity))
+	return fmt.Sprintf("%x", sum[:])
 }
 
 func renderNftablesPersistence(family, name, body string) string {

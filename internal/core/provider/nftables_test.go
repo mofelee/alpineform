@@ -2,9 +2,7 @@ package provider
 
 import (
 	"context"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -24,7 +22,9 @@ func testNftablesPersistenceNode(content string) graph.Node {
 			"family": "inet", "name": "edge", "ensure": "present", "adopt_existing": false,
 			"content_write_only": false, "persistence_sha256": sha256String(content), "persistence_bytes": int64(len(content)),
 			"persistence_owner": "root", "persistence_group": "root", "persistence_mode": "0600", "persistence_path": path,
-			"delete": map[string]any{"family": "inet", "name": "edge", "persistence_path": path},
+			"observed_marker_path": nftablesObservedMarkerPath("inet", "edge"), "activation_fingerprint": strings.Repeat("a", 64),
+			"rollback_timeout_seconds": int64(30),
+			"delete":                   map[string]any{"family": "inet", "name": "edge", "persistence_path": path},
 		},
 		Payload: map[string]any{"persistence_content": content}, Sensitive: true, DigestSafe: true,
 	}
@@ -42,40 +42,12 @@ func testNftablesServiceNode(initScript string) graph.Node {
 	}
 }
 
-func TestNftablesPersistenceProviderConvergesAndProtectsAdoption(t *testing.T) {
-	content := "# Managed by AlpineForm\ntable inet edge {\n\tchain input {}\n}\n"
-	node := testNftablesPersistenceNode(content)
-	inspectOutput := []byte("file\nroot\nroot\n600\n" + strconv.Itoa(len(content)) + "\n" + sha256String(content) + "\n")
-	runner := &commandRunner{outputs: map[string][]byte{"inspect.nftables_persistence": inspectOutput}}
-	observed, err := applyNftablesPersistence(context.Background(), runner, engine.Step{Action: engine.ActionCreate, Node: node})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.commands) != 2 || runner.commands[0].Name != "apply.nftables_persistence" || !runner.commands[0].RedactStdin || !runner.commands[0].RedactOutput || string(runner.commands[0].Stdin) != content {
-		t.Fatalf("persistence commands = %#v", runner.commands)
-	}
-	if strings.Contains(runner.commands[0].Script, content) || !strings.Contains(runner.commands[0].Script, "mv -f") || !strings.Contains(runner.commands[0].Script, "refusing symbolic-link") {
-		t.Fatalf("unsafe persistence write script: %s", runner.commands[0].Script)
-	}
-	if !observed.Protected || observed.Digest != corestate.Digest(node.Desired) {
-		t.Fatalf("persistence observation = %#v", observed)
-	}
-
-	untracked := &commandRunner{outputs: map[string][]byte{}}
-	_, err = applyNftablesPersistence(context.Background(), untracked, engine.Step{Action: engine.ActionUpdate, Node: node, Observed: engine.ObservedResource{Exists: true}})
-	if err == nil || !strings.Contains(err.Error(), "adopt_existing") || len(untracked.commands) != 0 {
-		t.Fatalf("untracked persistence error = %v, commands = %#v", err, untracked.commands)
-	}
-	node.Desired["adopt_existing"] = true
-	adopted := &commandRunner{outputs: map[string][]byte{"inspect.nftables_persistence": inspectOutput}}
-	if _, err := applyNftablesPersistence(context.Background(), adopted, engine.Step{Action: engine.ActionUpdate, Node: node, Observed: engine.ObservedResource{Exists: true}}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestNftablesProvidersClassifyDegradedPersistenceAndService(t *testing.T) {
 	persistence := testNftablesPersistenceNode("table inet edge {}\n")
-	persistenceRunner := &commandRunner{outputs: map[string][]byte{"inspect.nftables_persistence": []byte("symlink\n")}}
+	persistenceRunner := &commandRunner{outputs: map[string][]byte{
+		"inspect.nftables_persistence": []byte("symlink\n"),
+		"inspect.nftables_active":      []byte("missing\n-\nmissing\n-\n-\n-\n"),
+	}}
 	observed, err := inspectNftablesPersistence(context.Background(), persistenceRunner, persistence)
 	if err != nil {
 		t.Fatal(err)
@@ -98,64 +70,73 @@ func TestNftablesProvidersClassifyDegradedPersistenceAndService(t *testing.T) {
 	}
 }
 
-func TestNftablesPersistenceScriptsReplaceAtomicallyAndRejectSymlinks(t *testing.T) {
-	root := t.TempDir()
-	owner := strconv.Itoa(os.Getuid())
-	group := strconv.Itoa(os.Getgid())
-	base := filepath.Join(root, "nftables.d")
-	directory := filepath.Join(base, "alpineform")
-	path := filepath.Join(directory, "inet-edge.nft")
-	content := "table inet edge {}\n"
-	runner := localRunner{}
-	if _, err := runner.Run(context.Background(), backend.Command{
-		Script: nftablesPersistenceWriteScript, Arguments: []string{base, directory, path, owner, group}, Stdin: []byte(content),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil || string(data) != content {
-		t.Fatalf("persistent content = %q, error = %v", data, err)
-	}
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0600 {
-		t.Fatalf("persistent mode = %v, error = %v", info.Mode(), err)
-	}
-	external := filepath.Join(root, "external")
-	if err := os.WriteFile(external, []byte("external\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(external, path); err != nil {
-		t.Fatal(err)
-	}
-	_, err = runner.Run(context.Background(), backend.Command{
-		Script: nftablesPersistenceWriteScript, Arguments: []string{base, directory, path, owner, group}, Stdin: []byte("replacement\n"),
+func TestNftablesTransactionStagesSnapshotsActivatesAndReinspects(t *testing.T) {
+	content := "# Managed by AlpineForm\ntable inet edge {\n\tchain input {}\n}\n"
+	node := testNftablesPersistenceNode(content)
+	activeSHA := strings.Repeat("b", 64)
+	fingerprint := stringValue(node.Desired, "activation_fingerprint")
+	runner := &commandRunner{outputs: map[string][]byte{
+		"inspect.nftables_persistence": []byte("file\nroot\nroot\n600\n" + strconv.Itoa(len(content)) + "\n" + sha256String(content) + "\n"),
+		"inspect.nftables_active":      []byte("present\n" + activeSHA + "\nfile\n" + fingerprint + "\n" + activeSHA + "\npresent\n"),
+	}}
+	token := strings.Repeat("c", 64)
+	observed, err := applyNftablesTransaction(context.Background(), runner, engine.Step{Action: engine.ActionCreate, Node: node}, func() (string, error) {
+		return token, nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "symbolic-link") {
-		t.Fatalf("symlink replacement error = %v", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	data, err = os.ReadFile(external)
-	if err != nil || string(data) != "external\n" {
-		t.Fatalf("external symlink target changed: %q, error = %v", data, err)
+	if observed.Digest != corestate.Digest(node.Desired) || !observed.Protected {
+		t.Fatalf("transaction observation = %#v", observed)
+	}
+	if len(runner.commands) != 3 || runner.commands[0].Name != "apply.nftables_transaction" || runner.commands[0].Arguments[0] != token || runner.commands[0].Arguments[6] != "present" || string(runner.commands[0].Stdin) != content || !runner.commands[0].RedactStdin || !runner.commands[0].RedactOutput {
+		t.Fatalf("transaction commands = %#v", runner.commands)
+	}
+	script := runner.commands[0].Script
+	preflight := strings.Index(script, `nft -c -f "$activation"`)
+	activate := strings.Index(script, `nft -f "$activation"`)
+	snapshot := strings.Index(script, `nft --stateless list table "$family" "$name" >"$active_snapshot"`)
+	if preflight < 0 || activate < 0 || snapshot < 0 || preflight > snapshot || snapshot > activate || strings.Contains(script, content) || strings.Contains(script, "flush ruleset") || !strings.Contains(script, "restore_transaction") || !strings.Contains(script, "persistent.snapshot") || !strings.Contains(script, "marker.snapshot") {
+		t.Fatalf("transaction does not preflight/snapshot/rollback safely: %s", script)
+	}
+	untrackedRunner := &commandRunner{outputs: map[string][]byte{}}
+	_, err = applyNftablesTransaction(context.Background(), untrackedRunner, engine.Step{
+		Action: engine.ActionUpdate, Node: node, Observed: engine.ObservedResource{Exists: true},
+	}, func() (string, error) { return token, nil })
+	if err == nil || !strings.Contains(err.Error(), "adopt_existing") || len(untrackedRunner.commands) != 0 {
+		t.Fatalf("implicit transaction adoption error = %v, commands = %#v", err, untrackedRunner.commands)
+	}
+
+	invalidTokenRunner := &commandRunner{outputs: map[string][]byte{}}
+	_, err = applyNftablesTransaction(context.Background(), invalidTokenRunner, engine.Step{Action: engine.ActionCreate, Node: node}, func() (string, error) {
+		return "not-a-valid-token", nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid token") || len(invalidTokenRunner.commands) != 0 {
+		t.Fatalf("invalid token error = %v, commands = %#v", err, invalidTokenRunner.commands)
 	}
 }
 
-func TestNftablesPersistenceDeleteRequiresRecordedOwnership(t *testing.T) {
-	node := testNftablesPersistenceNode("table inet edge {}\n")
-	node.Desired["ensure"] = "absent"
+func TestNftablesDeleteTransactionUsesOnlyRecordedIdentity(t *testing.T) {
+	path := nftablesPersistencePath("inet", "edge")
+	marker := nftablesObservedMarkerPath("inet", "edge")
+	fingerprint := strings.Repeat("d", 64)
+	prior := &corestate.Resource{Kind: "nftables_table", Ownership: "managed", Delete: map[string]any{
+		"family": "inet", "name": "edge", "persistence_path": path,
+		"observed_marker_path": marker, "activation_fingerprint": fingerprint,
+		"rollback_timeout_seconds": int64(30),
+	}}
 	runner := &commandRunner{outputs: map[string][]byte{}}
-	step := engine.Step{Action: engine.ActionDelete, Node: node}
-	if err := deleteNftablesPersistence(context.Background(), runner, step); err == nil || !strings.Contains(err.Error(), "recorded") {
-		t.Fatalf("unrecorded delete error = %v", err)
-	}
-	step.Prior = &corestate.Resource{Kind: "nftables_table", Ownership: "managed", Delete: node.Desired["delete"].(map[string]any)}
-	if err := deleteNftablesPersistence(context.Background(), runner, step); err != nil {
+	token := strings.Repeat("e", 64)
+	if err := deleteNftablesTransaction(context.Background(), runner, engine.Step{Action: engine.ActionDelete, Prior: prior}, func() (string, error) {
+		return token, nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.commands) != 1 || runner.commands[0].Name != "delete.nftables_persistence" || !reflect.DeepEqual(runner.commands[0].Arguments, []string{nftablesPersistenceDirectory, nftablesPersistencePath("inet", "edge")}) {
-		t.Fatalf("delete command = %#v", runner.commands)
+	if len(runner.commands) != 1 || !reflect.DeepEqual(runner.commands[0].Arguments, []string{token, "inet", "edge", path, marker, fingerprint, "absent"}) || len(runner.commands[0].Stdin) != 0 || !runner.commands[0].RedactOutput {
+		t.Fatalf("delete transaction command = %#v", runner.commands)
+	}
+	if strings.Contains(runner.commands[0].Script, "flush ruleset") {
+		t.Fatalf("delete transaction contains global flush: %s", runner.commands[0].Script)
 	}
 }
 
@@ -193,8 +174,8 @@ start() {
 func TestNftablesProviderScriptsHaveValidShellSyntax(t *testing.T) {
 	scripts := map[string]string{
 		"persistence inspect": nftablesPersistenceInspectScript,
-		"persistence write":   nftablesPersistenceWriteScript,
-		"persistence delete":  nftablesPersistenceDeleteScript,
+		"active inspect":      nftablesActiveInspectScript,
+		"transaction":         nftablesTransactionScript,
 		"service inspect":     nftablesServiceInspectScript,
 		"service apply":       nftablesServiceApplyScript,
 	}

@@ -125,3 +125,44 @@ delete, declaration forget, external configuration preservation, and three
 reboots with 61 explicit assertions. The owned table stayed inactive because
 the arming marker was absent; the runtime activation and rollback matrix remain
 the responsibility of Loops 3 through 6.
+
+## Activation transaction
+
+Each create, update, repair, or recorded delete uses one token-scoped runtime
+directory below `/run/alpineform/nftables`. The directory is root-owned `0700`;
+candidate, active snapshot, persistent snapshot, marker snapshot, activation,
+and restore files are `0600`. The random token and every snapshot remain
+provider-only data and are never placed in graph, plan, state, debug events, or
+errors.
+
+For a present table, AlpineForm renders the table-body DSL into one complete
+`table <family> <name> { ... }` candidate. It then:
+
+1. runs `nft -c -f` against the complete replacement batch;
+2. captures the previous stateless active table and exact persistent/marker
+   bytes without following symbolic links;
+3. validates the active restore batch when an active snapshot exists;
+4. preflights again and atomically replaces only the named table with one nft
+   batch;
+5. re-inspects the active table through the current management connection;
+6. atomically writes persistence and an active/fingerprint digest marker.
+
+Delete uses the same protocol with a batch that names only the recorded owned
+table. There is no ruleset-wide flush in create, update, repair, rollback, or
+delete.
+
+Any error or HUP/INT/TERM after activation restores the active, persistent,
+and marker snapshots. Successful transactions remove the token directory. If
+rollback itself fails, the protected transaction directory and a bounded
+`rollback_failed` status remain for recovery instead of claiming success.
+AlpineForm state is written only after the provider transaction and final
+inspection return successfully.
+
+The Loop 3 Alpine 3.24.1 VM matrix passed 40 assertions. It proved invalid nft
+syntax and unsafe snapshot targets cause no mutation, create/no-op and combined
+active/persistent drift repair converge, external tables and configuration
+survive every non-reboot operation, recorded delete is scoped, reboot content
+is valid when a future confirmation marker is simulated, and successful or
+rolled-back transactions leave no runtime token artifacts. A fresh SSH-path
+confirmation and an independent detached timeout remain mandatory in Loop 4
+before this transaction is allowed onto the release branch.
