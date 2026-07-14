@@ -27,6 +27,9 @@ var nftablesFamilies = map[string]bool{
 }
 
 func compileNftables(nftables parser.Nftables, host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext) (*ir.NftablesSpec, error) {
+	if len(nftables.Tables) == 0 {
+		return nil, resourceError(nftables.Source, "nftables requires at least one named table")
+	}
 	spec := &ir.NftablesSpec{Source: nftables.Source}
 	seen := map[string]ir.SourceRef{}
 	for _, declaration := range nftables.Tables {
@@ -255,4 +258,46 @@ func isNftablesIdentifierStart(ch byte) bool {
 
 func isNftablesIdentifierPart(ch byte) bool {
 	return isNftablesIdentifierStart(ch) || ch >= '0' && ch <= '9' || ch == '-'
+}
+
+func integrateNftablesNativeResources(host *ir.HostSpec) error {
+	if host.Nftables == nil {
+		return nil
+	}
+	for _, pkg := range host.Packages {
+		if pkg.Name == "nftables" {
+			return resourceError(host.Nftables.Source, "nftables owns package %q; remove the duplicate host package declaration", pkg.Name)
+		}
+	}
+	for _, service := range host.Services {
+		if service.Name == "alpineform-nftables" {
+			return resourceError(host.Nftables.Source, "nftables owns OpenRC service %q; remove the duplicate host service declaration", service.Name)
+		}
+	}
+	for _, service := range host.OpenRC {
+		if service.Name == "alpineform-nftables" {
+			return resourceError(host.Nftables.Source, "nftables owns generated OpenRC service %q; remove the duplicate host openrc declaration", service.Name)
+		}
+	}
+	for _, file := range host.Files {
+		if file.Path == "/etc/init.d/alpineform-nftables" {
+			return resourceError(host.Nftables.Source, "nftables owns %s; remove the duplicate host file declaration", file.Path)
+		}
+		for _, table := range host.Nftables.Tables {
+			path := "/etc/nftables.d/alpineform/" + table.Family + "-" + table.Name + ".nft"
+			if file.Path == path {
+				return resourceError(host.Nftables.Source, "nftables table %s %q owns %s; remove the duplicate host file declaration", table.Family, table.Name, path)
+			}
+		}
+	}
+	for _, directory := range host.Directories {
+		if directory.Path == "/etc/nftables.d/alpineform" {
+			return resourceError(host.Nftables.Source, "nftables owns %s; remove the duplicate host directory declaration", directory.Path)
+		}
+	}
+	host.Packages = append(host.Packages, ir.PackageSpec{
+		Name: "nftables", WorldIntent: "nftables", Ensure: "present",
+		Source: host.Nftables.Source,
+	})
+	return nil
 }

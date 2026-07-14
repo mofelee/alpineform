@@ -85,6 +85,23 @@ func validateComponentResourceCollisions(host ir.HostSpec) error {
 			}
 		}
 	}
+	if host.Nftables != nil {
+		if err := add("service", "alpineform-nftables", host.Nftables.Source); err != nil {
+			return err
+		}
+		if err := add("path", "/etc/init.d/alpineform-nftables", host.Nftables.Source); err != nil {
+			return err
+		}
+		if err := add("path", "/etc/nftables.d/alpineform", host.Nftables.Source); err != nil {
+			return err
+		}
+		for _, table := range host.Nftables.Tables {
+			path := "/etc/nftables.d/alpineform/" + table.Family + "-" + table.Name + ".nft"
+			if err := add("path", path, table.Source); err != nil {
+				return err
+			}
+		}
+	}
 	for _, file := range host.Files {
 		if err := add("path", file.Path, file.Source); err != nil {
 			return err

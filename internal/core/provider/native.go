@@ -59,6 +59,10 @@ func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.Obs
 		return inspectSysctl(ctx, runner, node)
 	case "sysctl_runtime":
 		return inspectSysctlRuntime(node)
+	case "nftables_table":
+		return inspectNftablesPersistence(ctx, runner, node)
+	case "nftables_service":
+		return inspectNftablesService(ctx, runner, node)
 	case "component_artifact_source":
 		return inspectComponentSource(ctx, runner, node)
 	case "component_binary", "component_file":
@@ -118,6 +122,10 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 		return applySysctl(ctx, runner, step.Node)
 	case "sysctl_runtime":
 		return applySysctlRuntime(ctx, runner, step.Node)
+	case "nftables_table":
+		return applyNftablesPersistence(ctx, runner, step)
+	case "nftables_service":
+		return applyNftablesService(ctx, runner, step.Node)
 	case "component_artifact_source":
 		return applyComponentSource(ctx, runner, step.Node)
 	case "component_binary", "component_file":
@@ -177,6 +185,10 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 		return fmt.Errorf("resource kind %q can only be forgotten when removed", kind)
 	case "sysctl":
 		return deleteSysctl(ctx, runner, step)
+	case "nftables_table":
+		return deleteNftablesPersistence(ctx, runner, step)
+	case "nftables_service":
+		return fmt.Errorf("AlpineForm nftables service declarations can only be forgotten")
 	case "component_artifact_source":
 		return deleteComponentSource(ctx, runner, step)
 	case "component_binary", "component_file":

@@ -345,6 +345,9 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	if err := integrateDockerNativeResources(&out); err != nil {
 		return ir.HostSpec{}, err
 	}
+	if err := integrateNftablesNativeResources(&out); err != nil {
+		return ir.HostSpec{}, err
+	}
 	if err := validateNativeResourceRelationships(out.Files, out.Directories, out.Groups, out.Users); err != nil {
 		return ir.HostSpec{}, err
 	}

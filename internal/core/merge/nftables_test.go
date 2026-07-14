@@ -47,6 +47,10 @@ host "node" {
 	if tables[1].OnRemove != "delete" || tables[1].RollbackTimeoutSeconds != 60 || !tables[1].Lifecycle.PreventDestroy {
 		t.Fatalf("ip6 lifecycle = %#v", tables[1])
 	}
+	packages := program.Hosts[0].Packages
+	if len(packages) != 1 || packages[0].Name != "nftables" || packages[0].WorldIntent != "nftables" || packages[0].Ensure != "present" {
+		t.Fatalf("nftables package integration = %#v", packages)
+	}
 	data, err := json.Marshal(program)
 	if err != nil {
 		t.Fatal(err)
@@ -92,6 +96,17 @@ func TestCompileNftablesRejectsUnsafeIdentityLifecycleAndContent(t *testing.T) {
 	}
 }
 
+func TestCompileNftablesRejectsEmptyDomain(t *testing.T) {
+	config, err := compileConfig(t, "host \"node\" {\n  nftables {}\n}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Compile(config)
+	if err == nil || !strings.Contains(err.Error(), "at least one named table") {
+		t.Fatalf("empty nftables error = %v", err)
+	}
+}
+
 func TestCompileNftablesRejectsDuplicateResolvedIdentity(t *testing.T) {
 	config, err := compileConfig(t, `
 host "node" {
@@ -123,6 +138,7 @@ variable "rules" {
   ephemeral = true
   default   = "chain input { policy accept; }"
 }
+
 host "node" {
   nftables {
     table "edge" {
@@ -137,5 +153,30 @@ host "node" {
 	_, err = Compile(config)
 	if err == nil || !strings.Contains(err.Error(), "content_version") {
 		t.Fatalf("ephemeral version error = %v", err)
+	}
+}
+
+func TestCompileNftablesRejectsOwnedResourceCollisions(t *testing.T) {
+	tests := []struct {
+		name     string
+		resource string
+		want     string
+	}{
+		{name: "package", resource: "packages {\n    package \"nftables\" {}\n  }", want: `owns package "nftables"`},
+		{name: "service", resource: "services {\n    service \"alpineform-nftables\" {}\n  }", want: `owns OpenRC service "alpineform-nftables"`},
+		{name: "init file", resource: "files {\n    file \"/etc/init.d/alpineform-nftables\" {\n      content = \"external\"\n    }\n  }", want: "owns /etc/init.d/alpineform-nftables"},
+		{name: "persistence directory", resource: "directories {\n    directory \"/etc/nftables.d/alpineform\" {}\n  }", want: "owns /etc/nftables.d/alpineform"},
+		{name: "persistence file", resource: "files {\n    file \"/etc/nftables.d/alpineform/inet-edge.nft\" {\n      content = \"external\"\n    }\n  }", want: "owns /etc/nftables.d/alpineform/inet-edge.nft"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := compileConfig(t, "host \"node\" {\n  "+test.resource+"\n  nftables {\n    table \"edge\" {\n      content = \"chain input {}\"\n    }\n  }\n}\n")
+			if err == nil {
+				_, err = Compile(config)
+			}
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ownership collision error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }

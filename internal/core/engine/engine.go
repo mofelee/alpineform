@@ -277,6 +277,9 @@ func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []gra
 		}
 		priorResource, exists := prior.Resources[node.Address]
 		step := planNode(node, priorResource, exists, observed)
+		if node.Kind == "nftables_table" && !exists && observed.Exists && !desiredBool(node.Desired, "adopt_existing") {
+			return HostPlan{}, fmt.Errorf("%s:%d:%s: refusing to take ownership of untracked nftables table %s; set adopt_existing = true to authorize adoption", node.Source.File, node.Source.Line, node.Source.Path, node.Address)
+		}
 		if node.Kind == "apk_update" && apkDependenciesChanged(node.DependsOn, plannedActions) {
 			if observed.Exists {
 				step.Action = ActionUpdate

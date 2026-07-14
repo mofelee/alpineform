@@ -13,6 +13,7 @@ func TestCompileNftablesUsesCollisionFreeProtectedTransactionNode(t *testing.T) 
 	secret := "not-a-real-nftables-secret"
 	program := &ir.Program{Hosts: []ir.HostSpec{{
 		Name: "node", Source: source(1),
+		Packages: []ir.PackageSpec{{Name: "nftables", WorldIntent: "nftables", Ensure: "present", Source: source(1)}},
 		Nftables: &ir.NftablesSpec{Tables: []ir.NftablesTableSpec{
 			{Name: "edge", Family: "ip", Content: secret, ContentSHA256: strings.Repeat("a", 64), ContentBytes: int64(len(secret)), Ensure: "present", OnRemove: "forget", RollbackTimeoutSeconds: 30, Sensitive: true, Source: source(2)},
 			{Name: "edge", Family: "ip6", Ensure: "absent", OnRemove: "delete", RollbackTimeoutSeconds: 45, Sensitive: true, Lifecycle: ir.LifecycleSpec{PreventDestroy: true}, Source: source(3)},
@@ -32,7 +33,7 @@ func TestCompileNftablesUsesCollisionFreeProtectedTransactionNode(t *testing.T) 
 		t.Fatalf("nftables identities collided: %#v %#v", ipAddresses, ip6Addresses)
 	}
 	ip := nodes[ipAddresses.Table]
-	if ip.Kind != "nftables_table" || !ip.Managed || !ip.Sensitive || ip.Payload["content"] != secret || !reflect.DeepEqual(ip.DependsOn, []string{"host.node"}) {
+	if ip.Kind != "nftables_table" || !ip.Managed || !ip.Sensitive || ip.Payload["content"] != secret || !reflect.DeepEqual(ip.DependsOn, []string{ipAddresses.Package}) {
 		t.Fatalf("ip nftables node = %#v", ip)
 	}
 	if ip.Desired["ownership"] != "exclusive_named_table" || ip.Desired["external_rules"] != "preserve" || ip.Desired["delete_behavior"] != "" {
@@ -45,6 +46,15 @@ func TestCompileNftablesUsesCollisionFreeProtectedTransactionNode(t *testing.T) 
 	transactionAddresses, ok := ip.Payload["transaction_addresses"].(map[string]string)
 	if !ok || transactionAddresses["persistence"] != ipAddresses.Persistence || transactionAddresses["watchdog"] != ipAddresses.Watchdog || transactionAddresses["confirmation"] != ipAddresses.Confirmation {
 		t.Fatalf("transaction addresses = %#v", ip.Payload["transaction_addresses"])
+	}
+	service := nodes[ipAddresses.Service]
+	wantServiceDependencies := []string{ipAddresses.Package, ipAddresses.Table, ip6Addresses.Table}
+	if service.Kind != "nftables_service" || !service.Managed || !reflect.DeepEqual(service.DependsOn, wantServiceDependencies) || service.Desired["stock_configuration"] != "preserve" {
+		t.Fatalf("nftables service node = %#v", service)
+	}
+	initScript, _ := service.Payload["init_script"].(string)
+	if !strings.Contains(initScript, "/var/lib/alpineform/nftables/armed") || !strings.Contains(initScript, "nft -c -f") || strings.Contains(initScript, "flush ruleset") || strings.Contains(initScript, "/etc/nftables.nft") {
+		t.Fatalf("unsafe AlpineForm nftables init script: %s", initScript)
 	}
 	data, err := json.Marshal(compiled)
 	if err != nil {

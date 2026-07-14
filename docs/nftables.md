@@ -92,3 +92,36 @@ The package and OpenRC integration addresses are
 `host.edge.packages.package["nftables"]` and
 `host.edge.nftables.service`. Runtime tokens and snapshots are never part of
 these addresses and must never be serialized.
+
+## Alpine 3.24 package and OpenRC layout
+
+AlpineForm's integration evidence uses Alpine 3.24.1 x86_64. Installing the
+official `nftables` world intent installs `nftables 1.1.6-r1` together with
+`nftables-openrc`. The package owns `/etc/nftables.nft`,
+`/etc/conf.d/nftables`, and `/etc/init.d/nftables`.
+
+The stock `/etc/nftables.nft` starts with `flush ruleset`, and the stock
+OpenRC service loads that file on start/reload and runs `nft flush ruleset` on
+stop. AlpineForm therefore never starts, reloads, stops, rewrites, or adopts
+the stock service and its configuration. Existing files at those paths remain
+byte-for-byte external configuration.
+
+AlpineForm installs a separate `/etc/init.d/alpineform-nftables` service and
+stores root-owned `0600` table files below the root-owned `0700` directory
+`/etc/nftables.d/alpineform`. Both the directory and file targets reject
+symbolic links and non-matching file types. Updates use a temporary file in the
+target directory followed by atomic rename.
+
+The dedicated service is enabled in the `default` runlevel, but it deliberately
+does nothing until `/var/lib/alpineform/nftables/armed` exists. The transaction
+and watchdog loops create that marker only after a live activation has passed
+preflight, snapshot, watchdog, reconnect, and confirmation. Before then, start and reboot cannot
+activate merely persisted content. Its stop action never flushes or deletes
+any active table.
+
+The Loop 2 Alpine VM matrix proved explicit package installation, exact-file
+adoption, no-op, persistence and init drift detection/repair, recorded-table
+delete, declaration forget, external configuration preservation, and three
+reboots with 61 explicit assertions. The owned table stayed inactive because
+the arming marker was absent; the runtime activation and rollback matrix remain
+the responsibility of Loops 3 through 6.
