@@ -57,8 +57,11 @@ func TestNftablesPlansRedactRulesContent(t *testing.T) {
 			t.Fatalf("%s plan omitted stable nftables address: %s", name, output)
 		}
 	}
-	if !strings.Contains(jsonOutput.String(), `"protected": true`) {
+	if !strings.Contains(jsonOutput.String(), `"protected": true`) || !strings.Contains(jsonOutput.String(), `"network_disruption": 1`) || !strings.Contains(jsonOutput.String(), `"risks": [`) || !strings.Contains(jsonOutput.String(), `"network_disruption"`) {
 		t.Fatalf("JSON plan did not mark nftables content protected: %s", jsonOutput.String())
+	}
+	if !strings.Contains(textOutput.String(), "risk: network disruption") || !strings.Contains(htmlOutput.String(), "Network disruption: 1") {
+		t.Fatalf("nftables risk missing from text/HTML plan:\n%s\n%s", textOutput.String(), htmlOutput.String())
 	}
 }
 

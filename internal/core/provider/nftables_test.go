@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mofelee/alpineform/internal/core/backend"
 	"github.com/mofelee/alpineform/internal/core/engine"
@@ -86,13 +87,13 @@ func TestNftablesTransactionStagesSnapshotsActivatesAndReinspects(t *testing.T) 
 	observed, err := applyNftablesTransaction(context.Background(), prepareRunner, func() (backend.Runner, error) {
 		freshCalls++
 		return confirmationRunner, nil
-	}, engine.Step{Action: engine.ActionCreate, Node: node}, func() (string, error) {
+	}, engine.Step{Action: engine.ActionCreate, Node: node}, nftablesTransactionRuntime{NewToken: func() (string, error) {
 		return token, nil
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observed.Digest != corestate.Digest(node.Desired) || !observed.Protected {
+	if observed.Digest != corestate.Digest(node.Desired) || !observed.Protected || !observed.Managed {
 		t.Fatalf("transaction observation = %#v", observed)
 	}
 	if freshCalls != 1 || len(prepareRunner.commands) != 1 || len(confirmationRunner.commands) != 3 {
@@ -122,7 +123,7 @@ func TestNftablesTransactionStagesSnapshotsActivatesAndReinspects(t *testing.T) 
 		return confirmationRunner, nil
 	}, engine.Step{
 		Action: engine.ActionUpdate, Node: node, Observed: engine.ObservedResource{Exists: true},
-	}, func() (string, error) { return token, nil })
+	}, nftablesTransactionRuntime{NewToken: func() (string, error) { return token, nil }})
 	if err == nil || !strings.Contains(err.Error(), "adopt_existing") || len(untrackedRunner.commands) != 0 {
 		t.Fatalf("implicit transaction adoption error = %v, commands = %#v", err, untrackedRunner.commands)
 	}
@@ -130,9 +131,9 @@ func TestNftablesTransactionStagesSnapshotsActivatesAndReinspects(t *testing.T) 
 	invalidTokenRunner := &commandRunner{outputs: map[string][]byte{}}
 	_, err = applyNftablesTransaction(context.Background(), invalidTokenRunner, func() (backend.Runner, error) {
 		return confirmationRunner, nil
-	}, engine.Step{Action: engine.ActionCreate, Node: node}, func() (string, error) {
+	}, engine.Step{Action: engine.ActionCreate, Node: node}, nftablesTransactionRuntime{NewToken: func() (string, error) {
 		return "not-a-valid-token", nil
-	})
+	}})
 	if err == nil || !strings.Contains(err.Error(), "invalid token") || len(invalidTokenRunner.commands) != 0 {
 		t.Fatalf("invalid token error = %v, commands = %#v", err, invalidTokenRunner.commands)
 	}
@@ -152,9 +153,9 @@ func TestNftablesDeleteTransactionUsesOnlyRecordedIdentity(t *testing.T) {
 	token := strings.Repeat("e", 64)
 	if err := deleteNftablesTransaction(context.Background(), prepareRunner, func() (backend.Runner, error) {
 		return confirmationRunner, nil
-	}, engine.Step{Action: engine.ActionDelete, Prior: prior}, func() (string, error) {
+	}, engine.Step{Action: engine.ActionDelete, Prior: prior}, nftablesTransactionRuntime{NewToken: func() (string, error) {
 		return token, nil
-	}); err != nil {
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	prepareArguments := []string{token, "inet", "edge", path, marker, fingerprint, "absent", "30"}
@@ -177,23 +178,139 @@ func TestNftablesConfirmationFailureLeavesWatchdogArmedWithoutLeakingProtectedDa
 	prepareRunner := &commandRunner{outputs: map[string][]byte{}}
 	confirmationRunner := &commandRunner{errors: map[string]error{
 		"apply.nftables_transaction_confirm": errors.New("management connection lost"),
-	}}
+	}, outputs: map[string][]byte{"inspect.nftables_transaction_outcome": []byte("pending\n")}}
+	now := time.Unix(100, 0)
 	_, err := applyNftablesTransaction(context.Background(), prepareRunner, func() (backend.Runner, error) {
 		return confirmationRunner, nil
-	}, engine.Step{Action: engine.ActionCreate, Node: node}, func() (string, error) {
-		return token, nil
+	}, engine.Step{Action: engine.ActionCreate, Node: node}, nftablesTransactionRuntime{
+		NewToken: func() (string, error) { return token, nil },
+		Now:      func() time.Time { return now },
+		Wait: func(context.Context, time.Duration) error {
+			now = now.Add(time.Minute)
+			return nil
+		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "remote rollback remains armed") {
+	if err == nil || !strings.Contains(err.Error(), "rollback status: pending") {
 		t.Fatalf("confirmation failure = %v", err)
 	}
 	if strings.Contains(err.Error(), token) || strings.Contains(err.Error(), content) {
 		t.Fatalf("confirmation failure leaked protected data: %v", err)
 	}
-	if len(prepareRunner.commands) != 1 || len(confirmationRunner.commands) != 1 {
+	if len(prepareRunner.commands) != 1 || len(confirmationRunner.commands) < 2 {
 		t.Fatalf("confirmation failure commands = prepare %#v, confirmation %#v", prepareRunner.commands, confirmationRunner.commands)
 	}
 	if !strings.Contains(prepareRunner.commands[0].Script, "awaiting_confirmation") || !strings.Contains(prepareRunner.commands[0].Script, "rollback_pending") {
 		t.Fatalf("prepare command did not leave an armed watchdog")
+	}
+}
+
+func TestNftablesReconnectRetriesAndReportsConfirmedRollback(t *testing.T) {
+	content := "# Managed by AlpineForm\ntable inet edge {}\n"
+	node := testNftablesPersistenceNode(content)
+	token := strings.Repeat("1", 64)
+	prepareRunner := &commandRunner{}
+	runners := []*commandRunner{
+		{errors: map[string]error{"apply.nftables_transaction_confirm": errors.New("connection lost")}},
+		{outputs: map[string][]byte{"inspect.nftables_transaction_outcome": []byte("pending\n")}},
+		{errors: map[string]error{"apply.nftables_transaction_confirm": errors.New("connection lost again")}},
+		{outputs: map[string][]byte{"inspect.nftables_transaction_outcome": []byte("rollback_confirmed\n")}},
+	}
+	freshCalls := 0
+	now := time.Unix(200, 0)
+	_, err := applyNftablesTransaction(context.Background(), prepareRunner, func() (backend.Runner, error) {
+		runner := runners[freshCalls]
+		freshCalls++
+		return runner, nil
+	}, engine.Step{Action: engine.ActionCreate, Node: node}, nftablesTransactionRuntime{
+		NewToken: func() (string, error) { return token, nil },
+		Now:      func() time.Time { return now },
+		Wait: func(context.Context, time.Duration) error {
+			now = now.Add(time.Second)
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "rollback status: confirmed") || freshCalls != 4 {
+		t.Fatalf("confirmed rollback error=%v fresh calls=%d", err, freshCalls)
+	}
+	if strings.Contains(err.Error(), token) || strings.Contains(err.Error(), "connection lost") {
+		t.Fatalf("confirmed rollback leaked protected transport data: %v", err)
+	}
+}
+
+func TestNftablesLostConfirmationResponseUsesDurableConfirmedOutcome(t *testing.T) {
+	content := "# Managed by AlpineForm\ntable inet edge {}\n"
+	node := testNftablesPersistenceNode(content)
+	token := strings.Repeat("2", 64)
+	activeSHA := strings.Repeat("3", 64)
+	fingerprint := stringValue(node.Desired, "activation_fingerprint")
+	prepareRunner := &commandRunner{}
+	confirmRunner := &commandRunner{errors: map[string]error{
+		"apply.nftables_transaction_confirm": errors.New("response lost after commit"),
+	}}
+	outcomeRunner := &commandRunner{outputs: map[string][]byte{
+		"inspect.nftables_transaction_outcome": []byte("confirmed\n"),
+		"inspect.nftables_persistence":         []byte("file\nroot\nroot\n600\n" + strconv.Itoa(len(content)) + "\n" + sha256String(content) + "\n"),
+		"inspect.nftables_active":              []byte("present\n" + activeSHA + "\nfile\n" + fingerprint + "\n" + activeSHA + "\npresent\n"),
+	}}
+	runners := []backend.Runner{confirmRunner, outcomeRunner}
+	freshCalls := 0
+	observed, err := applyNftablesTransaction(context.Background(), prepareRunner, func() (backend.Runner, error) {
+		runner := runners[freshCalls]
+		freshCalls++
+		return runner, nil
+	}, engine.Step{Action: engine.ActionCreate, Node: node}, nftablesTransactionRuntime{
+		NewToken: func() (string, error) { return token, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freshCalls != 2 || observed.Digest != corestate.Digest(node.Desired) || len(outcomeRunner.commands) != 3 {
+		t.Fatalf("durable confirmation observed=%#v calls=%d commands=%#v", observed, freshCalls, outcomeRunner.commands)
+	}
+}
+
+func TestNftablesOutcomeErrorsAreExplicitAndProtected(t *testing.T) {
+	content := "# Managed by AlpineForm\ntable inet edge {}\n"
+	node := testNftablesPersistenceNode(content)
+	token := strings.Repeat("4", 64)
+	secretError := "transport-secret-must-not-leak"
+	for _, test := range []struct {
+		name       string
+		prepareErr error
+		outcome    string
+		want       string
+	}{
+		{name: "activation failure", prepareErr: errors.New(secretError), outcome: "activation_failed", want: "rollback status: not required"},
+		{name: "rollback failure", outcome: "rollback_failed", want: "rollback status: failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prepareRunner := &commandRunner{errors: map[string]error{"apply.nftables_transaction_prepare": test.prepareErr}}
+			outcomeRunner := &commandRunner{outputs: map[string][]byte{"inspect.nftables_transaction_outcome": []byte(test.outcome + "\n")}}
+			if test.prepareErr == nil {
+				outcomeRunner.errors = map[string]error{"apply.nftables_transaction_confirm": errors.New(secretError)}
+			}
+			_, err := applyNftablesTransaction(context.Background(), prepareRunner, func() (backend.Runner, error) {
+				return outcomeRunner, nil
+			}, engine.Step{Action: engine.ActionCreate, Node: node}, nftablesTransactionRuntime{
+				NewToken: func() (string, error) { return token, nil },
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) || strings.Contains(err.Error(), secretError) || strings.Contains(err.Error(), token) {
+				t.Fatalf("protected outcome error = %v", err)
+			}
+		})
+	}
+}
+
+func TestNftablesCanceledConfirmationReturnsPendingWithoutReconnect(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	freshCalls := 0
+	_, err := confirmOrRecoverNftablesTransaction(ctx, func() (backend.Runner, error) {
+		freshCalls++
+		return &commandRunner{}, nil
+	}, strings.Repeat("5", 64), "inet", "edge", nftablesPersistencePath("inet", "edge"), nftablesObservedMarkerPath("inet", "edge"), strings.Repeat("6", 64), "present", 30, true, nftablesTransactionRuntime{}.normalized())
+	if err == nil || !strings.Contains(err.Error(), "rollback status: pending") || freshCalls != 0 {
+		t.Fatalf("canceled confirmation error=%v fresh calls=%d", err, freshCalls)
 	}
 }
 
@@ -240,6 +357,7 @@ func TestNftablesProviderScriptsHaveValidShellSyntax(t *testing.T) {
 		"transaction prepare": nftablesTransactionPrepareScript,
 		"embedded watchdog":   nftablesTransactionPrepareScript[watchdogStart:watchdogEnd],
 		"transaction confirm": nftablesTransactionConfirmScript,
+		"transaction outcome": nftablesTransactionOutcomeScript,
 		"service inspect":     nftablesServiceInspectScript,
 		"service apply":       nftablesServiceApplyScript,
 	}

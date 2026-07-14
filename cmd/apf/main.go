@@ -617,7 +617,7 @@ func printUsage(w io.Writer) {
 Usage:
   apf validate
   apf plan [--offline] [--parallel n] [--format text|json] [--html path] [--color auto|always|never]
-  apf apply [--auto-approve] [--parallel n] [--lock-timeout duration] [--debug] [--color auto|always|never]
+  apf apply [--auto-approve] [--allow-network-disruption] [--parallel n] [--lock-timeout duration] [--debug] [--color auto|always|never]
   apf check [--parallel n] [--format text|json] [--color auto|always|never]
   apf fmt
   apf component inspect

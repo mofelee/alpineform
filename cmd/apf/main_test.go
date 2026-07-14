@@ -488,6 +488,7 @@ type fakeOnlineTransport struct {
 	sysctlPersisted         map[string]string
 	sysctlPathKeys          map[string]string
 	sysctlRuntimeApplyCount int
+	lockHook                func()
 }
 
 func newFakeOnlineTransport(osID string) *fakeOnlineTransport {
@@ -526,6 +527,11 @@ func (transport *fakeOnlineTransport) Run(_ context.Context, command corebackend
 		transport.stateWrites++
 		return nil, nil
 	case "lock.acquire":
+		if transport.lockHook != nil {
+			hook := transport.lockHook
+			transport.lockHook = nil
+			hook()
+		}
 		return []byte("acquired\n"), nil
 	case "lock.release":
 		return []byte("released\n"), nil
@@ -934,6 +940,111 @@ func TestApplyRequiresPreviewAndLockedApproval(t *testing.T) {
 	}
 	if len(transport.events) == 0 || transport.events[len(transport.events)-1] != "lock.release" {
 		t.Fatalf("approval rejection events = %#v", transport.events)
+	}
+}
+
+type networkApprovalProvider struct {
+	applied       int
+	nftablesError error
+}
+
+func (*networkApprovalProvider) Inspect(context.Context, coregraph.Node) (coreengine.ObservedResource, error) {
+	return coreengine.ObservedResource{}, nil
+}
+
+func (provider *networkApprovalProvider) Apply(_ context.Context, step coreengine.Step) (coreengine.ObservedResource, error) {
+	if step.Node.Kind == "nftables_table" && provider.nftablesError != nil {
+		return coreengine.ObservedResource{}, provider.nftablesError
+	}
+	provider.applied++
+	return coreengine.ObservedResource{Exists: true, Digest: corestate.Digest(step.Node.Desired), Protected: step.Node.Sensitive}, nil
+}
+
+func (*networkApprovalProvider) Delete(context.Context, coreengine.Step) error { return nil }
+
+func writeNetworkApprovalConfig(t *testing.T, dir string) {
+	t.Helper()
+	content := `
+host "node" {
+  ssh { host = "alpine-alias" }
+  platform {
+    architecture = "amd64"
+    version      = "3.24.1"
+  }
+  nftables {
+    table "edge" {
+      content = "chain input {}"
+    }
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.apf.hcl"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyRequiresExplicitNetworkDisruptionOptionBeyondAutoApprove(t *testing.T) {
+	dir := t.TempDir()
+	writeNetworkApprovalConfig(t, dir)
+	transport := newFakeOnlineTransport("alpine")
+	provider := &networkApprovalProvider{}
+	runtime := fakeOnlineRuntime(transport, "")
+	runtime.Provider = provider
+	var output bytes.Buffer
+	err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &output, dir, nil, runtime)
+	if err == nil || !strings.Contains(err.Error(), "--allow-network-disruption") {
+		t.Fatalf("network approval error = %v", err)
+	}
+	if provider.applied != 0 || transport.stateWrites != 0 || !strings.Contains(output.String(), "risk: network disruption") {
+		t.Fatalf("network approval refusal output=%s applied=%d writes=%d", output.String(), provider.applied, transport.stateWrites)
+	}
+
+	output.Reset()
+	err = runApplyWithRuntime([]string{"--auto-approve", "--allow-network-disruption", "--lock-timeout", "0"}, &output, dir, nil, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.applied != 3 || transport.stateWrites != 1 || !strings.Contains(output.String(), "Network-disrupting changes confirmed") {
+		t.Fatalf("approved network apply output=%s applied=%d writes=%d", output.String(), provider.applied, transport.stateWrites)
+	}
+}
+
+func TestApplyLockedReplanRejectsNewNetworkDisruptionWithoutExplicitOption(t *testing.T) {
+	dir := t.TempDir()
+	writeOnlineHostConfig(t, dir)
+	transport := newFakeOnlineTransport("alpine")
+	provider := &networkApprovalProvider{}
+	transport.lockHook = func() { writeNetworkApprovalConfig(t, dir) }
+	runtime := fakeOnlineRuntime(transport, "")
+	runtime.Provider = provider
+	var output bytes.Buffer
+	err := runApplyWithRuntime([]string{"--auto-approve", "--lock-timeout", "0"}, &output, dir, nil, runtime)
+	if err == nil || !strings.Contains(err.Error(), "--allow-network-disruption") {
+		t.Fatalf("locked network approval error = %v", err)
+	}
+	if provider.applied != 0 || transport.stateWrites != 0 || !strings.Contains(output.String(), "Locked execution plan changed") || !strings.Contains(output.String(), "risk: network disruption") {
+		t.Fatalf("locked network refusal output=%s applied=%d writes=%d", output.String(), provider.applied, transport.stateWrites)
+	}
+}
+
+func TestApplyReportsProtectedNftablesRollbackOutcomes(t *testing.T) {
+	for _, outcome := range []string{"pending", "failed; target-side recovery is required"} {
+		t.Run(outcome, func(t *testing.T) {
+			dir := t.TempDir()
+			writeNetworkApprovalConfig(t, dir)
+			transport := newFakeOnlineTransport("alpine")
+			provider := &networkApprovalProvider{nftablesError: coreengine.NewSafeOperationError("nftables management-path confirmation failed; rollback status: " + outcome)}
+			runtime := fakeOnlineRuntime(transport, "")
+			runtime.Provider = provider
+			var output bytes.Buffer
+			err := runApplyWithRuntime([]string{"--auto-approve", "--allow-network-disruption", "--debug", "--lock-timeout", "0"}, &output, dir, nil, runtime)
+			if err == nil || !strings.Contains(err.Error(), "rollback status: "+outcome) {
+				t.Fatalf("rollback outcome error = %v", err)
+			}
+			if transport.stateWrites != 0 || strings.Contains(output.String(), "Apply complete") {
+				t.Fatalf("rollback outcome output=%s writes=%d", output.String(), transport.stateWrites)
+			}
+		})
 	}
 }
 

@@ -58,9 +58,17 @@ func TestNftablesPlanRequiresExplicitAdoptionBeforeMutation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "adopt_existing") || !strings.Contains(err.Error(), node.Address) {
 		t.Fatalf("implicit nftables adoption error = %v", err)
 	}
+	provider.set(node.Address, ObservedResource{Exists: true, Digest: corestate.Digest(node.Desired), Managed: true})
+	plan, err := actionEngine.Plan(context.Background(), staticBuild(host, node))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Hosts) != 1 || len(plan.Hosts[0].Steps) != 1 || plan.Hosts[0].Steps[0].Action != ActionAdopt {
+		t.Fatalf("marker-proven nftables recovery plan = %#v", plan)
+	}
 	node.Desired["adopt_existing"] = true
 	provider.set(node.Address, ObservedResource{Exists: true, Digest: corestate.Digest(node.Desired)})
-	plan, err := actionEngine.Plan(context.Background(), staticBuild(host, node))
+	plan, err = actionEngine.Plan(context.Background(), staticBuild(host, node))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,5 +96,24 @@ func TestNftablesConfirmationFailureWritesNoSuccessfulState(t *testing.T) {
 	state, writes := backend.snapshot("node")
 	if writes != 0 || len(state.Resources) != 0 {
 		t.Fatalf("failed nftables confirmation state = %#v, writes = %d", state, writes)
+	}
+}
+
+func TestNftablesMutationStepsRequireNetworkDisruptionApproval(t *testing.T) {
+	node := graph.Node{Kind: "nftables_table"}
+	for _, action := range []string{ActionCreate, ActionUpdate, ActionDelete, ActionDestroy} {
+		step := Step{Action: action, Node: node}
+		if !step.IsNetworkDisrupting() || !(Plan{Hosts: []HostPlan{{Steps: []Step{step}}}}).HasNetworkDisruption() {
+			t.Fatalf("nftables %s was not classified as network disrupting", action)
+		}
+	}
+	for _, action := range []string{ActionAdopt, ActionForget, ActionNoOp} {
+		if (Step{Action: action, Node: node}).IsNetworkDisrupting() {
+			t.Fatalf("nftables %s was classified as network disrupting", action)
+		}
+	}
+	orphan := Step{Action: ActionDelete, Prior: &corestate.Resource{Kind: "nftables_table"}}
+	if !orphan.IsNetworkDisrupting() {
+		t.Fatal("recorded orphan nftables delete was not classified as network disrupting")
 	}
 }

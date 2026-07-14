@@ -20,6 +20,9 @@ Online compilation discovers fixed read-only facts before reading or writing
 state. Non-Alpine and platform-mismatched targets fail before state, lock, or
 resource mutation. `apply` shows a preview, acquires a renewable exclusive
 lease, replans, and requires approval of the locked execution plan.
+Nftables mutations add a distinct `network_disruption` plan risk and require
+`--allow-network-disruption` at both preview and locked review; ordinary plan
+approval and `--auto-approve` cannot silently grant firewall authorization.
 
 State is written atomically to `/var/lib/alpineform/state.json` with directory
 mode `0700` and file mode `0600`. The runtime lease lives below `/run/lock` and

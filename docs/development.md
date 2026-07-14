@@ -71,6 +71,13 @@ preserving deterministic result order. Cancellation stops sibling work and the
 lease cleanup path still attempts release. `check` returns an error for any
 non-no-op action and succeeds for a clean plan.
 
+Nftables activation and deletion are marked `network_disruption` in text and
+JSON plans. `apf apply` refuses those steps unless
+`--allow-network-disruption` is present; ordinary interactive approval and
+`--auto-approve` do not imply that authorization. The preview and every locked
+replan are checked independently, so a risk introduced while acquiring the
+lease is rejected before provider or state mutation.
+
 `apply --debug` emits only structural facts/state/lock/inspect/apply/operation/
 cleanup events. Command output, stdin, desired/observed values, and raw
 protected errors are never included.

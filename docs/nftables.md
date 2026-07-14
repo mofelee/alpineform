@@ -191,3 +191,36 @@ the initiating process; the previous active table, persistence, observed and
 arming markers, external table, stock configuration, and state hash were
 preserved; token artifacts were removed; protected logs contained no rule
 content; and the last confirmed table returned after reboot.
+
+## Approval and operator outcomes
+
+Every create, update, recorded delete, or destroy of an owned table is marked
+with the deterministic `network_disruption` risk. Text plans print
+`risk: network disruption`; plan JSON adds `changes[].risks` and
+`summary.network_disruption` without revealing rule content. Adopt, forget,
+and no-op actions are not live activations and do not carry the risk.
+
+`apf apply` requires `--allow-network-disruption` whenever the preview or a
+locked host replan contains such a step. Typing `yes` for ordinary plan review
+or passing `--auto-approve` does not grant this separate authorization. If a
+locked replan introduces the risk, apply stops before provider or state writes.
+
+Fresh confirmation uses bounded two-second connection attempts with
+exponential backoff during the table's rollback timeout. Once that timeout has
+elapsed, AlpineForm stops trying to confirm and only queries the root-only,
+token-digest-bound recovery result for a bounded grace period. Context
+cancellation stops local retries immediately while the detached watchdog stays
+armed. CLI results distinguish:
+
+- confirmed success through the configured management path;
+- activation failure before confirmation, with no rollback required;
+- management-path failure with rollback confirmed;
+- management-path failure with rollback pending and the watchdog still armed;
+- rollback failure requiring target-side recovery.
+
+Only these bounded status strings cross the protected error boundary. SSH
+stderr, transaction tokens, token digests, snapshots, and rules remain hidden.
+If confirmation completed but local state writing was interrupted, the valid
+root-only observed marker proves prior AlpineForm ownership on the next run, so
+state can be reconstructed without weakening adoption checks for external
+tables.

@@ -18,8 +18,10 @@ validation, observation, and deletion behavior.
 
 Configuration inputs use repeatable `-f`; variable inputs use `-var-file` and
 `-var`. Online commands accept bounded parallelism. `apply` also accepts
-`--auto-approve`, `--debug`, and a lock timeout. Use command help for the exact
-flag spelling shipped by the installed binary.
+`--auto-approve`, `--allow-network-disruption`, `--debug`, and a lock timeout.
+The network option is a separate required authorization for live nftables
+activation/deletion and is never implied by `--auto-approve`. Use command help
+for the exact flag spelling shipped by the installed binary.
 
 ## Reusable Model
 

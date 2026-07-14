@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/mofelee/alpineform/internal/core/backend"
 	"github.com/mofelee/alpineform/internal/core/engine"
@@ -14,6 +15,8 @@ type RunnerFactory func(host string) (backend.Runner, error)
 type Native struct {
 	NewRunner        RunnerFactory
 	NewNFTablesToken func() (string, error)
+	NFTablesNow      func() time.Time
+	NFTablesWait     func(context.Context, time.Duration) error
 }
 
 func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.ObservedResource, error) {
@@ -126,7 +129,11 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 	case "nftables_table":
 		return applyNftablesTransaction(ctx, runner, func() (backend.Runner, error) {
 			return provider.runner(step.Host)
-		}, step, provider.NewNFTablesToken)
+		}, step, nftablesTransactionRuntime{
+			NewToken: provider.NewNFTablesToken,
+			Now:      provider.NFTablesNow,
+			Wait:     provider.NFTablesWait,
+		})
 	case "nftables_service":
 		return applyNftablesService(ctx, runner, step.Node)
 	case "component_artifact_source":
@@ -191,7 +198,11 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 	case "nftables_table":
 		return deleteNftablesTransaction(ctx, runner, func() (backend.Runner, error) {
 			return provider.runner(step.Host)
-		}, step, provider.NewNFTablesToken)
+		}, step, nftablesTransactionRuntime{
+			NewToken: provider.NewNFTablesToken,
+			Now:      provider.NFTablesNow,
+			Wait:     provider.NFTablesWait,
+		})
 	case "nftables_service":
 		return fmt.Errorf("AlpineForm nftables service declarations can only be forgotten")
 	case "component_artifact_source":

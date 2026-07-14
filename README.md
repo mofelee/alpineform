@@ -108,6 +108,10 @@ asks for approval of the actual locked plan. A clean `check` exits zero; drift
 prints the required actions and exits nonzero. Remote state is stored at
 `/var/lib/alpineform/state.json` with mode `0600`.
 
+Live nftables activation/deletion is separately marked as network-disrupting
+and requires `apf apply --allow-network-disruption`; `--auto-approve` alone is
+not sufficient.
+
 ## Configuration
 
 Configuration uses `*.apf.hcl`. Variable inputs use

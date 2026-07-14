@@ -32,15 +32,16 @@ type Command struct {
 }
 
 type Summary struct {
-	Create           int `json:"create"`
-	Update           int `json:"update"`
-	Adopt            int `json:"adopt,omitempty"`
-	Delete           int `json:"delete"`
-	Destroy          int `json:"destroy,omitempty"`
-	Forget           int `json:"forget,omitempty"`
-	NoOp             int `json:"no_op"`
-	ManagedResources int `json:"managed_resources"`
-	GraphNodes       int `json:"graph_nodes"`
+	Create            int `json:"create"`
+	Update            int `json:"update"`
+	Adopt             int `json:"adopt,omitempty"`
+	Delete            int `json:"delete"`
+	Destroy           int `json:"destroy,omitempty"`
+	Forget            int `json:"forget,omitempty"`
+	NoOp              int `json:"no_op"`
+	ManagedResources  int `json:"managed_resources"`
+	GraphNodes        int `json:"graph_nodes"`
+	NetworkDisruption int `json:"network_disruption,omitempty"`
 }
 
 type GraphNode struct {
@@ -58,6 +59,7 @@ type Change struct {
 	Summary string         `json:"summary"`
 	Source  ir.SourceRef   `json:"source"`
 	Desired map[string]any `json:"desired,omitempty"`
+	Risks   []string       `json:"risks,omitempty"`
 }
 
 type Options struct {
@@ -97,7 +99,12 @@ func New(resourceGraph *graph.ResourceGraph, options Options) Document {
 		if node.Sensitive || node.Ephemeral {
 			desired = map[string]any{"protected": true}
 		}
-		document.Changes = append(document.Changes, Change{Address: node.Address, Action: action, Summary: node.Summary, Source: node.Source, Desired: desired})
+		change := Change{Address: node.Address, Action: action, Summary: node.Summary, Source: node.Source, Desired: desired}
+		if engine.IsNetworkDisrupting(node.Kind, action) {
+			change.Risks = []string{engine.RiskNetworkDisruption}
+			document.Summary.NetworkDisruption++
+		}
+		document.Changes = append(document.Changes, change)
 		document.addAction(action)
 	}
 	document.Summary.ManagedResources = resourceGraph.ManagedCount()
@@ -126,13 +133,18 @@ func NewOnline(actionPlan engine.Plan, options Options) Document {
 			if step.Node.Kind == "apk_repositories" && stringMapValue(step.Node.Desired, "ownership") == "authoritative" && step.Action != engine.ActionNoOp {
 				summary = authoritativeRepositoriesDiff(summary, stringSliceMapValue(step.Observed.Values, "lines"), stringSliceMapValue(step.Node.Desired, "lines"))
 			}
-			document.Changes = append(document.Changes, Change{
+			change := Change{
 				Address: step.Address,
 				Action:  step.Action,
 				Summary: summary,
 				Source:  step.Node.Source,
 				Desired: desired,
-			})
+			}
+			if step.IsNetworkDisrupting() {
+				change.Risks = []string{engine.RiskNetworkDisruption}
+				document.Summary.NetworkDisruption++
+			}
+			document.Changes = append(document.Changes, change)
 			kind := step.Node.Kind
 			if kind == "" && step.Prior != nil {
 				kind = step.Prior.Kind
@@ -208,6 +220,7 @@ func PrintText(w io.Writer, document Document, options TextOptions) {
 			if change.Summary != "" {
 				fmt.Fprintf(w, "    %s\n", strings.ReplaceAll(change.Summary, "\n", "\n    "))
 			}
+			printRisks(w, change)
 		}
 	}
 	fmt.Fprintln(w)
@@ -235,6 +248,7 @@ func printOnlineText(w io.Writer, document Document, options TextOptions) {
 			if change.Summary != "" {
 				fmt.Fprintf(w, "    %s\n", strings.ReplaceAll(change.Summary, "\n", "\n    "))
 			}
+			printRisks(w, change)
 		}
 	}
 	fmt.Fprintln(w)
@@ -247,6 +261,14 @@ func printOnlineText(w io.Writer, document Document, options TextOptions) {
 		document.Summary.Forget,
 		document.Summary.NoOp,
 	)
+}
+
+func printRisks(w io.Writer, change Change) {
+	for _, risk := range change.Risks {
+		if risk == engine.RiskNetworkDisruption {
+			fmt.Fprintln(w, "    risk: network disruption")
+		}
+	}
 }
 
 func onlineActionColor(action string) string {
@@ -380,10 +402,10 @@ const planHTML = `<!doctype html>
 <body>
 <main>
   <h1>AlpineForm {{if eq .Mode "online"}}online{{else}}offline{{end}} plan</h1>
-  <div class="summary">{{if eq .Mode "online"}}{{.Summary.Create}} create; {{.Summary.Update}} update; {{.Summary.Adopt}} adopt; {{.Summary.Delete}} delete; {{.Summary.Destroy}} destroy; {{.Summary.Forget}} forget; {{.Summary.NoOp}} no-op.{{else}}{{.Summary.GraphNodes}} graph nodes; {{.Summary.ManagedResources}} managed resources; {{.Summary.Create}} to create; {{.Summary.Delete}} to delete.{{end}}</div>
+  <div class="summary">{{if eq .Mode "online"}}{{.Summary.Create}} create; {{.Summary.Update}} update; {{.Summary.Adopt}} adopt; {{.Summary.Delete}} delete; {{.Summary.Destroy}} destroy; {{.Summary.Forget}} forget; {{.Summary.NoOp}} no-op.{{else}}{{.Summary.GraphNodes}} graph nodes; {{.Summary.ManagedResources}} managed resources; {{.Summary.Create}} to create; {{.Summary.Delete}} to delete.{{end}}{{if .Summary.NetworkDisruption}} Network disruption: {{.Summary.NetworkDisruption}}.{{end}}</div>
 {{if eq .Mode "online"}}  <table>
-    <thead><tr><th>Address</th><th>Action</th><th>Summary</th><th>Source</th></tr></thead>
-    <tbody>{{range .Changes}}<tr><td><code>{{.Address}}</code></td><td>{{.Action}}</td><td>{{.Summary}}</td><td><code>{{.Source.File}}:{{.Source.Line}}</code></td></tr>{{end}}</tbody>
+    <thead><tr><th>Address</th><th>Action</th>{{if .Summary.NetworkDisruption}}<th>Risk</th>{{end}}<th>Summary</th><th>Source</th></tr></thead>
+    <tbody>{{range .Changes}}<tr><td><code>{{.Address}}</code></td><td>{{.Action}}</td>{{if $.Summary.NetworkDisruption}}<td>{{range .Risks}}{{.}} {{end}}</td>{{end}}<td>{{.Summary}}</td><td><code>{{.Source.File}}:{{.Source.Line}}</code></td></tr>{{end}}</tbody>
   </table>{{else}}  <table>
     <thead><tr><th>Address</th><th>Kind</th><th>Managed</th><th>Source</th></tr></thead>
     <tbody>{{range .Graph}}<tr><td><code>{{.Address}}</code></td><td>{{.Kind}}</td><td>{{.Managed}}</td><td><code>{{.Source.File}}:{{.Source.Line}}</code></td></tr>{{end}}</tbody>

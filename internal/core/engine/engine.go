@@ -32,6 +32,7 @@ type ObservedResource struct {
 	Values    map[string]any `json:"values,omitempty"`
 	Digest    string         `json:"digest,omitempty"`
 	Protected bool           `json:"protected,omitempty"`
+	Managed   bool           `json:"-"`
 }
 
 func (observed ObservedResource) MarshalJSON() ([]byte, error) {
@@ -48,6 +49,26 @@ type Provider interface {
 	Inspect(ctx context.Context, node graph.Node) (ObservedResource, error)
 	Apply(ctx context.Context, step Step) (ObservedResource, error)
 	Delete(ctx context.Context, step Step) error
+}
+
+type safeOperationError struct {
+	message string
+}
+
+func (err safeOperationError) Error() string       { return err.message }
+func (err safeOperationError) SafeMessage() string { return err.message }
+
+func NewSafeOperationError(message string) error {
+	return safeOperationError{message: message}
+}
+
+func SafeOperationMessage(err error) (string, bool) {
+	var safe interface{ SafeMessage() string }
+	if !errors.As(err, &safe) {
+		return "", false
+	}
+	message := strings.TrimSpace(safe.SafeMessage())
+	return message, message != ""
 }
 
 type Backend interface {
@@ -77,6 +98,8 @@ type Engine struct {
 type Plan struct {
 	Hosts []HostPlan
 }
+
+const RiskNetworkDisruption = "network_disruption"
 
 type HostPlan struct {
 	Host        ir.HostSpec
@@ -114,6 +137,37 @@ func (plan Plan) HasChanges() bool {
 		}
 	}
 	return false
+}
+
+func (plan Plan) HasNetworkDisruption() bool {
+	for _, host := range plan.Hosts {
+		for _, step := range host.Steps {
+			if step.IsNetworkDisrupting() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (step Step) IsNetworkDisrupting() bool {
+	kind := step.Node.Kind
+	if kind == "" && step.Prior != nil {
+		kind = step.Prior.Kind
+	}
+	return IsNetworkDisrupting(kind, step.Action)
+}
+
+func IsNetworkDisrupting(kind, action string) bool {
+	if kind != "nftables_table" {
+		return false
+	}
+	switch action {
+	case ActionCreate, ActionUpdate, ActionDelete, ActionDestroy:
+		return true
+	default:
+		return false
+	}
 }
 
 func (plan Plan) ForHost(name string) (Plan, bool) {
@@ -277,7 +331,7 @@ func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []gra
 		}
 		priorResource, exists := prior.Resources[node.Address]
 		step := planNode(node, priorResource, exists, observed)
-		if node.Kind == "nftables_table" && !exists && observed.Exists && !desiredBool(node.Desired, "adopt_existing") {
+		if node.Kind == "nftables_table" && !exists && observed.Exists && !observed.Managed && !desiredBool(node.Desired, "adopt_existing") {
 			return HostPlan{}, fmt.Errorf("%s:%d:%s: refusing to take ownership of untracked nftables table %s; set adopt_existing = true to authorize adoption", node.Source.File, node.Source.Line, node.Source.Path, node.Address)
 		}
 		if node.Kind == "apk_update" && apkDependenciesChanged(node.DependsOn, plannedActions) {
@@ -454,6 +508,9 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 		case ActionDelete, ActionDestroy:
 			if err := engine.Provider.Delete(ctx, step); err != nil {
 				if stepIsProtected(step) {
+					if message, ok := SafeOperationMessage(err); ok {
+						return fmt.Errorf("%s protected resource %q failed: %s", step.Action, step.Address, message)
+					}
 					return fmt.Errorf("%s protected resource %q failed", step.Action, step.Address)
 				}
 				return fmt.Errorf("%s %s: %w", step.Action, step.Address, err)
@@ -465,6 +522,9 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 			observed, err := engine.Provider.Apply(ctx, step)
 			if err != nil {
 				if stepIsProtected(step) {
+					if message, ok := SafeOperationMessage(err); ok {
+						return fmt.Errorf("%s protected resource %q failed: %s", step.Action, step.Address, message)
+					}
 					return fmt.Errorf("%s protected resource %q failed", step.Action, step.Address)
 				}
 				return fmt.Errorf("%s %s: %w", step.Action, step.Address, err)

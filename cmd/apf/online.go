@@ -186,6 +186,9 @@ func (provider debugProvider) Apply(ctx context.Context, step coreengine.Step) (
 	event.Status = debugStatus(err)
 	emitDebug(provider.events, event)
 	if err != nil && (step.Node.Sensitive || step.Node.Ephemeral) {
+		if message, ok := coreengine.SafeOperationMessage(err); ok {
+			return coreengine.ObservedResource{}, coreengine.NewSafeOperationError(message)
+		}
 		return coreengine.ObservedResource{}, fmt.Errorf("%s protected resource %q failed", step.Action, step.Address)
 	}
 	return observed, err
@@ -198,6 +201,9 @@ func (provider debugProvider) Delete(ctx context.Context, step coreengine.Step) 
 	event.Status = debugStatus(err)
 	emitDebug(provider.events, event)
 	if err != nil && (step.Node.Sensitive || step.Node.Ephemeral || priorProtected(step.Prior)) {
+		if message, ok := coreengine.SafeOperationMessage(err); ok {
+			return coreengine.NewSafeOperationError(message)
+		}
 		return fmt.Errorf("%s protected resource %q failed", step.Action, step.Address)
 	}
 	return err
@@ -447,6 +453,7 @@ func runApplyWithRuntime(args []string, stdout io.Writer, workingDir string, env
 	var configFlags onlineConfigFlags
 	configFlags.bind(fs)
 	autoApprove := fs.Bool("auto-approve", false, "approve preview and locked plans")
+	allowNetworkDisruption := fs.Bool("allow-network-disruption", false, "explicitly approve network-disrupting changes")
 	debug := fs.Bool("debug", false, "emit detailed operation events")
 	lockTimeout := fs.Duration("lock-timeout", 30*time.Second, "maximum time to wait for each host lock")
 	colorMode := fs.String("color", "auto", "color mode: auto, always, or never")
@@ -484,6 +491,9 @@ func runApplyWithRuntime(args []string, stdout io.Writer, workingDir string, env
 		document := coreplan.NewOnline(actionPlan, coreplan.Options{Files: workflow.files})
 		if err := printOnlineDocument(stdout, document, "text", color); err != nil {
 			return err
+		}
+		if actionPlan.HasNetworkDisruption() && !*allowNetworkDisruption {
+			return fmt.Errorf("network-disrupting changes require the explicit --allow-network-disruption option")
 		}
 		if *autoApprove {
 			return nil
@@ -525,6 +535,9 @@ func runApplyWithRuntime(args []string, stdout io.Writer, workingDir string, env
 	}
 	emitDebug(runtime.Events, debugEvent{Phase: "apply", Operation: "apply", Status: "completed"})
 	outputMu.Lock()
+	if actual.HasNetworkDisruption() {
+		fmt.Fprintln(stdout, "Network-disrupting changes confirmed through the configured management path.")
+	}
 	fmt.Fprintf(stdout, "Apply complete: %d host(s).\n", len(actual.Hosts))
 	outputMu.Unlock()
 	return nil

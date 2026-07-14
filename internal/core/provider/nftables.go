@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mofelee/alpineform/internal/core/backend"
 	"github.com/mofelee/alpineform/internal/core/engine"
@@ -22,10 +23,51 @@ const (
 	nftablesOpenRCInitPath       = "/etc/init.d/alpineform-nftables"
 	nftablesRuntimeDirectory     = "/run/alpineform/nftables"
 	nftablesObservedDirectory    = "/var/lib/alpineform/nftables/observed"
+	nftablesRecoveryDirectory    = "/var/lib/alpineform/nftables/recovery"
 )
 
 var providerNftablesIdentityPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]{0,63}$`)
 var providerNftablesTokenPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+const (
+	nftablesConfirmationAttemptTimeout = 2 * time.Second
+	nftablesRecoveryGrace              = 10 * time.Second
+	nftablesInitialRetryBackoff        = 250 * time.Millisecond
+	nftablesMaximumRetryBackoff        = 2 * time.Second
+)
+
+type nftablesTransactionRuntime struct {
+	NewToken       func() (string, error)
+	Now            func() time.Time
+	Wait           func(context.Context, time.Duration) error
+	AttemptTimeout time.Duration
+	RecoveryGrace  time.Duration
+}
+
+func (runtime nftablesTransactionRuntime) normalized() nftablesTransactionRuntime {
+	if runtime.Now == nil {
+		runtime.Now = time.Now
+	}
+	if runtime.Wait == nil {
+		runtime.Wait = func(ctx context.Context, duration time.Duration) error {
+			timer := time.NewTimer(duration)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+				return nil
+			}
+		}
+	}
+	if runtime.AttemptTimeout <= 0 {
+		runtime.AttemptTimeout = nftablesConfirmationAttemptTimeout
+	}
+	if runtime.RecoveryGrace <= 0 {
+		runtime.RecoveryGrace = nftablesRecoveryGrace
+	}
+	return runtime
+}
 
 const nftablesPersistenceInspectScript = `set -eu
 directory=$1
@@ -102,11 +144,13 @@ timeout=$8
 runtime_root=/run/alpineform/nftables
 runtime_parent=/run/alpineform
 observed_root=/var/lib/alpineform/nftables/observed
+recovery_root=/var/lib/alpineform/nftables/recovery
 observed_parent=/var/lib/alpineform/nftables
 state_parent=/var/lib/alpineform
 persistence_base=/etc/nftables.d
 persistence_directory=/etc/nftables.d/alpineform
 arming=/var/lib/alpineform/nftables/armed
+recovery=$recovery_root/$family-$name.status
 transaction=$runtime_root/$token
 candidate=$transaction/candidate.nft
 activation=$transaction/activation.nft
@@ -151,6 +195,11 @@ finish_prepare() {
     : >"$transaction/abort" 2>/dev/null || true
   else
     rm -rf "$transaction"
+    if [ -n "${token_digest:-}" ] && [ -n "${recovery:-}" ] && [ ! -L "$recovery" ]; then
+      printf '%s\n%s\n' "$token_digest" activation_failed >"$recovery" 2>/dev/null || true
+      chown 0:0 "$recovery" 2>/dev/null || true
+      chmod 0600 "$recovery" 2>/dev/null || true
+    fi
   fi
   exit "$status"
 }
@@ -246,6 +295,10 @@ safe_directory "$observed_root"
 mkdir -p "$observed_root"
 chown 0:0 "$observed_root"
 chmod 0700 "$observed_root"
+safe_directory "$recovery_root"
+mkdir -p "$recovery_root"
+chown 0:0 "$recovery_root"
+chmod 0700 "$recovery_root"
 if [ -L "$marker" ] || { [ -e "$marker" ] && [ ! -f "$marker" ]; }; then
   echo 'refusing unsafe nftables observed marker target' >&2
   exit 1
@@ -289,6 +342,16 @@ printf '%s\n' "$timeout" >"$transaction/timeout"
 printf '%s\n' "$fingerprint" >"$transaction/fingerprint"
 printf '%s\n' preparing >"$transaction/status"
 chmod 0600 "$transaction/identity" "$transaction/snapshot.state" "$transaction/timeout" "$transaction/fingerprint" "$transaction/status"
+if [ -L "$recovery" ] || { [ -e "$recovery" ] && [ ! -f "$recovery" ]; }; then
+  echo 'refusing unsafe nftables recovery status target' >&2
+  exit 1
+fi
+token_digest=$(printf '%s' "$token" | sha256sum | awk '{print $1}')
+recovery_tmp=$(mktemp "$recovery_root/.alpineform-nftables-recovery.XXXXXX")
+printf '%s\n%s\n' "$token_digest" pending >"$recovery_tmp"
+chown 0:0 "$recovery_tmp"
+chmod 0600 "$recovery_tmp"
+mv -f "$recovery_tmp" "$recovery"
 
 cat >"$watchdog" <<'ALPINEFORM_NFTABLES_WATCHDOG'
 #!/bin/sh
@@ -298,6 +361,9 @@ transaction=$(CDPATH= cd "${0%/*}" 2>/dev/null && pwd -P) || exit 70
 token=${transaction##*/}
 status=$transaction/status
 action_lock=$transaction/action.lock
+recovery_root=/var/lib/alpineform/nftables/recovery
+family=
+name=
 
 write_status() {
   printf '%s\n' "$1" >"$status" 2>/dev/null || true
@@ -306,7 +372,27 @@ write_status() {
 
 fail_rollback() {
   write_status rollback_failed
+  write_recovery rollback_failed || true
   exit 70
+}
+
+write_recovery() {
+  outcome=$1
+  [ -n "$family" ] && [ -n "$name" ] || return 1
+  if [ -L "$recovery_root" ] || { [ -e "$recovery_root" ] && [ ! -d "$recovery_root" ]; }; then
+    return 1
+  fi
+  mkdir -p "$recovery_root" || return 1
+  chown 0:0 "$recovery_root" || return 1
+  chmod 0700 "$recovery_root" || return 1
+  recovery=$recovery_root/$family-$name.status
+  if [ -L "$recovery" ] || { [ -e "$recovery" ] && [ ! -f "$recovery" ]; }; then
+    return 1
+  fi
+  token_digest=$(printf '%s' "$token" | sha256sum | awk '{print $1}') || return 1
+  tmp=$(mktemp "$recovery_root/.alpineform-nftables-recovery.XXXXXX") || return 1
+  printf '%s\n%s\n' "$token_digest" "$outcome" >"$tmp" || return 1
+  chown 0:0 "$tmp" && chmod 0600 "$tmp" && mv -f "$tmp" "$recovery"
 }
 
 safe_token_path() {
@@ -413,6 +499,7 @@ done
 acquire_rollback || fail_rollback
 [ -f "$transaction/confirmed" ] && cleanup_confirmed
 write_status rollback_pending
+write_recovery rollback_pending || fail_rollback
 
 persistence=/etc/nftables.d/alpineform/$family-$name.nft
 marker=/var/lib/alpineform/nftables/observed/$family-$name.digest
@@ -450,6 +537,7 @@ else
 fi
 
 write_status rollback_complete
+write_recovery rollback_confirmed || fail_rollback
 cd "$runtime_root" || fail_rollback
 rm -rf "$transaction"
 exit 0
@@ -522,6 +610,7 @@ candidate=$transaction/candidate.nft
 expected_file=$transaction/expected.active.sha
 action_lock=$transaction/action.lock
 observed_root=/var/lib/alpineform/nftables/observed
+recovery_root=/var/lib/alpineform/nftables/recovery
 state_root=/var/lib/alpineform/nftables
 arming=$state_root/armed
 service=/etc/init.d/alpineform-nftables
@@ -560,6 +649,25 @@ atomic_copy() {
   chown 0:0 "$tmp"
   chmod 0600 "$tmp"
   mv -f "$tmp" "$target"
+}
+
+write_recovery() {
+  if [ -L "$recovery_root" ] || { [ -e "$recovery_root" ] && [ ! -d "$recovery_root" ]; }; then
+    return 1
+  fi
+  mkdir -p "$recovery_root"
+  chown 0:0 "$recovery_root"
+  chmod 0700 "$recovery_root"
+  recovery=$recovery_root/$family-$name.status
+  if [ -L "$recovery" ] || { [ -e "$recovery" ] && [ ! -f "$recovery" ]; }; then
+    return 1
+  fi
+  token_digest=$(printf '%s' "$token" | sha256sum | awk '{print $1}')
+  tmp=$(mktemp "$recovery_root/.alpineform-nftables-recovery.XXXXXX")
+  printf '%s\n%s\n' "$token_digest" "$1" >"$tmp"
+  chown 0:0 "$tmp"
+  chmod 0600 "$tmp"
+  mv -f "$tmp" "$recovery"
 }
 
 [ "${transaction%/*}" = "$runtime_root" ]
@@ -644,10 +752,12 @@ else
 	[ ! -e "$persistence" ] && [ ! -e "$marker" ]
 fi
 
-printf '%s\n' confirmed >"$transaction/status"
+write_recovery confirmed
 : >"$transaction/confirmed"
-chmod 0600 "$transaction/status" "$transaction/confirmed"
+chmod 0600 "$transaction/confirmed"
 confirmation_complete=true
+printf '%s\n' confirmed >"$transaction/status" 2>/dev/null || true
+chmod 0600 "$transaction/status" 2>/dev/null || true
 
 attempt=0
 while [ "$attempt" -lt 50 ] && [ -d "$transaction" ]; do
@@ -655,6 +765,49 @@ while [ "$attempt" -lt 50 ] && [ -d "$transaction" ]; do
   attempt=$((attempt + 1))
 done
 echo confirmation_complete
+`
+
+const nftablesTransactionOutcomeScript = `set -eu
+token=$1
+family=$2
+name=$3
+runtime_root=/run/alpineform/nftables
+recovery_root=/var/lib/alpineform/nftables/recovery
+transaction=$runtime_root/$token
+recovery=$recovery_root/$family-$name.status
+
+[ ${#token} -eq 64 ]
+case "$token" in *[!0-9a-f]*) exit 1 ;; esac
+case "$family" in arp|bridge|inet|ip|ip6|netdev) ;; *) exit 1 ;; esac
+case "$name" in ''|*[!A-Za-z0-9_-]*|[!A-Za-z_]*) exit 1 ;; esac
+[ ${#name} -le 64 ]
+
+outcome=missing
+if [ ! -L "$transaction" ] && [ -d "$transaction" ]; then
+  if [ -L "$transaction/status" ] || [ ! -f "$transaction/status" ]; then
+    outcome=rollback_failed
+  else
+    status=$(sed -n '1p' "$transaction/status")
+    case "$status" in
+      preparing|awaiting_confirmation|confirming) outcome=pending ;;
+      rollback_pending) outcome=rollback_pending ;;
+      rollback_failed) outcome=rollback_failed ;;
+      confirmed) outcome=confirmed ;;
+      *) outcome=rollback_failed ;;
+    esac
+  fi
+elif [ ! -L "$recovery" ] && [ -f "$recovery" ]; then
+  token_digest=$(printf '%s' "$token" | sha256sum | awk '{print $1}')
+  recorded_digest=$(sed -n '1p' "$recovery")
+  recorded_outcome=$(sed -n '2p' "$recovery")
+  if [ "$recorded_digest" = "$token_digest" ]; then
+    case "$recorded_outcome" in
+      activation_failed|pending|confirmed|rollback_pending|rollback_confirmed|rollback_failed) outcome=$recorded_outcome ;;
+      *) outcome=rollback_failed ;;
+    esac
+  fi
+fi
+printf '%s\n' "$outcome"
 `
 
 const nftablesServiceInspectScript = `set -eu
@@ -855,6 +1008,9 @@ func inspectNftablesPersistence(ctx context.Context, runner backend.Runner, node
 	observed["observed_marker_active_sha256"] = lines[4]
 	observed["observed_marker_ensure"] = lines[5]
 	digest := ""
+	managed := markerState == "file" && providerNftablesTokenPattern.MatchString(lines[3]) &&
+		(providerNftablesTokenPattern.MatchString(lines[4]) || lines[4] == "absent") &&
+		(lines[5] == "present" || lines[5] == "absent")
 	if stringValue(node.Desired, "ensure") == "present" &&
 		persistent.Digest == corestate.Digest(node.Desired) && lines[0] == "present" && markerState == "file" &&
 		lines[3] == fingerprint && lines[4] == lines[1] && lines[5] == "present" {
@@ -862,28 +1018,28 @@ func inspectNftablesPersistence(ctx context.Context, runner backend.Runner, node
 		observed = cloneDesired(node.Desired)
 	}
 	exists := persistent.Exists || lines[0] == "present" || markerState != "missing"
-	return engine.ObservedResource{Exists: exists, Values: observed, Digest: digest, Protected: true}, nil
+	return engine.ObservedResource{Exists: exists, Values: observed, Digest: digest, Protected: true, Managed: managed}, nil
 }
 
-func applyNftablesTransaction(ctx context.Context, runner backend.Runner, freshRunner func() (backend.Runner, error), step engine.Step, newToken func() (string, error)) (engine.ObservedResource, error) {
+func applyNftablesTransaction(ctx context.Context, runner backend.Runner, freshRunner func() (backend.Runner, error), step engine.Step, runtime nftablesTransactionRuntime) (engine.ObservedResource, error) {
 	if stringValue(step.Node.Desired, "ensure") != "present" {
 		return engine.ObservedResource{}, fmt.Errorf("nftables apply transaction requires ensure = \"present\"")
 	}
-	if step.Prior == nil && step.Observed.Exists && !boolValue(step.Node.Desired, "adopt_existing") {
+	if step.Prior == nil && step.Observed.Exists && !step.Observed.Managed && !boolValue(step.Node.Desired, "adopt_existing") {
 		return engine.ObservedResource{}, fmt.Errorf("refusing to replace an untracked nftables table; set adopt_existing = true to take ownership")
 	}
 	content, ok := step.Node.Payload["persistence_content"].(string)
 	if !ok || content == "" {
 		return engine.ObservedResource{}, fmt.Errorf("nftables transaction has no protected candidate payload")
 	}
-	confirmationRunner, err := runNftablesTransaction(ctx, runner, freshRunner, step.Node, content, newToken)
+	confirmationRunner, err := runNftablesTransaction(ctx, runner, freshRunner, step.Node, content, runtime)
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
 	return inspectNftablesPersistence(ctx, confirmationRunner, step.Node)
 }
 
-func deleteNftablesTransaction(ctx context.Context, runner backend.Runner, freshRunner func() (backend.Runner, error), step engine.Step, newToken func() (string, error)) error {
+func deleteNftablesTransaction(ctx context.Context, runner backend.Runner, freshRunner func() (backend.Runner, error), step engine.Step, runtime nftablesTransactionRuntime) error {
 	if step.Action != engine.ActionDelete || step.Prior == nil || step.Prior.Kind != "nftables_table" || step.Prior.Ownership != "managed" {
 		return fmt.Errorf("nftables deletion requires a recorded AlpineForm-owned table")
 	}
@@ -908,11 +1064,12 @@ func deleteNftablesTransaction(ctx context.Context, runner backend.Runner, fresh
 		"observed_marker_path": marker, "activation_fingerprint": fingerprint,
 		"rollback_timeout_seconds": timeout,
 	}}
-	_, err := runNftablesTransaction(ctx, runner, freshRunner, node, "", newToken)
+	_, err := runNftablesTransaction(ctx, runner, freshRunner, node, "", runtime)
 	return err
 }
 
-func runNftablesTransaction(ctx context.Context, runner backend.Runner, freshRunner func() (backend.Runner, error), node graph.Node, candidate string, newToken func() (string, error)) (backend.Runner, error) {
+func runNftablesTransaction(ctx context.Context, runner backend.Runner, freshRunner func() (backend.Runner, error), node graph.Node, candidate string, runtime nftablesTransactionRuntime) (backend.Runner, error) {
+	runtime = runtime.normalized()
 	family, name, persistence, marker, fingerprint, err := desiredNftablesTransactionIdentity(node)
 	if err != nil {
 		return nil, err
@@ -936,37 +1093,150 @@ func runNftablesTransaction(ctx context.Context, runner backend.Runner, freshRun
 			}
 		}
 	}
-	token, err := createNftablesToken(newToken)
+	token, err := createNftablesToken(runtime.NewToken)
 	if err != nil {
 		return nil, err
 	}
-	_, err = runner.Run(ctx, backend.Command{
+	_, prepareErr := runner.Run(ctx, backend.Command{
 		Name: "apply.nftables_transaction_prepare", Script: nftablesTransactionPrepareScript,
 		Arguments: []string{token, family, name, persistence, marker, fingerprint, ensure, strconv.FormatInt(timeout, 10)},
 		Stdin:     []byte(candidate), RedactStdin: true, RedactOutput: true,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("prepare protected nftables activation transaction: %w", err)
-	}
 	if freshRunner == nil {
-		return nil, fmt.Errorf("confirm protected nftables activation: fresh management runner is required")
+		return nil, nftablesOutcomeError("rollback_pending")
 	}
-	confirmationRunner, err := freshRunner()
+	return confirmOrRecoverNftablesTransaction(ctx, freshRunner, token, family, name, persistence, marker, fingerprint, ensure, timeout, prepareErr == nil, runtime)
+}
+
+func confirmOrRecoverNftablesTransaction(
+	ctx context.Context,
+	freshRunner func() (backend.Runner, error),
+	token, family, name, persistence, marker, fingerprint, ensure string,
+	timeout int64,
+	prepared bool,
+	runtime nftablesTransactionRuntime,
+) (backend.Runner, error) {
+	started := runtime.Now()
+	confirmationDeadline := started.Add(time.Duration(timeout) * time.Second)
+	recoveryDeadline := confirmationDeadline.Add(runtime.RecoveryGrace)
+	backoff := nftablesInitialRetryBackoff
+	lastOutcome := "pending"
+	for {
+		if ctx.Err() != nil {
+			return nil, nftablesOutcomeError("rollback_pending")
+		}
+		now := runtime.Now()
+		if prepared && now.Before(confirmationDeadline) {
+			confirmationRunner, err := freshRunner()
+			if err == nil && confirmationRunner != nil {
+				attemptContext, cancel := nftablesAttemptContext(ctx, runtime.AttemptTimeout, confirmationDeadline.Sub(now))
+				_, confirmErr := confirmationRunner.Run(attemptContext, backend.Command{
+					Name: "apply.nftables_transaction_confirm", Script: nftablesTransactionConfirmScript,
+					Arguments:    []string{token, family, name, persistence, marker, fingerprint, ensure},
+					RedactOutput: true,
+				})
+				cancel()
+				if confirmErr == nil {
+					return confirmationRunner, nil
+				}
+			}
+		}
+
+		outcomeRunner, outcome, outcomeErr := inspectNftablesTransactionOutcome(ctx, freshRunner, token, family, name, runtime, recoveryDeadline.Sub(now))
+		if outcomeErr == nil {
+			lastOutcome = outcome
+			switch outcome {
+			case "confirmed":
+				return outcomeRunner, nil
+			case "rollback_confirmed":
+				return nil, nftablesOutcomeError(outcome)
+			case "rollback_failed":
+				return nil, nftablesOutcomeError(outcome)
+			case "activation_failed":
+				return nil, nftablesOutcomeError(outcome)
+			case "missing":
+				if !prepared {
+					return nil, nftablesOutcomeError("activation_failed")
+				}
+			}
+		}
+		if !runtime.Now().Before(recoveryDeadline) {
+			if lastOutcome == "rollback_failed" {
+				return nil, nftablesOutcomeError("rollback_failed")
+			}
+			return nil, nftablesOutcomeError("rollback_pending")
+		}
+		wait := backoff
+		if remaining := recoveryDeadline.Sub(runtime.Now()); wait > remaining {
+			wait = remaining
+		}
+		if err := runtime.Wait(ctx, wait); err != nil {
+			return nil, nftablesOutcomeError("rollback_pending")
+		}
+		if backoff < nftablesMaximumRetryBackoff {
+			backoff *= 2
+			if backoff > nftablesMaximumRetryBackoff {
+				backoff = nftablesMaximumRetryBackoff
+			}
+		}
+	}
+}
+
+func inspectNftablesTransactionOutcome(
+	ctx context.Context,
+	freshRunner func() (backend.Runner, error),
+	token, family, name string,
+	runtime nftablesTransactionRuntime,
+	remaining time.Duration,
+) (backend.Runner, string, error) {
+	runner, err := freshRunner()
 	if err != nil {
-		return nil, fmt.Errorf("create fresh management runner for protected nftables confirmation: %w", err)
+		return nil, "", err
 	}
-	if confirmationRunner == nil {
-		return nil, fmt.Errorf("fresh management runner for protected nftables confirmation is nil")
+	if runner == nil {
+		return nil, "", fmt.Errorf("fresh nftables outcome runner is nil")
 	}
-	_, err = confirmationRunner.Run(ctx, backend.Command{
-		Name: "apply.nftables_transaction_confirm", Script: nftablesTransactionConfirmScript,
-		Arguments:    []string{token, family, name, persistence, marker, fingerprint, ensure},
-		RedactOutput: true,
+	attemptContext, cancel := nftablesAttemptContext(ctx, runtime.AttemptTimeout, remaining)
+	defer cancel()
+	output, err := runner.Run(attemptContext, backend.Command{
+		Name: "inspect.nftables_transaction_outcome", Script: nftablesTransactionOutcomeScript,
+		Arguments: []string{token, family, name}, RedactOutput: true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("confirm protected nftables activation through a fresh management connection; remote rollback remains armed: %w", err)
+		return nil, "", err
 	}
-	return confirmationRunner, nil
+	outcome := strings.TrimSpace(string(output))
+	switch outcome {
+	case "activation_failed", "missing", "pending", "confirmed", "rollback_pending", "rollback_confirmed", "rollback_failed":
+		return runner, outcome, nil
+	default:
+		return nil, "", fmt.Errorf("inspect protected nftables transaction returned an invalid outcome")
+	}
+}
+
+func nftablesAttemptContext(ctx context.Context, maximum, remaining time.Duration) (context.Context, context.CancelFunc) {
+	if remaining > 0 && maximum > remaining {
+		maximum = remaining
+	}
+	if maximum <= 0 {
+		maximum = time.Millisecond
+	}
+	return context.WithTimeout(ctx, maximum)
+}
+
+func nftablesOutcomeError(outcome string) error {
+	message := "nftables activation failed; rollback status: pending"
+	switch outcome {
+	case "activation_failed":
+		message = "nftables activation failed before confirmation; rollback status: not required"
+	case "rollback_confirmed":
+		message = "nftables management-path confirmation failed; rollback status: confirmed"
+	case "rollback_failed":
+		message = "nftables management-path confirmation failed; rollback status: failed; target-side recovery is required"
+	case "rollback_pending":
+		message = "nftables management-path confirmation failed; rollback status: pending; the remote watchdog remains armed"
+	}
+	return engine.NewSafeOperationError(message)
 }
 
 func createNftablesToken(factory func() (string, error)) (string, error) {
