@@ -100,13 +100,15 @@ func TestNftablesProvidersClassifyDegradedPersistenceAndService(t *testing.T) {
 
 func TestNftablesPersistenceScriptsReplaceAtomicallyAndRejectSymlinks(t *testing.T) {
 	root := t.TempDir()
+	owner := strconv.Itoa(os.Getuid())
+	group := strconv.Itoa(os.Getgid())
 	base := filepath.Join(root, "nftables.d")
 	directory := filepath.Join(base, "alpineform")
 	path := filepath.Join(directory, "inet-edge.nft")
 	content := "table inet edge {}\n"
 	runner := localRunner{}
 	if _, err := runner.Run(context.Background(), backend.Command{
-		Script: nftablesPersistenceWriteScript, Arguments: []string{base, directory, path}, Stdin: []byte(content),
+		Script: nftablesPersistenceWriteScript, Arguments: []string{base, directory, path, owner, group}, Stdin: []byte(content),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +131,7 @@ func TestNftablesPersistenceScriptsReplaceAtomicallyAndRejectSymlinks(t *testing
 		t.Fatal(err)
 	}
 	_, err = runner.Run(context.Background(), backend.Command{
-		Script: nftablesPersistenceWriteScript, Arguments: []string{base, directory, path}, Stdin: []byte("replacement\n"),
+		Script: nftablesPersistenceWriteScript, Arguments: []string{base, directory, path, owner, group}, Stdin: []byte("replacement\n"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "symbolic-link") {
 		t.Fatalf("symlink replacement error = %v", err)

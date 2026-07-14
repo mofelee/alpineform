@@ -57,6 +57,8 @@ const nftablesPersistenceWriteScript = `set -eu
 base=$1
 directory=$2
 path=$3
+owner=$4
+group=$5
 if [ -L "$base" ] || { [ -e "$base" ] && [ ! -d "$base" ]; }; then
   echo 'refusing unsafe nftables base directory' >&2
   exit 1
@@ -67,7 +69,7 @@ if [ -L "$directory" ] || { [ -e "$directory" ] && [ ! -d "$directory" ]; }; the
   exit 1
 fi
 mkdir -p "$directory"
-chown 0:0 "$directory"
+chown "$owner:$group" "$directory"
 chmod 0700 "$directory"
 if [ -L "$path" ]; then
   echo 'refusing symbolic-link nftables persistence target' >&2
@@ -81,7 +83,7 @@ tmp=$(mktemp "$directory/.alpineform-nftables.XXXXXX")
 cleanup() { rm -f "$tmp"; }
 trap cleanup EXIT HUP INT TERM
 cat >"$tmp"
-chown 0:0 "$tmp"
+chown "$owner:$group" "$tmp"
 chmod 0600 "$tmp"
 mv -f "$tmp" "$path"
 trap - EXIT HUP INT TERM
@@ -287,7 +289,7 @@ func applyNftablesPersistence(ctx context.Context, runner backend.Runner, step e
 	}
 	_, err = runner.Run(ctx, backend.Command{
 		Name: "apply.nftables_persistence", Script: nftablesPersistenceWriteScript,
-		Arguments: []string{"/etc/nftables.d", nftablesPersistenceDirectory, path},
+		Arguments: []string{"/etc/nftables.d", nftablesPersistenceDirectory, path, "0", "0"},
 		Stdin:     []byte(content), RedactStdin: true, RedactOutput: true,
 	})
 	if err != nil {
