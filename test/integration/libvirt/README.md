@@ -29,6 +29,11 @@ Every numbered configuration runs these blocking phases:
 
 Later numbered configurations cover removal semantics. The APK case proves
 declaration removal is forget-only before an explicit `ensure = "absent"`.
+The Docker case proves package-version evidence, candidate preflight, protected
+values, invalid-daemon isolation, daemon crash recovery, partial/degraded drift
+repair, fresh running/stopped reboot persistence, project forget/adopt, scoped
+destroy with retained volumes, explicit absence, and service/package removal
+ordering.
 The account and lifecycle cases prove recorded destroy ordering. The layout
 validator requires contiguous configs, a check hook for every step, at least
 one drift hook per case, pinned offline facts, shell syntax, and no committed

@@ -12,7 +12,7 @@ Status meanings:
 
 | Target | Status | Evidence and boundary |
 | --- | --- | --- |
-| Alpine 3.24 x86_64, persistent install, OpenRC | Beta | [Eight-case VM matrix](../test/integration/libvirt/cases) and aggregate [CI gate](../.github/workflows/ci.yml) |
+| Alpine 3.24 x86_64, persistent install, OpenRC | Beta | [Nine-case VM matrix](../test/integration/libvirt/cases) and aggregate [CI gate](../.github/workflows/ci.yml) |
 | Alpine 3.24 aarch64 | Preview | [Fact normalization test](../internal/core/engine/facts_test.go) and [Linux arm64 cross-build](../.github/workflows/ci.yml); no real-VM gate |
 | Alpine 3.23 and earlier | Unsupported | [Fact rejection tests](../internal/core/engine/facts_test.go) reject other branches before write-capable execution |
 | Alpine edge | Unsupported | [Fact rejection tests](../internal/core/engine/facts_test.go) reject a rolling version before write-capable execution |
@@ -36,6 +36,7 @@ Status meanings:
 | Binary and archive components, shared `on_change` scripts | Beta | [`components`](../test/integration/libvirt/cases/components) |
 | File and CA-certificate components | Preview | [Compiler tests](../internal/core/merge/components_test.go), [graph tests](../internal/core/graph/components_test.go), and [provider tests](../internal/core/provider/component_archive_test.go); no blocking VM fixture |
 | `prevent_destroy`, forget, and recorded destroy | Beta | [`lifecycle`](../test/integration/libvirt/cases/lifecycle), [`accounts`](../test/integration/libvirt/cases/accounts), and [`apk`](../test/integration/libvirt/cases/apk) |
+| Docker Engine, OpenRC, daemon configuration, and Compose | Preview | [`docker`](../test/integration/libvirt/cases/docker), [compiler/graph tests](../internal/core/merge/docker_test.go), and [provider tests](../internal/core/provider/docker_test.go); Alpine `community` lifecycle and no aarch64 VM gate keep this outside Beta |
 
 All VM cases validate, build an offline plan, build an observed plan, apply,
 assert a JSON no-op plan, run clean `check`, introduce drift where applicable,
@@ -57,9 +58,9 @@ promote Alpine aarch64 target support.
 
 ## Deferred Follow-Ups
 
-- Docker Engine and Compose: issue #10.
 - Rollback-safe nftables: issue #13.
 - Target-side component source builds: issue #14.
 
-These are not dormant schema. Their absence does not fail the v0.1 core gate or
-make them part of the Beta support promise.
+Docker and Compose are implemented Preview schema and remain outside the v0.1
+core/Beta promise. The two items above are not dormant schema; their absence
+does not fail the v0.1 core gate.

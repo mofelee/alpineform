@@ -43,6 +43,12 @@ func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.Obs
 		return inspectPackage(ctx, runner, node)
 	case "service":
 		return inspectService(ctx, runner, node)
+	case "docker_service":
+		return inspectService(ctx, runner, node)
+	case "docker_daemon_config":
+		return inspectDockerDaemonConfig(ctx, runner, node)
+	case "docker_compose_project":
+		return inspectDockerComposeProject(ctx, runner, node)
 	case "system_hostname":
 		return inspectSystemHostname(ctx, runner, node)
 	case "system_timezone":
@@ -96,6 +102,12 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 		return applyPackage(ctx, runner, step.Node)
 	case "service":
 		return applyService(ctx, runner, step)
+	case "docker_service":
+		return applyDockerService(ctx, runner, step)
+	case "docker_daemon_config":
+		return applyDockerDaemonConfig(ctx, runner, step.Node)
+	case "docker_compose_project":
+		return applyDockerComposeProject(ctx, runner, step.Node)
 	case "system_hostname":
 		return applySystemHostname(ctx, runner, step.Node)
 	case "system_timezone":
@@ -153,6 +165,12 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 		return deletePackage(ctx, runner, step)
 	case "service":
 		return fmt.Errorf("OpenRC service declarations can only be forgotten; disable or stop the service explicitly first")
+	case "docker_service":
+		return deleteDockerService(ctx, runner, step)
+	case "docker_daemon_config":
+		return deleteDockerDaemonConfig(ctx, runner, step)
+	case "docker_compose_project":
+		return deleteDockerComposeProject(ctx, runner, step)
 	case "system_hostname", "system_timezone":
 		return fmt.Errorf("system declarations can only be forgotten when removed")
 	case "kernel_module", "sysctl_runtime":

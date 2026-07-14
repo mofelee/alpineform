@@ -310,6 +310,16 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 			return ir.HostSpec{}, err
 		}
 	}
+	if host.Docker != nil {
+		out.Docker, err = compileDocker(*host.Docker, host, facts, out.APK, hostContext)
+		if err != nil {
+			return ir.HostSpec{}, err
+		}
+		out.APK, err = ensureDockerAPK(out.APK, out.Docker, host, facts)
+		if err != nil {
+			return ir.HostSpec{}, err
+		}
+	}
 	if host.System != nil {
 		out.System, err = compileSystem(*host.System, host, facts, hostContext)
 		if err != nil {
@@ -324,6 +334,12 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	}
 	out.Files, out.Directories, out.Groups, out.Users, out.Packages, out.Services, err = compileHostNativeResources(host, out.APK, facts, hostContext)
 	if err != nil {
+		return ir.HostSpec{}, err
+	}
+	if err := integrateDockerNativeResources(&out); err != nil {
+		return ir.HostSpec{}, err
+	}
+	if err := validateNativeResourceRelationships(out.Files, out.Directories, out.Groups, out.Users); err != nil {
 		return ir.HostSpec{}, err
 	}
 	out.Files, err = resolveFileScriptReferences(out.Files, nil, out.Scripts)

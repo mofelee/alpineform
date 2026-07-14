@@ -258,6 +258,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 			})
 		}
 		appendServiceNodes(graph, host, hostAddress)
+		appendDockerNodes(graph, host, hostAddress)
 		for _, component := range host.Components {
 			address := hostAddress + ".component." + component.Name
 			dependencies := []string{hostAddress}
@@ -590,6 +591,10 @@ func appendPackageNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddr
 		if host.APK != nil && (len(host.APK.Keys) > 0 || len(host.APK.Repositories) > 0 || host.APK.Ownership == "authoritative") {
 			dependencies = append(dependencies, hostAddress+".apk.update")
 		}
+		if host.Docker != nil && host.Docker.Ensure == "absent" && (pkg.Name == "docker" || pkg.Name == "docker-cli-compose") {
+			dependencies = append(dependencies, dockerServiceAddress(host.Name))
+		}
+		sort.Strings(dependencies)
 		resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
 			Host: host.Name, Address: packageResourceAddress(host.Name, pkg.Name), Kind: "package", Managed: true,
 			Summary: packageSummary(pkg), Source: pkg.Source, Lifecycle: &pkg.Lifecycle,

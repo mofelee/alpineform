@@ -24,6 +24,13 @@ complete program with those facts, reads state, and inspects managed resources.
 The plan is therefore derived from observed state rather than the last state
 snapshot alone.
 
+Docker is compiled as a host domain rather than a compatibility component. It
+reuses native APK, group, membership, and OpenRC providers while dedicated
+daemon-config and Compose providers preserve validation-before-mutation and
+runtime observation. The graph orders package/repository readiness before the
+daemon, aggregates daemon changes into one service restart, and reverses project,
+service, configuration, and package dependencies for explicit absence.
+
 An apply is a two-review transaction: preview, lease acquisition, locked
 replan, approval, provider operations, and atomic state persistence. The graph
 orders dependencies and aggregates `on_change` or service triggers so one

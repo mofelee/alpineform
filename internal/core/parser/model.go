@@ -117,9 +117,17 @@ type Host struct {
 	OpenRC     *OpenRC
 	System     *System
 	Kernel     *Kernel
+	Docker     *Docker
 	Components []ComponentInstance
 	Resources  []ResourceDeclaration
 	Asserts    []Assert
+	Source     ir.SourceRef
+}
+
+type Docker struct {
+	Attributes map[string]ResourceAttribute
+	Projects   []ResourceDeclaration
+	Lifecycle  Lifecycle
 	Source     ir.SourceRef
 }
 
@@ -521,6 +529,15 @@ func parseHost(file string, block *hclsyntax.Block, ctx EvalContext) (Host, erro
 				return Host{}, err
 			}
 			host.Kernel = &kernel
+		case "docker":
+			if host.Docker != nil {
+				return Host{}, fmt.Errorf("%s:%d: duplicate %s.docker block", file, child.TypeRange.Start.Line, path)
+			}
+			docker, err := parseDocker(file, path+".docker", child, ctx)
+			if err != nil {
+				return Host{}, err
+			}
+			host.Docker = &docker
 		case "ssh":
 			if host.SSH.Source.Path != host.Source.Path {
 				return Host{}, fmt.Errorf("%s:%d: duplicate %s.ssh block", file, child.TypeRange.Start.Line, path)

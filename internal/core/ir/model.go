@@ -98,6 +98,7 @@ type HostSpec struct {
 	OpenRC      []OpenRCServiceSpec     `json:"openrc,omitempty"`
 	System      *SystemSpec             `json:"system,omitempty"`
 	Kernel      *KernelSpec             `json:"kernel,omitempty"`
+	Docker      *DockerSpec             `json:"docker,omitempty"`
 	Components  []ComponentInstanceSpec `json:"components,omitempty"`
 	Scripts     map[string]ScriptSpec   `json:"scripts,omitempty"`
 	Files       []ManagedFileSpec       `json:"files,omitempty"`
@@ -107,6 +108,51 @@ type HostSpec struct {
 	Packages    []PackageSpec           `json:"packages,omitempty"`
 	Services    []ServiceSpec           `json:"services,omitempty"`
 	Source      SourceRef               `json:"source"`
+}
+
+type DockerSpec struct {
+	Ensure            string                  `json:"ensure"`
+	Enabled           bool                    `json:"enabled"`
+	PackageSource     string                  `json:"package_source"`
+	PackageRepository string                  `json:"package_repository,omitempty"`
+	Members           []string                `json:"members,omitempty"`
+	DaemonConfig      *DockerDaemonConfigSpec `json:"daemon_config,omitempty"`
+	Projects          []DockerProjectSpec     `json:"projects,omitempty"`
+	Lifecycle         LifecycleSpec           `json:"lifecycle"`
+	Source            SourceRef               `json:"source"`
+}
+
+type DockerDaemonConfigSpec struct {
+	Content          string    `json:"-"`
+	ContentSHA256    string    `json:"content_sha256,omitempty"`
+	ContentBytes     int64     `json:"content_bytes,omitempty"`
+	ContentVersion   string    `json:"content_version,omitempty"`
+	ContentWriteOnly bool      `json:"content_write_only,omitempty"`
+	Sensitive        bool      `json:"sensitive,omitempty"`
+	Ephemeral        bool      `json:"ephemeral,omitempty"`
+	Source           SourceRef `json:"source"`
+}
+
+type DockerProjectSpec struct {
+	Name             string        `json:"name"`
+	Directory        string        `json:"directory"`
+	Compose          string        `json:"-"`
+	ComposeSHA256    string        `json:"compose_sha256,omitempty"`
+	ComposeBytes     int64         `json:"compose_bytes,omitempty"`
+	ComposeVersion   string        `json:"compose_version,omitempty"`
+	ComposeWriteOnly bool          `json:"compose_write_only,omitempty"`
+	Env              string        `json:"-"`
+	EnvSHA256        string        `json:"env_sha256,omitempty"`
+	EnvBytes         int64         `json:"env_bytes,omitempty"`
+	EnvVersion       string        `json:"env_version,omitempty"`
+	EnvWriteOnly     bool          `json:"env_write_only,omitempty"`
+	HasEnv           bool          `json:"has_env,omitempty"`
+	State            string        `json:"state"`
+	OnRemove         string        `json:"on_remove"`
+	Sensitive        bool          `json:"sensitive,omitempty"`
+	Ephemeral        bool          `json:"ephemeral,omitempty"`
+	Lifecycle        LifecycleSpec `json:"lifecycle"`
+	Source           SourceRef     `json:"source"`
 }
 
 type KernelSpec struct {

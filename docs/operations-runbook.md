@@ -54,6 +54,17 @@ managers against the same paths, accounts, packages, services, or sysctls.
 Managed APK ownership preserves external lines; authoritative ownership replaces
 the entire repository file and must be reviewed as such.
 
+For Docker drift, inspect `rc-service docker status`, `docker info`, and the
+declared project's `docker compose ps --all` output directly on the target.
+Do not publish `.env`, Compose content, daemon configuration, or container
+environment. A Docker-invalid daemon candidate never replaces the current file;
+a Compose-invalid candidate never invokes `up`, `stop`, or `down`. Correct the
+candidate and re-run the normal plan/apply/check sequence. If a declaration was
+forgotten, reintroduce it to adopt/repair the observed project before requesting
+explicit `state = "absent"` or `on_remove = "destroy"`. A forgotten project
+with write-only content is repaired rather than blindly adopted because its
+remote secret cannot be compared after state loss.
+
 ## Uninstall
 
 Removing the control-host binary does not change a target. Remove it with:

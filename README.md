@@ -23,9 +23,11 @@ a fresh Alpine 3.24.1 VM through apply, no-op plan, drift and repair where
 applicable, and reboot.
 
 Alpine 3.24 aarch64 remains Preview because it has cross-build and selector
-coverage but no blocking real-VM gate. Docker (#10), rollback-safe nftables
-(#13), and target-side source builds (#14) are independent follow-ups and are
-not part of the v0.1 core. See the complete [support matrix](docs/support-matrix.md).
+coverage but no blocking real-VM gate. Docker Engine and Compose are an
+implemented Preview domain with a dedicated Alpine 3.24 x86_64 VM gate; they
+remain outside the v0.1 core promise because they depend on Alpine `community`.
+Rollback-safe nftables (#13) and target-side source builds (#14) remain
+independent follow-ups. See the complete [support matrix](docs/support-matrix.md).
 
 ## Install
 
@@ -123,6 +125,7 @@ domain guides:
 - [OpenRC services](docs/openrc.md)
 - [system settings](docs/system.md) and [kernel settings](docs/kernel.md)
 - [components and change scripts](docs/components.md)
+- [Docker Engine and Compose](docs/docker.md) (Preview)
 
 Operational contracts are covered by the [architecture](docs/architecture.md),
 [state backend](docs/state-backend.md), [lock model](docs/locking.md),

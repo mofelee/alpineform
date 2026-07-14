@@ -2,6 +2,7 @@ package merge
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/mofelee/alpineform/internal/core/ir"
 	"github.com/mofelee/alpineform/internal/core/parser"
@@ -42,10 +43,47 @@ func validateComponentResourceCollisions(host ir.HostSpec) error {
 	add := func(kind, name string, source ir.SourceRef) error {
 		key := kind + "\x00" + name
 		if previous, exists := seen[key]; exists {
-			return fmt.Errorf("%s:%d:%s: component %s %q conflicts with %s declared at %s:%d:%s", source.File, source.Line, source.Path, kind, name, previous.kind, previous.source.File, previous.source.Line, previous.source.Path)
+			return fmt.Errorf("%s:%d:%s: %s %q conflicts with %s declared at %s:%d:%s", source.File, source.Line, source.Path, kind, name, previous.kind, previous.source.File, previous.source.Line, previous.source.Path)
 		}
 		seen[key] = owner{kind: kind, name: name, source: source}
 		return nil
+	}
+	if host.Docker != nil {
+		docker := host.Docker
+		if err := add("service", "docker", docker.Source); err != nil {
+			return err
+		}
+		if docker.DaemonConfig != nil || docker.Ensure == "absent" {
+			if err := add("path", "/etc/docker/daemon.json", docker.Source); err != nil {
+				return err
+			}
+		}
+		for _, member := range docker.Members {
+			if err := add("membership", member+" in docker", docker.Source); err != nil {
+				return err
+			}
+			for _, component := range host.Components {
+				for _, user := range component.Users {
+					if user.Name == member && user.Ensure == "absent" {
+						return resourceError(docker.Source, "Docker member %q is declared absent by component %q", member, component.Name)
+					}
+				}
+			}
+		}
+		for _, project := range docker.Projects {
+			for _, path := range []string{project.Directory, filepath.Join(project.Directory, "compose.yaml"), filepath.Join(project.Directory, ".env")} {
+				if err := add("path", path, project.Source); err != nil {
+					return err
+				}
+			}
+		}
+		for _, service := range host.OpenRC {
+			if service.Name == "docker" {
+				if err := add("service", service.Name, service.Source); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	for _, file := range host.Files {
 		if err := add("path", file.Path, file.Source); err != nil {
@@ -65,6 +103,11 @@ func validateComponentResourceCollisions(host ir.HostSpec) error {
 	for _, user := range host.Users {
 		if err := add("user", user.Name, user.Source); err != nil {
 			return err
+		}
+		for _, membership := range user.Groups {
+			if err := add("membership", user.Name+" in "+membership.Group, membership.Source); err != nil {
+				return err
+			}
 		}
 	}
 	for _, pkg := range host.Packages {
@@ -102,6 +145,11 @@ func validateComponentResourceCollisions(host ir.HostSpec) error {
 			if err := add("user", user.Name, user.Source); err != nil {
 				return err
 			}
+			for _, membership := range user.Groups {
+				if err := add("membership", user.Name+" in "+membership.Group, membership.Source); err != nil {
+					return err
+				}
+			}
 		}
 		for _, pkg := range component.Packages {
 			if err := add("package", pkg.Name, pkg.Source); err != nil {
@@ -111,6 +159,15 @@ func validateComponentResourceCollisions(host ir.HostSpec) error {
 		for _, service := range component.Services {
 			if err := add("service", service.Name, service.Source); err != nil {
 				return err
+			}
+		}
+		if host.Docker != nil {
+			for _, service := range component.OpenRC {
+				if service.Name == "docker" {
+					if err := add("service", service.Name, service.Source); err != nil {
+						return err
+					}
+				}
 			}
 		}
 	}

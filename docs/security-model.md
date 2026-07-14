@@ -43,6 +43,23 @@ special files, unsafe names, and post-strip collisions. APK repositories accept
 HTTPS URLs without embedded credentials, queries, or fragments. AlpineForm does
 not invoke distribution upgrades.
 
+## Docker And Compose
+
+Docker packages come only from the supported Alpine repository set or an
+explicit tagged APK resource; AlpineForm never adds Docker's upstream or a
+Debian repository. Daemon JSON is canonicalized, staged, validated by
+`dockerd --validate`, and atomically replaced before the single graph-triggered
+OpenRC restart.
+
+Compose and env content travel through protected SSH stdin into a temporary
+mode-`0700` directory. `docker compose config --quiet` must accept the complete
+candidate before persistent files or runtime state change. Persistent project
+files use mode `0600`. Project names and paths are validated provider arguments,
+not shell source. Explicit project deletion is label- and path-scoped and never
+removes volumes or images. Sensitive or ephemeral payloads, remote stderr, and
+content-derived ephemeral digests are omitted from serialized and diagnostic
+surfaces.
+
 ## Release Supply Chain
 
 Release binaries use `CGO_ENABLED=0`, pinned GoReleaser tooling, and four fixed

@@ -4,7 +4,23 @@ All notable user-visible changes to AlpineForm are recorded here.
 
 ## [Unreleased]
 
-None.
+### Added
+
+- Add a Preview Alpine-native Docker Engine and Compose domain with official or
+  explicitly tagged APK sources, OpenRC convergence, group membership,
+  validated atomic daemon configuration, deduplicated restart, Compose
+  preflight, running/stopped/absent intent, stable observed classification,
+  protected env content, and scoped forget/destroy behavior.
+- Add a blocking ninth Alpine 3.24.1 x86_64 VM case covering fresh install,
+  package versions, no-op, invalid daemon/Compose isolation, crash recovery,
+  partial/degraded drift repair, reboot, fresh stopped projects, project
+  forget/adopt, scoped destroy, absence, and complete Docker removal.
+
+### Compatibility
+
+- The Docker DSL and `host.<name>.docker.*` resource addresses are additive
+  alpha interfaces. Docker remains Preview and outside the v0.1 core/Beta
+  promise.
 
 ## [v0.1.0-alpha.5] - 2026-07-13
 
