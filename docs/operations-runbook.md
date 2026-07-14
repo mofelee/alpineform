@@ -47,6 +47,70 @@ Use `apf apply --debug` for structural fact, state, lock, inspect, operation,
 apply, and cleanup events. Debug does not include command stdin/output or
 protected values.
 
+## nftables Approval And Recovery
+
+Every live nftables create, update, repair, or recorded delete is marked
+`risk: network disruption`. Review the exact `(family, name)` table, confirm
+out-of-band target access, and pass `--allow-network-disruption` deliberately.
+Interactive plan approval and `--auto-approve` are separate decisions and do
+not imply this authorization.
+
+The CLI reports only bounded outcomes: confirmed, activation failure with no
+rollback required, rollback confirmed, rollback pending, or rollback failed.
+To inspect the durable outcome on the target without printing its protected
+token digest, read only line two of the fixed table status file:
+
+```sh
+family=inet
+table=alpineform_filter
+status=/var/lib/alpineform/nftables/recovery/$family-$table.status
+test -f "$status" && sed -n '2p' "$status"
+```
+
+For `pending` or `rollback_pending`, stop new automation and wait at least the
+declared `rollback_timeout`. The detached watchdog may still own the live
+transaction. Do not delete, rename, copy, or modify anything below
+`/run/alpineform/nftables`, and do not restart nftables services. Reconnect
+through the original management path, read line two again, and require
+`rollback_confirmed` before running `apf plan` and `apf check`.
+
+For `rollback_failed`, use an out-of-band console, keep automation stopped, and
+preserve the root-only transaction directory and recovery file. Correct the
+reported target-side cause first, such as a full filesystem, unsafe target
+type, or failing `nft` command. If exactly one failed transaction remains and
+its recorded watchdog process is no longer live, the validated watchdog can
+retry the same scoped snapshot restoration without revealing its token:
+
+```sh
+family=inet
+table=alpineform_filter
+status=/var/lib/alpineform/nftables/recovery/$family-$table.status
+set -- /run/alpineform/nftables/*
+[ "$#" -eq 1 ] && [ -d "$1" ] || exit 1
+transaction=$1
+[ "$(stat -c '%u:%g:%a' "$transaction")" = 0:0:700 ] || exit 1
+[ "$(stat -c '%u:%g:%a' "$transaction/watchdog.sh")" = 0:0:700 ] || exit 1
+[ "$(sed -n '1p' "$transaction/status")" = rollback_failed ] || exit 1
+pid=$(sed -n '1p' "$transaction/watchdog.pid")
+start=$(sed -n '1p' "$transaction/watchdog.start")
+[ -n "$pid" ] && [ -n "$start" ] || exit 1
+case "$pid:$start" in *[!0-9:]*) exit 1 ;; esac
+if [ -r "/proc/$pid/stat" ] &&
+  [ "$(awk '{print $22}' "/proc/$pid/stat")" = "$start" ]; then
+  exit 1
+fi
+(cd "$transaction" && sh ./watchdog.sh)
+test "$(sed -n '2p' "$status")" = rollback_confirmed
+```
+
+The retry revalidates the token-scoped path, family/name identity, snapshot
+metadata, and action lock before touching the declared table. If it still
+fails, leave all artifacts in place for protected incident analysis. Never use
+`nft flush ruleset`, never publish the transaction directory or recovery file,
+and never remove failed artifacts merely to make a later apply proceed. After
+confirmed recovery, verify the named table, its dedicated persistence, external
+tables, `apf plan`, and `apf check` before resuming automation.
+
 ## Drift And External Managers
 
 `apf check` exits nonzero for drift and unapplied intent. Do not run competing

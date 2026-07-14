@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SCRIPT_DIR="$ROOT_DIR/test/integration/libvirt"
 CASES_DIR="$SCRIPT_DIR/cases"
-EXPECTED_CASE_COUNT=9
+EXPECTED_CASE_COUNT=10
 APF_BIN="${APF_INTEGRATION_APF_BIN:-}"
 TEMP_APF=""
 TEMP_PLAN=""
@@ -51,6 +51,14 @@ case_count=0
 while IFS= read -r case_dir; do
   case_count=$((case_count + 1))
   case_name="$(basename "$case_dir")"
+  if [[ -f "$case_dir/.allow-network-disruption" && "$case_name" != nftables ]]; then
+    printf '%s: only the nftables case may pre-authorize network disruption\n' "$case_name" >&2
+    failed=1
+  fi
+  if [[ "$case_name" == nftables && ! -f "$case_dir/.allow-network-disruption" ]]; then
+    printf 'nftables: missing explicit network disruption case marker\n' >&2
+    failed=1
+  fi
   configs=()
   next_step=1
   while [[ -f "$case_dir/$next_step.apf.hcl" ]]; do

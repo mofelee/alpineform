@@ -43,6 +43,7 @@ INTERRUPTED=0
 ASSERTION_COUNT=0
 CURRENT_STEP=""
 APF_TEST_PHASE=""
+declare -a CASE_APPLY_RISK_ARGS=()
 
 log() {
   printf '[integration:%s] %s\n' "$CASE_NAME" "$*"
@@ -196,6 +197,8 @@ collect_diagnostics() {
   find "$ARTIFACT_DIR" -type f -exec sed -i -E \
     -e 's/(ssh-(ed25519|rsa|ecdsa)[[:space:]]+)[A-Za-z0-9+\/=]+/\1<redacted>/g' \
     -e 's/("key_blob"[[:space:]]*:[[:space:]]*")[^"]+"/\1<redacted>"/g' \
+    -e 's/[0-9a-f]{64}/<redacted-sha256>/g' \
+    -e 's/(active|persistent|marker|arming)\.snapshot[^[:space:]]*/<redacted-snapshot>/g' \
     -e 's/alpineform-ci-secret-sentinel/<redacted-sensitive>/g' \
     {} + 2>/dev/null || true
 }
@@ -424,6 +427,9 @@ if [[ -f "$CASE_DIR/negative.sh" ]]; then
   APF_TEST_PHASE=negative
   run_hook "$CASE_DIR/negative.sh"
 fi
+if [[ -f "$CASE_DIR/.allow-network-disruption" ]]; then
+  CASE_APPLY_RISK_ARGS+=(--allow-network-disruption)
+fi
 
 declare -a CONFIGS=()
 next_step=1
@@ -446,7 +452,7 @@ for config in "${CONFIGS[@]}"; do
   apf plan --offline -f "$config" --format json | tee "$LOG_DIR/$CURRENT_STEP.offline-plan.json"
   log "step $CURRENT_STEP: online plan and apply"
   apf plan -f "$config" --format json | tee "$LOG_DIR/$CURRENT_STEP.pre-apply-plan.json"
-  apf apply -f "$config" --auto-approve --color never | tee "$LOG_DIR/$CURRENT_STEP.apply.log"
+  apf apply -f "$config" --auto-approve "${CASE_APPLY_RISK_ARGS[@]}" --color never | tee "$LOG_DIR/$CURRENT_STEP.apply.log"
   apf plan -f "$config" --format json | tee "$LOG_DIR/$CURRENT_STEP.noop-plan.json"
   python3 "$SCRIPT_DIR/assert-noop-plan.py" "$LOG_DIR/$CURRENT_STEP.noop-plan.json"
   apf check -f "$config" --color never | tee "$LOG_DIR/$CURRENT_STEP.check.log"
@@ -461,7 +467,7 @@ for config in "${CONFIGS[@]}"; do
       fail "check unexpectedly accepted drift for step $CURRENT_STEP"
     fi
     cat "$LOG_DIR/$CURRENT_STEP.drift-check.log"
-    apf apply -f "$config" --auto-approve --color never | tee "$LOG_DIR/$CURRENT_STEP.repair.log"
+    apf apply -f "$config" --auto-approve "${CASE_APPLY_RISK_ARGS[@]}" --color never | tee "$LOG_DIR/$CURRENT_STEP.repair.log"
     apf plan -f "$config" --format json | tee "$LOG_DIR/$CURRENT_STEP.repair-noop-plan.json"
     python3 "$SCRIPT_DIR/assert-noop-plan.py" "$LOG_DIR/$CURRENT_STEP.repair-noop-plan.json"
     apf check -f "$config" --color never | tee "$LOG_DIR/$CURRENT_STEP.repair-check.log"

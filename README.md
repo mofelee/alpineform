@@ -26,8 +26,10 @@ Alpine 3.24 aarch64 remains Preview because it has cross-build and selector
 coverage but no blocking real-VM gate. Docker Engine and Compose are an
 implemented Preview domain with a dedicated Alpine 3.24 x86_64 VM gate; they
 remain outside the v0.1 core promise because they depend on Alpine `community`.
-Rollback-safe nftables (#13) and target-side source builds (#14) remain
-independent follow-ups. See the complete [support matrix](docs/support-matrix.md).
+Rollback-safe named-table nftables is also an implemented Preview domain with
+a dedicated blocking Alpine 3.24 x86_64 rollback gate and a separate
+network-disruption approval. Target-side source builds (#14) remain an
+independent follow-up. See the complete [support matrix](docs/support-matrix.md).
 
 ## Install
 
@@ -130,6 +132,7 @@ domain guides:
 - [system settings](docs/system.md) and [kernel settings](docs/kernel.md)
 - [components and change scripts](docs/components.md)
 - [Docker Engine and Compose](docs/docker.md) (Preview)
+- [rollback-safe nftables](docs/nftables.md) (Preview)
 
 Operational contracts are covered by the [architecture](docs/architecture.md),
 [state backend](docs/state-backend.md), [lock model](docs/locking.md),

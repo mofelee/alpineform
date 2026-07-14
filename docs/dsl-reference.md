@@ -51,6 +51,7 @@ read-only detected facts.
 - `kernel.module` and `kernel.sysctl`: [kernel](kernel.md)
 - prebuilt artifacts and `on_change`: [components](components.md)
 - Preview Docker Engine and Compose projects: [Docker](docker.md)
+- Preview rollback-safe named tables: [nftables](nftables.md)
 
 Managed resources support explicit presence or absence where documented.
 Declaration removal defaults to state-only forget. Resources that support

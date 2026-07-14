@@ -63,6 +63,23 @@ removes volumes or images. Sensitive or ephemeral payloads, remote stderr, and
 content-derived ephemeral digests are omitted from serialized and diagnostic
 surfaces.
 
+## nftables
+
+The Preview nftables domain owns only declared `(family, name)` table
+identities. It cannot express includes, nested tables, top-level commands, or a
+whole-ruleset flush. Existing tables require explicit adoption, and external
+tables, stock configuration, and the stock OpenRC service remain outside
+AlpineForm ownership.
+
+Rule bodies, active and persistent snapshots, observed fingerprints, runtime
+tokens, and token digests stay behind the protected provider boundary. A
+root-only detached watchdog snapshots the prior named table and persistence
+before activation, then restores them unless a fresh SSH process confirms the
+candidate through the configured management path. State is written only after
+confirmation. Pending or failed recovery artifacts remain root-only for the
+documented [operator recovery procedure](operations-runbook.md); they must not
+be published or deleted while a transaction may still be live.
+
 ## Release Supply Chain
 
 Release binaries use `CGO_ENABLED=0`, pinned GoReleaser tooling, and four fixed

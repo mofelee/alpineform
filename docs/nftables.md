@@ -4,9 +4,10 @@ The nftables domain is Preview. It manages only explicitly declared named
 tables. AlpineForm does not offer whole-ruleset ownership, and it never uses a
 global flush to converge or delete a table.
 
-Development of this capability is kept off the release branch until the
-rollback watchdog, reconnect confirmation, separate network-disruption
-approval, and blocking Alpine VM matrix are complete.
+Its rollback watchdog, reconnect confirmation, separate network-disruption
+approval, and blocking Alpine VM case are complete. It remains Preview because
+live firewall convergence is a high-impact alpha interface; whole-ruleset
+ownership remains unsupported.
 
 ## Named-table contract
 
@@ -123,8 +124,8 @@ The Loop 2 Alpine VM matrix proved explicit package installation, exact-file
 adoption, no-op, persistence and init drift detection/repair, recorded-table
 delete, declaration forget, external configuration preservation, and three
 reboots with 61 explicit assertions. The owned table stayed inactive because
-the arming marker was absent; the runtime activation and rollback matrix remain
-the responsibility of Loops 3 through 6.
+the arming marker was absent; later loops added and independently proved live
+activation, confirmation, approval, and rollback.
 
 ## Activation transaction
 
@@ -192,6 +193,21 @@ arming markers, external table, stock configuration, and state hash were
 preserved; token artifacts were removed; protected logs contained no rule
 content; and the last confirmed table returned after reboot.
 
+The Loop 5 Alpine 3.24.1 VM test passed 20 explicit assertions. It proved that
+ordinary approval and `--auto-approve` do not authorize live firewall changes,
+that locked replans cannot introduce the risk, and that bounded reconnect
+reports a confirmed rollback after actual SSH loss. It also verified reboot,
+state preservation, durable ownership recovery, and completed-artifact cleanup.
+
+The blocking Loop 6 [`nftables` case](../test/integration/libvirt/cases/nftables)
+passed 41 explicit assertions in a fresh Alpine 3.24.1 x86_64 VM. It covers
+safe create, update, JSON no-op, check, three-way drift, repair, scoped delete,
+three reboots, invalid syntax without mutation, approval refusal without
+mutation, external table/service/configuration preservation, real SSH loss,
+local `SIGKILL`, independent rollback, synchronous confirmed-rollback
+reporting, stale-artifact cleanup, state preservation, and protected-log
+scanning. CI requires this case through the dedicated nftables Preview gate.
+
 ## Approval and operator outcomes
 
 Every create, update, recorded delete, or destroy of an owned table is marked
@@ -223,4 +239,5 @@ stderr, transaction tokens, token digests, snapshots, and rules remain hidden.
 If confirmation completed but local state writing was interrupted, the valid
 root-only observed marker proves prior AlpineForm ownership on the next run, so
 state can be reconstructed without weakening adoption checks for external
-tables.
+tables. Pending and failed rollback handling is documented in the
+[operations runbook](operations-runbook.md).

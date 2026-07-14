@@ -1,7 +1,8 @@
 # Alpine 3.24 libvirt integration
 
-The blocking managed-target gate boots a fresh persistent Alpine 3.24.1
-x86_64 VM for every case. The runner downloads this immutable official image:
+The blocking ten-case managed-target gate boots a fresh persistent Alpine
+3.24.1 x86_64 VM for every case. The runner downloads this immutable official
+image:
 
 - URL: `https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-x86_64-uefi-cloudinit-r0.qcow2`
 - SHA-512: `ed976ef40de1f73adcb0a3b253ec9e73e43c408208fcc3c30dcdf7a69b91a387a4777f88c6b72345123edf3832d7cb49403ecce28ec84d496d4b3bad6fbd0923`
@@ -34,10 +35,22 @@ values, invalid-daemon isolation, daemon crash recovery, partial/degraded drift
 repair, fresh running/stopped reboot persistence, project forget/adopt, scoped
 destroy with retained volumes, explicit absence, and service/package removal
 ordering.
+The nftables case is the tenth blocking case. Its
+`.allow-network-disruption` marker lets only that case add the separate apply
+authorization; the layout validator rejects the marker anywhere else. The case
+passes 41 explicit assertions covering safe create/update/delete, JSON no-op,
+drift and repair, three reboots, invalid syntax and approval refusal without
+mutation, external ownership, real SSH loss, local `SIGKILL`, detached and
+synchronous confirmed rollback, state preservation, stale-artifact cleanup,
+and protected-log scanning.
 The account and lifecycle cases prove recorded destroy ordering. The layout
 validator requires contiguous configs, a check hook for every step, at least
-one drift hook per case, pinned offline facts, shell syntax, and no committed
-keys or state.
+one drift hook per case, pinned offline facts, shell syntax, the nftables-only
+risk marker, and no committed keys or state.
+
+CI discovers exactly ten cases. The aggregate `Alpine 3.24 core gate` requires
+the full matrix, and the separate `Alpine 3.24 nftables Preview gate` prevents
+the Preview schema from passing without the rollback case.
 
 ## Run locally
 
@@ -52,6 +65,7 @@ Run all cases or one case against local `qemu:///system`:
 ```sh
 make test-integration
 make test-integration-case CASE=files-directories-secrets
+make test-integration-case CASE=nftables
 ```
 
 The runner also supports remote libvirt. VM files must live on the hypervisor

@@ -15,12 +15,25 @@ All notable user-visible changes to AlpineForm are recorded here.
   package versions, no-op, invalid daemon/Compose isolation, crash recovery,
   partial/degraded drift repair, reboot, fresh stopped projects, project
   forget/adopt, scoped destroy, absence, and complete Docker removal.
+- Add Preview rollback-safe nftables management with explicit named-table
+  ownership, Alpine package and non-flushing OpenRC persistence, protected
+  staged activation, detached rollback watchdogs, bounded management-path
+  confirmation, scoped delete/forget behavior, and separate
+  `--allow-network-disruption` authorization.
+- Add a blocking tenth Alpine 3.24.1 x86_64 VM case covering invalid syntax,
+  create/update/no-op, active/persistent/marker drift repair, reboot, external
+  table preservation, SSH-blocking activation, local process termination,
+  detached rollback, stale-artifact cleanup, scoped delete, and scrubbed
+  diagnostics.
 
 ### Compatibility
 
 - The Docker DSL and `host.<name>.docker.*` resource addresses are additive
   alpha interfaces. Docker remains Preview and outside the v0.1 core/Beta
   promise.
+- The nftables DSL, `host.<name>.nftables.*` resource addresses, and additive
+  `network_disruption` plan risk are alpha interfaces. Named-table nftables
+  remains Preview despite its blocking rollback gate.
 
 ## [v0.1.0-alpha.5] - 2026-07-13
 
