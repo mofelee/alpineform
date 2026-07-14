@@ -139,30 +139,55 @@ For a present table, AlpineForm renders the table-body DSL into one complete
 `table <family> <name> { ... }` candidate. It then:
 
 1. runs `nft -c -f` against the complete replacement batch;
-2. captures the previous stateless active table and exact persistent/marker
-   bytes without following symbolic links;
+2. captures the previous stateless active table and exact persistent, observed
+   marker, and arming-marker bytes without following symbolic links;
 3. validates the active restore batch when an active snapshot exists;
-4. preflights again and atomically replaces only the named table with one nft
+4. starts a detached token-scoped watchdog and verifies that it is alive;
+5. preflights again and atomically replaces only the named table with one nft
    batch;
-5. re-inspects the active table through the current management connection;
-6. atomically writes persistence and an active/fingerprint digest marker.
+6. creates a new runner and SSH process through the original configured
+   management path;
+7. confirms the active digest and dedicated OpenRC service, then atomically
+   writes and rechecks persistence, the active/fingerprint marker, and the
+   arming marker;
+8. authenticates confirmation with the unpredictable token and lets the
+   watchdog remove the transaction directory.
 
 Delete uses the same protocol with a batch that names only the recorded owned
 table. There is no ruleset-wide flush in create, update, repair, rollback, or
 delete.
 
-Any error or HUP/INT/TERM after activation restores the active, persistent,
-and marker snapshots. Successful transactions remove the token directory. If
-rollback itself fails, the protected transaction directory and a bounded
-`rollback_failed` status remain for recovery instead of claiming success.
-AlpineForm state is written only after the provider transaction and final
-inspection return successfully.
+The watchdog runs under a separate session with closed standard streams, so it
+does not depend on the initiating SSH process, local `apf` process, or Go
+context after it reports ready. A token-scoped action lock serializes fresh
+confirmation against timeout rollback. HUP, INT, TERM, preparation failure,
+confirmation failure, or timeout restores the active, persistent, observed,
+and arming snapshots. Successful confirmation removes the token directory.
+AlpineForm state is written only after fresh confirmation and final inspection
+return successfully.
+
+Duplicate or expired confirmation is refused because its token directory is no
+longer active. A new transaction reaps only completed confirmation/rollback
+artifacts and refuses to overlap an active, pending, or failed transaction.
+If rollback itself fails, the root-only transaction directory, validated
+snapshots, action status, and bounded `rollback_failed` marker remain for
+target-side recovery instead of claiming success. Runtime token names,
+snapshot content, and rule content are not included in plan, state, graph,
+HTML, debug, errors, or uploaded diagnostics.
 
 The Loop 3 Alpine 3.24.1 VM matrix passed 40 assertions. It proved invalid nft
 syntax and unsafe snapshot targets cause no mutation, create/no-op and combined
 active/persistent drift repair converge, external tables and configuration
 survive every non-reboot operation, recorded delete is scoped, reboot content
 is valid when a future confirmation marker is simulated, and successful or
-rolled-back transactions leave no runtime token artifacts. A fresh SSH-path
-confirmation and an independent detached timeout remain mandatory in Loop 4
-before this transaction is allowed onto the release branch.
+rolled-back transactions leave no runtime token artifacts. That matrix was the
+pre-watchdog baseline for the independent Loop 4 test below.
+
+The Loop 4 Alpine 3.24.1 VM test passed 14 explicit assertions. It established
+a confirmed table, verified fresh-confirm cleanup, applied a table that dropped
+SSH, observed the management path fail, killed the local `apf` process with
+SIGKILL, and waited for the detached 10-second watchdog. SSH recovered without
+the initiating process; the previous active table, persistence, observed and
+arming markers, external table, stock configuration, and state hash were
+preserved; token artifacts were removed; protected logs contained no rule
+content; and the last confirmed table returned after reboot.

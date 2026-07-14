@@ -124,7 +124,9 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 	case "sysctl_runtime":
 		return applySysctlRuntime(ctx, runner, step.Node)
 	case "nftables_table":
-		return applyNftablesTransaction(ctx, runner, step, provider.NewNFTablesToken)
+		return applyNftablesTransaction(ctx, runner, func() (backend.Runner, error) {
+			return provider.runner(step.Host)
+		}, step, provider.NewNFTablesToken)
 	case "nftables_service":
 		return applyNftablesService(ctx, runner, step.Node)
 	case "component_artifact_source":
@@ -187,7 +189,9 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 	case "sysctl":
 		return deleteSysctl(ctx, runner, step)
 	case "nftables_table":
-		return deleteNftablesTransaction(ctx, runner, step, provider.NewNFTablesToken)
+		return deleteNftablesTransaction(ctx, runner, func() (backend.Runner, error) {
+			return provider.runner(step.Host)
+		}, step, provider.NewNFTablesToken)
 	case "nftables_service":
 		return fmt.Errorf("AlpineForm nftables service declarations can only be forgotten")
 	case "component_artifact_source":

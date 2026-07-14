@@ -90,7 +90,7 @@ echo "$marker_active_sha"
 echo "$marker_ensure"
 `
 
-const nftablesTransactionScript = `set -eu
+const nftablesTransactionPrepareScript = `set -eu
 token=$1
 family=$2
 name=$3
@@ -98,6 +98,7 @@ persistence=$4
 marker=$5
 fingerprint=$6
 ensure=$7
+timeout=$8
 runtime_root=/run/alpineform/nftables
 runtime_parent=/run/alpineform
 observed_root=/var/lib/alpineform/nftables/observed
@@ -105,17 +106,21 @@ observed_parent=/var/lib/alpineform/nftables
 state_parent=/var/lib/alpineform
 persistence_base=/etc/nftables.d
 persistence_directory=/etc/nftables.d/alpineform
+arming=/var/lib/alpineform/nftables/armed
 transaction=$runtime_root/$token
 candidate=$transaction/candidate.nft
 activation=$transaction/activation.nft
 active_snapshot=$transaction/active.snapshot.nft
 persistent_snapshot=$transaction/persistent.snapshot
 marker_snapshot=$transaction/marker.snapshot
+arming_snapshot=$transaction/arming.snapshot
+watchdog=$transaction/watchdog.sh
 active_before=missing
 persistent_before=missing
 marker_before=missing
-activated=false
-success=false
+arming_before=missing
+watchdog_started=false
+prepare_complete=false
 umask 077
 
 safe_directory() {
@@ -124,20 +129,6 @@ safe_directory() {
     return 1
   fi
   return 0
-}
-
-atomic_restore() {
-  snapshot=$1
-  target=$2
-  directory=${target%/*}
-  if [ -L "$target" ] || { [ -e "$target" ] && [ ! -f "$target" ]; }; then
-    return 1
-  fi
-  tmp=$(mktemp "$directory/.alpineform-nftables-restore.XXXXXX")
-  cp "$snapshot" "$tmp"
-  chown 0:0 "$tmp"
-  chmod 0600 "$tmp"
-  mv -f "$tmp" "$target"
 }
 
 build_activation() {
@@ -150,52 +141,20 @@ build_activation() {
   fi
 }
 
-restore_transaction() {
-  rollback=$transaction/rollback.nft
-  : >"$rollback"
-  if nft list table "$family" "$name" >/dev/null 2>&1; then
-    printf 'delete table %s %s\n' "$family" "$name" >>"$rollback"
-  fi
-  if [ "$active_before" = present ]; then
-    cat "$active_snapshot" >>"$rollback"
-  fi
-  if [ -s "$rollback" ]; then
-    nft -c -f "$rollback" && nft -f "$rollback" || return 1
-  fi
-
-  if [ "$persistent_before" = present ]; then
-    atomic_restore "$persistent_snapshot" "$persistence" || return 1
-  else
-    rm -f "$persistence" || return 1
-  fi
-  if [ "$marker_before" = present ]; then
-    atomic_restore "$marker_snapshot" "$marker" || return 1
-  else
-    rm -f "$marker" || return 1
-  fi
-}
-
-finish_transaction() {
+finish_prepare() {
   status=$?
   trap - EXIT HUP INT TERM
-  if [ "$success" = true ]; then
+  if [ "$prepare_complete" = true ]; then
     exit "$status"
   fi
-  if [ "$activated" = true ]; then
-    if restore_transaction; then
-      rm -rf "$transaction"
-    else
-      printf '%s\n' rollback_failed >"$transaction/status"
-      chmod 0600 "$transaction/status"
-      echo 'nftables transaction failed and rollback requires recovery' >&2
-      exit 70
-    fi
+  if [ "$watchdog_started" = true ]; then
+    : >"$transaction/abort" 2>/dev/null || true
   else
     rm -rf "$transaction"
   fi
   exit "$status"
 }
-trap finish_transaction EXIT
+trap finish_prepare EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -206,6 +165,35 @@ safe_directory "$runtime_root"
 mkdir -p "$runtime_root"
 chown 0:0 "$runtime_root"
 chmod 0700 "$runtime_root"
+for existing in "$runtime_root"/*; do
+  if [ ! -e "$existing" ] && [ ! -L "$existing" ]; then
+    continue
+  fi
+  existing_name=${existing##*/}
+  if [ ${#existing_name} -ne 64 ]; then
+    echo 'refusing unsafe nftables runtime artifact' >&2
+    exit 1
+  fi
+  case "$existing_name" in
+    *[!0-9a-f]*) echo 'refusing unsafe nftables runtime artifact' >&2; exit 1 ;;
+  esac
+  if [ -L "$existing" ] || [ ! -d "$existing" ]; then
+    echo 'refusing unsafe nftables runtime artifact' >&2
+    exit 1
+  fi
+  existing_status=$(sed -n '1p' "$existing/status" 2>/dev/null || true)
+  case "$existing_status" in
+    confirmed|rollback_complete) rm -rf "$existing" ;;
+    rollback_failed)
+      echo 'a recoverable nftables rollback failure blocks new activation' >&2
+      exit 1
+      ;;
+    *)
+      echo 'an active or recoverable nftables transaction blocks new activation' >&2
+      exit 1
+      ;;
+  esac
+done
 if [ -e "$transaction" ] || [ -L "$transaction" ]; then
   echo 'refusing reused nftables transaction token' >&2
   exit 1
@@ -271,6 +259,19 @@ else
   chmod 0600 "$marker_snapshot"
 fi
 
+if [ -L "$arming" ] || { [ -e "$arming" ] && [ ! -f "$arming" ]; }; then
+  echo 'refusing unsafe nftables arming marker target' >&2
+  exit 1
+fi
+if [ -f "$arming" ]; then
+  cp "$arming" "$arming_snapshot"
+  chmod 0600 "$arming_snapshot"
+  arming_before=present
+else
+  : >"$arming_snapshot"
+  chmod 0600 "$arming_snapshot"
+fi
+
 if [ "$active_before" = present ]; then
   restore_check=$transaction/restore.check.nft
   printf 'delete table %s %s\n' "$family" "$name" >"$restore_check"
@@ -281,8 +282,214 @@ fi
 
 build_activation
 nft -c -f "$activation"
+
+printf '%s\n%s\n%s\n' "$family" "$name" "$ensure" >"$transaction/identity"
+printf '%s\n%s\n%s\n%s\n' "$active_before" "$persistent_before" "$marker_before" "$arming_before" >"$transaction/snapshot.state"
+printf '%s\n' "$timeout" >"$transaction/timeout"
+printf '%s\n' "$fingerprint" >"$transaction/fingerprint"
+printf '%s\n' preparing >"$transaction/status"
+chmod 0600 "$transaction/identity" "$transaction/snapshot.state" "$transaction/timeout" "$transaction/fingerprint" "$transaction/status"
+
+cat >"$watchdog" <<'ALPINEFORM_NFTABLES_WATCHDOG'
+#!/bin/sh
+set -u
+runtime_root=/run/alpineform/nftables
+transaction=$(CDPATH= cd "${0%/*}" 2>/dev/null && pwd -P) || exit 70
+token=${transaction##*/}
+status=$transaction/status
+action_lock=$transaction/action.lock
+
+write_status() {
+  printf '%s\n' "$1" >"$status" 2>/dev/null || true
+  chmod 0600 "$status" 2>/dev/null || true
+}
+
+fail_rollback() {
+  write_status rollback_failed
+  exit 70
+}
+
+safe_token_path() {
+  [ "${transaction%/*}" = "$runtime_root" ] || return 1
+  [ ${#token} -eq 64 ] || return 1
+  case "$token" in *[!0-9a-f]*) return 1 ;; esac
+  [ ! -L "$transaction" ] && [ -d "$transaction" ]
+}
+
+regular_file() {
+  [ ! -L "$1" ] && [ -f "$1" ]
+}
+
+atomic_restore() {
+  snapshot=$1
+  target=$2
+  directory=${target%/*}
+  regular_file "$snapshot" || return 1
+  if [ -L "$target" ] || { [ -e "$target" ] && [ ! -f "$target" ]; }; then
+    return 1
+  fi
+  tmp=$(mktemp "$directory/.alpineform-nftables-restore.XXXXXX") || return 1
+  cp "$snapshot" "$tmp" && chown 0:0 "$tmp" && chmod 0600 "$tmp" && mv -f "$tmp" "$target"
+}
+
+cleanup_confirmed() {
+  write_status confirmed
+  cd "$runtime_root" || exit 70
+  rm -rf "$transaction"
+  exit 0
+}
+
+acquire_rollback() {
+  if mkdir "$action_lock" 2>/dev/null; then
+    return 0
+  fi
+  attempts=0
+  while [ "$attempts" -lt 5 ]; do
+    [ -f "$transaction/confirmed" ] && cleanup_confirmed
+    if [ ! -d "$action_lock" ]; then
+      mkdir "$action_lock" 2>/dev/null && return 0
+    fi
+    sleep 1
+    attempts=$((attempts + 1))
+  done
+  pid=$(sed -n '1p' "$action_lock/pid" 2>/dev/null || true)
+  start=$(sed -n '1p' "$action_lock/start" 2>/dev/null || true)
+  case "$pid" in ''|*[!0-9]*) pid= ;; esac
+  case "$start" in ''|*[!0-9]*) start= ;; esac
+  if [ -n "$pid" ] && [ -n "$start" ] && [ -r "/proc/$pid/stat" ]; then
+    current_start=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)
+    if [ "$current_start" = "$start" ]; then
+      kill "$pid" 2>/dev/null || true
+      attempts=0
+      while [ "$attempts" -lt 5 ] && kill -0 "$pid" 2>/dev/null; do
+        sleep 1
+        attempts=$((attempts + 1))
+      done
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  fi
+  rm -rf "$action_lock"
+  mkdir "$action_lock" 2>/dev/null
+}
+
+safe_token_path || exit 70
+regular_file "$transaction/identity" || fail_rollback
+regular_file "$transaction/snapshot.state" || fail_rollback
+regular_file "$transaction/timeout" || fail_rollback
+family=$(sed -n '1p' "$transaction/identity")
+name=$(sed -n '2p' "$transaction/identity")
+active_before=$(sed -n '1p' "$transaction/snapshot.state")
+persistent_before=$(sed -n '2p' "$transaction/snapshot.state")
+marker_before=$(sed -n '3p' "$transaction/snapshot.state")
+arming_before=$(sed -n '4p' "$transaction/snapshot.state")
+timeout=$(sed -n '1p' "$transaction/timeout")
+case "$family" in arp|bridge|inet|ip|ip6|netdev) ;; *) fail_rollback ;; esac
+case "$name" in ''|*[!A-Za-z0-9_-]*|[!A-Za-z_]*) fail_rollback ;; esac
+[ ${#name} -le 64 ] || fail_rollback
+case "$active_before:$persistent_before:$marker_before:$arming_before" in
+  present:present:present:present|present:present:present:missing|present:present:missing:present|present:present:missing:missing|present:missing:present:present|present:missing:present:missing|present:missing:missing:present|present:missing:missing:missing|missing:present:present:present|missing:present:present:missing|missing:present:missing:present|missing:present:missing:missing|missing:missing:present:present|missing:missing:present:missing|missing:missing:missing:present|missing:missing:missing:missing) ;;
+  *) fail_rollback ;;
+esac
+case "$timeout" in ''|*[!0-9]*) fail_rollback ;; esac
+[ "$timeout" -ge 10 ] && [ "$timeout" -le 300 ] || fail_rollback
+
+printf '%s\n' "$$" >"$transaction/watchdog.pid" || fail_rollback
+awk '{print $22}' "/proc/$$/stat" >"$transaction/watchdog.start" || fail_rollback
+: >"$transaction/watchdog.ready" || fail_rollback
+chmod 0600 "$transaction/watchdog.pid" "$transaction/watchdog.start" "$transaction/watchdog.ready" || fail_rollback
+
+interrupted=false
+trap 'interrupted=true' HUP INT TERM
+remaining=$timeout
+while [ "$remaining" -gt 0 ]; do
+  [ -f "$transaction/confirmed" ] && cleanup_confirmed
+  if [ -f "$transaction/abort" ] || [ "$interrupted" = true ]; then
+    break
+  fi
+  sleep 1 || true
+  remaining=$((remaining - 1))
+done
+[ -f "$transaction/confirmed" ] && cleanup_confirmed
+acquire_rollback || fail_rollback
+[ -f "$transaction/confirmed" ] && cleanup_confirmed
+write_status rollback_pending
+
+persistence=/etc/nftables.d/alpineform/$family-$name.nft
+marker=/var/lib/alpineform/nftables/observed/$family-$name.digest
+arming=/var/lib/alpineform/nftables/armed
+rollback=$transaction/rollback.nft
+: >"$rollback" || fail_rollback
+if nft list table "$family" "$name" >/dev/null 2>&1; then
+  printf 'delete table %s %s\n' "$family" "$name" >>"$rollback" || fail_rollback
+fi
+if [ "$active_before" = present ]; then
+  regular_file "$transaction/active.snapshot.nft" || fail_rollback
+  cat "$transaction/active.snapshot.nft" >>"$rollback" || fail_rollback
+fi
+if [ -s "$rollback" ]; then
+  nft -c -f "$rollback" >/dev/null 2>&1 && nft -f "$rollback" >/dev/null 2>&1 || fail_rollback
+fi
+
+if [ "$persistent_before" = present ]; then
+  atomic_restore "$transaction/persistent.snapshot" "$persistence" || fail_rollback
+else
+  [ ! -L "$persistence" ] || fail_rollback
+  rm -f "$persistence" || fail_rollback
+fi
+if [ "$marker_before" = present ]; then
+  atomic_restore "$transaction/marker.snapshot" "$marker" || fail_rollback
+else
+  [ ! -L "$marker" ] || fail_rollback
+  rm -f "$marker" || fail_rollback
+fi
+if [ "$arming_before" = present ]; then
+  atomic_restore "$transaction/arming.snapshot" "$arming" || fail_rollback
+else
+  [ ! -L "$arming" ] || fail_rollback
+  rm -f "$arming" || fail_rollback
+fi
+
+write_status rollback_complete
+cd "$runtime_root" || fail_rollback
+rm -rf "$transaction"
+exit 0
+ALPINEFORM_NFTABLES_WATCHDOG
+chmod 0700 "$watchdog"
+
+command -v nohup >/dev/null 2>&1
+command -v setsid >/dev/null 2>&1
+
+(
+  cd "$transaction"
+  exec nohup setsid sh ./watchdog.sh </dev/null >/dev/null 2>&1
+) &
+launcher_pid=$!
+ready=false
+attempt=0
+while [ "$attempt" -lt 50 ]; do
+  if [ -f "$transaction/watchdog.ready" ]; then
+    watchdog_pid=$(sed -n '1p' "$transaction/watchdog.pid" 2>/dev/null || true)
+    case "$watchdog_pid" in ''|*[!0-9]*) watchdog_pid= ;; esac
+    if [ -n "$watchdog_pid" ] && kill -0 "$watchdog_pid" 2>/dev/null; then
+      ready=true
+      break
+    fi
+  fi
+  if ! kill -0 "$launcher_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+  attempt=$((attempt + 1))
+done
+if [ "$ready" != true ]; then
+  echo 'failed to start independent nftables rollback watchdog' >&2
+  exit 1
+fi
+watchdog_started=true
+
+build_activation
+nft -c -f "$activation"
 nft -f "$activation"
-activated=true
 
 active_sha=absent
 if [ "$ensure" = present ]; then
@@ -294,37 +501,160 @@ else
     exit 1
   fi
 fi
+printf '%s\n' "$active_sha" >"$transaction/expected.active.sha"
+printf '%s\n' awaiting_confirmation >"$transaction/status"
+chmod 0600 "$transaction/expected.active.sha" "$transaction/status"
+prepare_complete=true
+echo activation_pending_confirmation
+`
 
-if [ "$ensure" = present ]; then
-  if [ -L "$persistence" ] || { [ -e "$persistence" ] && [ ! -f "$persistence" ]; }; then
-    echo 'refusing changed nftables persistence target' >&2
-    exit 1
+const nftablesTransactionConfirmScript = `set -eu
+token=$1
+family=$2
+name=$3
+persistence=$4
+marker=$5
+fingerprint=$6
+ensure=$7
+runtime_root=/run/alpineform/nftables
+transaction=$runtime_root/$token
+candidate=$transaction/candidate.nft
+expected_file=$transaction/expected.active.sha
+action_lock=$transaction/action.lock
+observed_root=/var/lib/alpineform/nftables/observed
+state_root=/var/lib/alpineform/nftables
+arming=$state_root/armed
+service=/etc/init.d/alpineform-nftables
+runlevel_link=/etc/runlevels/default/alpineform-nftables
+confirmation_complete=false
+umask 077
+
+finish_confirmation() {
+  result=$?
+  trap - EXIT HUP INT TERM
+  if [ "$confirmation_complete" != true ] && [ -d "$transaction" ] && [ ! -L "$transaction" ]; then
+    : >"$transaction/abort" 2>/dev/null || true
+    rm -rf "$action_lock" 2>/dev/null || true
   fi
-  tmp=$(mktemp "$persistence_directory/.alpineform-nftables.XXXXXX")
-  cp "$candidate" "$tmp"
+  exit "$result"
+}
+trap finish_confirmation EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+regular_file() {
+  [ ! -L "$1" ] && [ -f "$1" ]
+}
+
+atomic_copy() {
+  source=$1
+  target=$2
+  directory=${target%/*}
+  regular_file "$source" || return 1
+  if [ -L "$target" ] || { [ -e "$target" ] && [ ! -f "$target" ]; }; then
+    return 1
+  fi
+  tmp=$(mktemp "$directory/.alpineform-nftables-confirm.XXXXXX")
+  cp "$source" "$tmp"
   chown 0:0 "$tmp"
   chmod 0600 "$tmp"
-  mv -f "$tmp" "$persistence"
-  if [ -L "$marker" ] || { [ -e "$marker" ] && [ ! -f "$marker" ]; }; then
-    echo 'refusing changed nftables observed marker target' >&2
-    exit 1
-  fi
-  marker_tmp=$(mktemp "$observed_root/.alpineform-nftables.XXXXXX")
-  printf '%s\n%s\n%s\n' "$fingerprint" "$active_sha" "$ensure" >"$marker_tmp"
-  chown 0:0 "$marker_tmp"
-  chmod 0600 "$marker_tmp"
-  mv -f "$marker_tmp" "$marker"
+  mv -f "$tmp" "$target"
+}
+
+[ "${transaction%/*}" = "$runtime_root" ]
+[ ${#token} -eq 64 ]
+case "$token" in *[!0-9a-f]*) exit 1 ;; esac
+case "$family" in arp|bridge|inet|ip|ip6|netdev) ;; *) exit 1 ;; esac
+case "$name" in ''|*[!A-Za-z0-9_-]*|[!A-Za-z_]*) exit 1 ;; esac
+[ ${#name} -le 64 ]
+case "$fingerprint" in *[!0-9a-f]*) exit 1 ;; esac
+[ ${#fingerprint} -eq 64 ]
+case "$ensure" in present|absent) ;; *) exit 1 ;; esac
+[ "$persistence" = "/etc/nftables.d/alpineform/$family-$name.nft" ]
+[ "$marker" = "/var/lib/alpineform/nftables/observed/$family-$name.digest" ]
+[ ! -L "$transaction" ] && [ -d "$transaction" ]
+regular_file "$transaction/identity"
+regular_file "$transaction/fingerprint"
+regular_file "$transaction/status"
+regular_file "$expected_file"
+[ "$(sed -n '1p' "$transaction/identity")" = "$family" ]
+[ "$(sed -n '2p' "$transaction/identity")" = "$name" ]
+[ "$(sed -n '3p' "$transaction/identity")" = "$ensure" ]
+[ "$(sed -n '1p' "$transaction/fingerprint")" = "$fingerprint" ]
+[ "$(sed -n '1p' "$transaction/status")" = awaiting_confirmation ]
+[ ! -L "$service" ] && [ -f "$service" ]
+[ -e "$runlevel_link" ]
+service_status=$(rc-service alpineform-nftables status 2>&1 || true)
+case "$service_status" in *"status: started"*) ;; *) exit 1 ;; esac
+mkdir "$action_lock"
+printf '%s\n' "$$" >"$action_lock/pid"
+awk '{print $22}' "/proc/$$/stat" >"$action_lock/start"
+chmod 0600 "$action_lock/pid" "$action_lock/start"
+printf '%s\n' confirming >"$transaction/status"
+chmod 0600 "$transaction/status"
+
+expected=$(sed -n '1p' "$expected_file")
+if [ "$ensure" = present ]; then
+  regular_file "$candidate"
+  nft list table "$family" "$name" >/dev/null
+  active_sha=$(nft --stateless list table "$family" "$name" | sha256sum | awk '{print $1}')
+  [ "$expected" = "$active_sha" ]
 else
-  if [ -L "$persistence" ] || [ -L "$marker" ]; then
-    echo 'refusing changed nftables delete target' >&2
+  [ "$expected" = absent ]
+  if nft list table "$family" "$name" >/dev/null 2>&1; then
     exit 1
   fi
-  rm -f "$persistence" "$marker"
 fi
 
-rm -rf "$transaction"
-success=true
-echo transaction_complete
+if [ -L "$state_root" ] || { [ -e "$state_root" ] && [ ! -d "$state_root" ]; }; then
+  exit 1
+fi
+mkdir -p "$state_root"
+chown 0:0 "$state_root"
+chmod 0700 "$state_root"
+if [ -L "$observed_root" ] || { [ -e "$observed_root" ] && [ ! -d "$observed_root" ]; }; then
+  exit 1
+fi
+mkdir -p "$observed_root"
+chown 0:0 "$observed_root"
+chmod 0700 "$observed_root"
+
+if [ "$ensure" = present ]; then
+	atomic_copy "$candidate" "$persistence"
+	cmp -s "$candidate" "$persistence"
+	marker_source=$transaction/confirmed.marker
+  printf '%s\n%s\n%s\n' "$fingerprint" "$expected" "$ensure" >"$marker_source"
+  chmod 0600 "$marker_source"
+	atomic_copy "$marker_source" "$marker"
+	cmp -s "$marker_source" "$marker"
+  if [ -L "$arming" ] || { [ -e "$arming" ] && [ ! -f "$arming" ]; }; then
+    exit 1
+  fi
+  arming_source=$transaction/confirmed.arming
+  printf '%s\n' confirmed >"$arming_source"
+  chmod 0600 "$arming_source"
+	atomic_copy "$arming_source" "$arming"
+	cmp -s "$arming_source" "$arming"
+else
+  if [ -L "$persistence" ] || [ -L "$marker" ]; then
+    exit 1
+  fi
+	rm -f "$persistence" "$marker"
+	[ ! -e "$persistence" ] && [ ! -e "$marker" ]
+fi
+
+printf '%s\n' confirmed >"$transaction/status"
+: >"$transaction/confirmed"
+chmod 0600 "$transaction/status" "$transaction/confirmed"
+confirmation_complete=true
+
+attempt=0
+while [ "$attempt" -lt 50 ] && [ -d "$transaction" ]; do
+  sleep 0.1
+  attempt=$((attempt + 1))
+done
+echo confirmation_complete
 `
 
 const nftablesServiceInspectScript = `set -eu
@@ -535,7 +865,7 @@ func inspectNftablesPersistence(ctx context.Context, runner backend.Runner, node
 	return engine.ObservedResource{Exists: exists, Values: observed, Digest: digest, Protected: true}, nil
 }
 
-func applyNftablesTransaction(ctx context.Context, runner backend.Runner, step engine.Step, newToken func() (string, error)) (engine.ObservedResource, error) {
+func applyNftablesTransaction(ctx context.Context, runner backend.Runner, freshRunner func() (backend.Runner, error), step engine.Step, newToken func() (string, error)) (engine.ObservedResource, error) {
 	if stringValue(step.Node.Desired, "ensure") != "present" {
 		return engine.ObservedResource{}, fmt.Errorf("nftables apply transaction requires ensure = \"present\"")
 	}
@@ -546,13 +876,14 @@ func applyNftablesTransaction(ctx context.Context, runner backend.Runner, step e
 	if !ok || content == "" {
 		return engine.ObservedResource{}, fmt.Errorf("nftables transaction has no protected candidate payload")
 	}
-	if err := runNftablesTransaction(ctx, runner, step.Node, content, newToken); err != nil {
+	confirmationRunner, err := runNftablesTransaction(ctx, runner, freshRunner, step.Node, content, newToken)
+	if err != nil {
 		return engine.ObservedResource{}, err
 	}
-	return inspectNftablesPersistence(ctx, runner, step.Node)
+	return inspectNftablesPersistence(ctx, confirmationRunner, step.Node)
 }
 
-func deleteNftablesTransaction(ctx context.Context, runner backend.Runner, step engine.Step, newToken func() (string, error)) error {
+func deleteNftablesTransaction(ctx context.Context, runner backend.Runner, freshRunner func() (backend.Runner, error), step engine.Step, newToken func() (string, error)) error {
 	if step.Action != engine.ActionDelete || step.Prior == nil || step.Prior.Kind != "nftables_table" || step.Prior.Ownership != "managed" {
 		return fmt.Errorf("nftables deletion requires a recorded AlpineForm-owned table")
 	}
@@ -577,43 +908,65 @@ func deleteNftablesTransaction(ctx context.Context, runner backend.Runner, step 
 		"observed_marker_path": marker, "activation_fingerprint": fingerprint,
 		"rollback_timeout_seconds": timeout,
 	}}
-	return runNftablesTransaction(ctx, runner, node, "", newToken)
+	_, err := runNftablesTransaction(ctx, runner, freshRunner, node, "", newToken)
+	return err
 }
 
-func runNftablesTransaction(ctx context.Context, runner backend.Runner, node graph.Node, candidate string, newToken func() (string, error)) error {
+func runNftablesTransaction(ctx context.Context, runner backend.Runner, freshRunner func() (backend.Runner, error), node graph.Node, candidate string, newToken func() (string, error)) (backend.Runner, error) {
 	family, name, persistence, marker, fingerprint, err := desiredNftablesTransactionIdentity(node)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ensure := stringValue(node.Desired, "ensure")
 	if ensure != "present" && ensure != "absent" {
-		return fmt.Errorf("nftables transaction has an unsupported desired state")
+		return nil, fmt.Errorf("nftables transaction has an unsupported desired state")
 	}
 	timeout := int64Value(node.Desired, "rollback_timeout_seconds")
 	if timeout < 10 || timeout > 300 {
-		return fmt.Errorf("nftables transaction has an invalid rollback timeout")
+		return nil, fmt.Errorf("nftables transaction has an invalid rollback timeout")
 	}
 	if ensure == "present" {
 		if candidate == "" {
-			return fmt.Errorf("nftables transaction candidate is empty")
+			return nil, fmt.Errorf("nftables transaction candidate is empty")
 		}
 		if !boolValue(node.Desired, "content_write_only") {
 			sum := sha256.Sum256([]byte(candidate))
 			if fmt.Sprintf("%x", sum[:]) != stringValue(node.Desired, "persistence_sha256") {
-				return fmt.Errorf("nftables transaction candidate does not match its protected digest")
+				return nil, fmt.Errorf("nftables transaction candidate does not match its protected digest")
 			}
 		}
 	}
 	token, err := createNftablesToken(newToken)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	_, err = runner.Run(ctx, backend.Command{
-		Name: "apply.nftables_transaction", Script: nftablesTransactionScript,
-		Arguments: []string{token, family, name, persistence, marker, fingerprint, ensure},
+		Name: "apply.nftables_transaction_prepare", Script: nftablesTransactionPrepareScript,
+		Arguments: []string{token, family, name, persistence, marker, fingerprint, ensure, strconv.FormatInt(timeout, 10)},
 		Stdin:     []byte(candidate), RedactStdin: true, RedactOutput: true,
 	})
-	return err
+	if err != nil {
+		return nil, fmt.Errorf("prepare protected nftables activation transaction: %w", err)
+	}
+	if freshRunner == nil {
+		return nil, fmt.Errorf("confirm protected nftables activation: fresh management runner is required")
+	}
+	confirmationRunner, err := freshRunner()
+	if err != nil {
+		return nil, fmt.Errorf("create fresh management runner for protected nftables confirmation: %w", err)
+	}
+	if confirmationRunner == nil {
+		return nil, fmt.Errorf("fresh management runner for protected nftables confirmation is nil")
+	}
+	_, err = confirmationRunner.Run(ctx, backend.Command{
+		Name: "apply.nftables_transaction_confirm", Script: nftablesTransactionConfirmScript,
+		Arguments:    []string{token, family, name, persistence, marker, fingerprint, ensure},
+		RedactOutput: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("confirm protected nftables activation through a fresh management connection; remote rollback remains armed: %w", err)
+	}
+	return confirmationRunner, nil
 }
 
 func createNftablesToken(factory func() (string, error)) (string, error) {

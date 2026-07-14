@@ -35,6 +35,7 @@ func (localRunner) Run(ctx context.Context, command backend.Command) ([]byte, er
 type commandRunner struct {
 	commands []backend.Command
 	outputs  map[string][]byte
+	errors   map[string]error
 }
 
 func (runner *commandRunner) Run(_ context.Context, command backend.Command) ([]byte, error) {
@@ -42,6 +43,9 @@ func (runner *commandRunner) Run(_ context.Context, command backend.Command) ([]
 	copyCommand.Arguments = append([]string(nil), command.Arguments...)
 	copyCommand.Stdin = append([]byte(nil), command.Stdin...)
 	runner.commands = append(runner.commands, copyCommand)
+	if err := runner.errors[command.Name]; err != nil {
+		return nil, err
+	}
 	return append([]byte(nil), runner.outputs[command.Name]...), nil
 }
 

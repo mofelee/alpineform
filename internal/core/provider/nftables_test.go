@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"reflect"
 	"strconv"
@@ -75,12 +76,17 @@ func TestNftablesTransactionStagesSnapshotsActivatesAndReinspects(t *testing.T) 
 	node := testNftablesPersistenceNode(content)
 	activeSHA := strings.Repeat("b", 64)
 	fingerprint := stringValue(node.Desired, "activation_fingerprint")
-	runner := &commandRunner{outputs: map[string][]byte{
+	prepareRunner := &commandRunner{outputs: map[string][]byte{}}
+	confirmationRunner := &commandRunner{outputs: map[string][]byte{
 		"inspect.nftables_persistence": []byte("file\nroot\nroot\n600\n" + strconv.Itoa(len(content)) + "\n" + sha256String(content) + "\n"),
 		"inspect.nftables_active":      []byte("present\n" + activeSHA + "\nfile\n" + fingerprint + "\n" + activeSHA + "\npresent\n"),
 	}}
 	token := strings.Repeat("c", 64)
-	observed, err := applyNftablesTransaction(context.Background(), runner, engine.Step{Action: engine.ActionCreate, Node: node}, func() (string, error) {
+	freshCalls := 0
+	observed, err := applyNftablesTransaction(context.Background(), prepareRunner, func() (backend.Runner, error) {
+		freshCalls++
+		return confirmationRunner, nil
+	}, engine.Step{Action: engine.ActionCreate, Node: node}, func() (string, error) {
 		return token, nil
 	})
 	if err != nil {
@@ -89,18 +95,32 @@ func TestNftablesTransactionStagesSnapshotsActivatesAndReinspects(t *testing.T) 
 	if observed.Digest != corestate.Digest(node.Desired) || !observed.Protected {
 		t.Fatalf("transaction observation = %#v", observed)
 	}
-	if len(runner.commands) != 3 || runner.commands[0].Name != "apply.nftables_transaction" || runner.commands[0].Arguments[0] != token || runner.commands[0].Arguments[6] != "present" || string(runner.commands[0].Stdin) != content || !runner.commands[0].RedactStdin || !runner.commands[0].RedactOutput {
-		t.Fatalf("transaction commands = %#v", runner.commands)
+	if freshCalls != 1 || len(prepareRunner.commands) != 1 || len(confirmationRunner.commands) != 3 {
+		t.Fatalf("transaction runner split = fresh %d, prepare %#v, confirmation %#v", freshCalls, prepareRunner.commands, confirmationRunner.commands)
 	}
-	script := runner.commands[0].Script
+	prepare := prepareRunner.commands[0]
+	if prepare.Name != "apply.nftables_transaction_prepare" || prepare.Arguments[0] != token || prepare.Arguments[6] != "present" || prepare.Arguments[7] != "30" || string(prepare.Stdin) != content || !prepare.RedactStdin || !prepare.RedactOutput {
+		t.Fatalf("prepare command = %#v", prepare)
+	}
+	confirmation := confirmationRunner.commands[0]
+	if confirmation.Name != "apply.nftables_transaction_confirm" || confirmation.Arguments[0] != token || confirmation.Arguments[6] != "present" || len(confirmation.Stdin) != 0 || !confirmation.RedactOutput {
+		t.Fatalf("confirmation command = %#v", confirmation)
+	}
+	script := prepare.Script
 	preflight := strings.Index(script, `nft -c -f "$activation"`)
 	activate := strings.Index(script, `nft -f "$activation"`)
 	snapshot := strings.Index(script, `nft --stateless list table "$family" "$name" >"$active_snapshot"`)
-	if preflight < 0 || activate < 0 || snapshot < 0 || preflight > snapshot || snapshot > activate || strings.Contains(script, content) || strings.Contains(script, "flush ruleset") || !strings.Contains(script, "restore_transaction") || !strings.Contains(script, "persistent.snapshot") || !strings.Contains(script, "marker.snapshot") {
+	watchdog := strings.Index(script, `exec nohup setsid sh ./watchdog.sh`)
+	if preflight < 0 || activate < 0 || snapshot < 0 || watchdog < 0 || preflight > snapshot || snapshot > watchdog || watchdog > activate || strings.Contains(script, content) || strings.Contains(script, "flush ruleset") || !strings.Contains(script, "rollback_pending") || !strings.Contains(script, "persistent.snapshot") || !strings.Contains(script, "marker.snapshot") || !strings.Contains(script, "arming.snapshot") {
 		t.Fatalf("transaction does not preflight/snapshot/rollback safely: %s", script)
 	}
+	if strings.Contains(script[:activate], `mv -f "$tmp" "$persistence"`) || !strings.Contains(confirmation.Script, `atomic_copy "$candidate" "$persistence"`) || !strings.Contains(confirmation.Script, `"$transaction/confirmed"`) {
+		t.Fatalf("persistence or confirmation crossed transaction phases")
+	}
 	untrackedRunner := &commandRunner{outputs: map[string][]byte{}}
-	_, err = applyNftablesTransaction(context.Background(), untrackedRunner, engine.Step{
+	_, err = applyNftablesTransaction(context.Background(), untrackedRunner, func() (backend.Runner, error) {
+		return confirmationRunner, nil
+	}, engine.Step{
 		Action: engine.ActionUpdate, Node: node, Observed: engine.ObservedResource{Exists: true},
 	}, func() (string, error) { return token, nil })
 	if err == nil || !strings.Contains(err.Error(), "adopt_existing") || len(untrackedRunner.commands) != 0 {
@@ -108,7 +128,9 @@ func TestNftablesTransactionStagesSnapshotsActivatesAndReinspects(t *testing.T) 
 	}
 
 	invalidTokenRunner := &commandRunner{outputs: map[string][]byte{}}
-	_, err = applyNftablesTransaction(context.Background(), invalidTokenRunner, engine.Step{Action: engine.ActionCreate, Node: node}, func() (string, error) {
+	_, err = applyNftablesTransaction(context.Background(), invalidTokenRunner, func() (backend.Runner, error) {
+		return confirmationRunner, nil
+	}, engine.Step{Action: engine.ActionCreate, Node: node}, func() (string, error) {
 		return "not-a-valid-token", nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "invalid token") || len(invalidTokenRunner.commands) != 0 {
@@ -125,18 +147,53 @@ func TestNftablesDeleteTransactionUsesOnlyRecordedIdentity(t *testing.T) {
 		"observed_marker_path": marker, "activation_fingerprint": fingerprint,
 		"rollback_timeout_seconds": int64(30),
 	}}
-	runner := &commandRunner{outputs: map[string][]byte{}}
+	prepareRunner := &commandRunner{outputs: map[string][]byte{}}
+	confirmationRunner := &commandRunner{outputs: map[string][]byte{}}
 	token := strings.Repeat("e", 64)
-	if err := deleteNftablesTransaction(context.Background(), runner, engine.Step{Action: engine.ActionDelete, Prior: prior}, func() (string, error) {
+	if err := deleteNftablesTransaction(context.Background(), prepareRunner, func() (backend.Runner, error) {
+		return confirmationRunner, nil
+	}, engine.Step{Action: engine.ActionDelete, Prior: prior}, func() (string, error) {
 		return token, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.commands) != 1 || !reflect.DeepEqual(runner.commands[0].Arguments, []string{token, "inet", "edge", path, marker, fingerprint, "absent"}) || len(runner.commands[0].Stdin) != 0 || !runner.commands[0].RedactOutput {
-		t.Fatalf("delete transaction command = %#v", runner.commands)
+	prepareArguments := []string{token, "inet", "edge", path, marker, fingerprint, "absent", "30"}
+	confirmArguments := []string{token, "inet", "edge", path, marker, fingerprint, "absent"}
+	if len(prepareRunner.commands) != 1 || !reflect.DeepEqual(prepareRunner.commands[0].Arguments, prepareArguments) || len(prepareRunner.commands[0].Stdin) != 0 || !prepareRunner.commands[0].RedactOutput {
+		t.Fatalf("delete prepare command = %#v", prepareRunner.commands)
 	}
-	if strings.Contains(runner.commands[0].Script, "flush ruleset") {
-		t.Fatalf("delete transaction contains global flush: %s", runner.commands[0].Script)
+	if len(confirmationRunner.commands) != 1 || !reflect.DeepEqual(confirmationRunner.commands[0].Arguments, confirmArguments) || !confirmationRunner.commands[0].RedactOutput {
+		t.Fatalf("delete confirmation command = %#v", confirmationRunner.commands)
+	}
+	if strings.Contains(prepareRunner.commands[0].Script, "flush ruleset") || strings.Contains(confirmationRunner.commands[0].Script, "flush ruleset") {
+		t.Fatalf("delete transaction contains global flush")
+	}
+}
+
+func TestNftablesConfirmationFailureLeavesWatchdogArmedWithoutLeakingProtectedData(t *testing.T) {
+	content := "# Managed by AlpineForm\ntable inet edge {}\n"
+	node := testNftablesPersistenceNode(content)
+	token := strings.Repeat("f", 64)
+	prepareRunner := &commandRunner{outputs: map[string][]byte{}}
+	confirmationRunner := &commandRunner{errors: map[string]error{
+		"apply.nftables_transaction_confirm": errors.New("management connection lost"),
+	}}
+	_, err := applyNftablesTransaction(context.Background(), prepareRunner, func() (backend.Runner, error) {
+		return confirmationRunner, nil
+	}, engine.Step{Action: engine.ActionCreate, Node: node}, func() (string, error) {
+		return token, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "remote rollback remains armed") {
+		t.Fatalf("confirmation failure = %v", err)
+	}
+	if strings.Contains(err.Error(), token) || strings.Contains(err.Error(), content) {
+		t.Fatalf("confirmation failure leaked protected data: %v", err)
+	}
+	if len(prepareRunner.commands) != 1 || len(confirmationRunner.commands) != 1 {
+		t.Fatalf("confirmation failure commands = prepare %#v, confirmation %#v", prepareRunner.commands, confirmationRunner.commands)
+	}
+	if !strings.Contains(prepareRunner.commands[0].Script, "awaiting_confirmation") || !strings.Contains(prepareRunner.commands[0].Script, "rollback_pending") {
+		t.Fatalf("prepare command did not leave an armed watchdog")
 	}
 }
 
@@ -172,10 +229,17 @@ start() {
 }
 
 func TestNftablesProviderScriptsHaveValidShellSyntax(t *testing.T) {
+	watchdogStart := strings.Index(nftablesTransactionPrepareScript, "#!/bin/sh\n")
+	watchdogEnd := strings.Index(nftablesTransactionPrepareScript, "\nALPINEFORM_NFTABLES_WATCHDOG\n")
+	if watchdogStart < 0 || watchdogEnd <= watchdogStart {
+		t.Fatal("embedded nftables watchdog script is missing")
+	}
 	scripts := map[string]string{
 		"persistence inspect": nftablesPersistenceInspectScript,
 		"active inspect":      nftablesActiveInspectScript,
-		"transaction":         nftablesTransactionScript,
+		"transaction prepare": nftablesTransactionPrepareScript,
+		"embedded watchdog":   nftablesTransactionPrepareScript[watchdogStart:watchdogEnd],
+		"transaction confirm": nftablesTransactionConfirmScript,
 		"service inspect":     nftablesServiceInspectScript,
 		"service apply":       nftablesServiceApplyScript,
 	}

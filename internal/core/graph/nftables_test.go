@@ -33,7 +33,7 @@ func TestCompileNftablesUsesCollisionFreeProtectedTransactionNode(t *testing.T) 
 		t.Fatalf("nftables identities collided: %#v %#v", ipAddresses, ip6Addresses)
 	}
 	ip := nodes[ipAddresses.Table]
-	if ip.Kind != "nftables_table" || !ip.Managed || !ip.Sensitive || ip.Payload["content"] != secret || !reflect.DeepEqual(ip.DependsOn, []string{ipAddresses.Package}) {
+	if ip.Kind != "nftables_table" || !ip.Managed || !ip.Sensitive || ip.Payload["content"] != secret || !reflect.DeepEqual(ip.DependsOn, []string{ipAddresses.Package, ipAddresses.Service}) {
 		t.Fatalf("ip nftables node = %#v", ip)
 	}
 	if ip.Desired["ownership"] != "exclusive_named_table" || ip.Desired["external_rules"] != "preserve" || ip.Desired["delete_behavior"] != "" {
@@ -48,7 +48,7 @@ func TestCompileNftablesUsesCollisionFreeProtectedTransactionNode(t *testing.T) 
 		t.Fatalf("transaction addresses = %#v", ip.Payload["transaction_addresses"])
 	}
 	service := nodes[ipAddresses.Service]
-	wantServiceDependencies := []string{ipAddresses.Package, ipAddresses.Table, ip6Addresses.Table}
+	wantServiceDependencies := []string{ipAddresses.Package}
 	if service.Kind != "nftables_service" || !service.Managed || !reflect.DeepEqual(service.DependsOn, wantServiceDependencies) || service.Desired["stock_configuration"] != "preserve" {
 		t.Fatalf("nftables service node = %#v", service)
 	}

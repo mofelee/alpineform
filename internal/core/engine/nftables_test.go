@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -65,5 +66,27 @@ func TestNftablesPlanRequiresExplicitAdoptionBeforeMutation(t *testing.T) {
 	}
 	if len(plan.Hosts) != 1 || len(plan.Hosts[0].Steps) != 1 || plan.Hosts[0].Steps[0].Action != ActionAdopt {
 		t.Fatalf("explicit nftables adoption plan = %#v", plan)
+	}
+}
+
+func TestNftablesConfirmationFailureWritesNoSuccessfulState(t *testing.T) {
+	host := testHost()
+	node := graph.Node{
+		Host: "node", Address: `host.node.nftables.table["inet/edge"]`, Kind: "nftables_table", Managed: true,
+		Desired: map[string]any{"family": "inet", "name": "edge", "ensure": "present"}, Sensitive: true,
+		Source: ir.SourceRef{File: "main.apf.hcl", Line: 3, Path: `host["node"].nftables.table["edge"]`},
+	}
+	backend := newMemoryBackend()
+	actionEngine := Engine{Backend: backend, Provider: failingProvider{applyError: errors.New("fresh management confirmation failed")}}
+	_, err := actionEngine.Apply(context.Background(), staticBuild(host, node), ApplyOptions{
+		ReviewPreview: func(context.Context, Plan) error { return nil },
+		ReviewLocked:  func(context.Context, Plan, Plan, bool) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "protected resource") {
+		t.Fatalf("nftables confirmation failure = %v", err)
+	}
+	state, writes := backend.snapshot("node")
+	if writes != 0 || len(state.Resources) != 0 {
+		t.Fatalf("failed nftables confirmation state = %#v, writes = %d", state, writes)
 	}
 }

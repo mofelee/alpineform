@@ -83,10 +83,8 @@ func appendNftablesNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAdd
 	if host.Nftables == nil {
 		return
 	}
-	tableAddresses := make([]string, 0, len(host.Nftables.Tables))
 	for _, table := range host.Nftables.Tables {
 		addresses := nftablesResourceAddresses(host.Name, table.Family, table.Name)
-		tableAddresses = append(tableAddresses, addresses.Table)
 		deleteBehavior := ""
 		if table.OnRemove == "delete" {
 			deleteBehavior = "delete"
@@ -140,7 +138,7 @@ func appendNftablesNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAdd
 					"watchdog": addresses.Watchdog, "confirmation": addresses.Confirmation,
 				},
 			},
-			DependsOn: []string{packageResourceAddress(host.Name, "nftables")}, Sensitive: true, Ephemeral: table.Ephemeral, DigestSafe: true,
+			DependsOn: []string{packageResourceAddress(host.Name, "nftables"), addresses.Service}, Sensitive: true, Ephemeral: table.Ephemeral, DigestSafe: true,
 		})
 	}
 	initSum := sha256.Sum256([]byte(nftablesOpenRCInitScript))
@@ -155,7 +153,7 @@ func appendNftablesNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAdd
 			"ensure": "present", "delete_behavior": "",
 		},
 		Payload:   map[string]any{"init_script": nftablesOpenRCInitScript},
-		DependsOn: append([]string{packageResourceAddress(host.Name, "nftables")}, tableAddresses...), DigestSafe: true,
+		DependsOn: []string{packageResourceAddress(host.Name, "nftables")}, DigestSafe: true,
 	})
 }
 
