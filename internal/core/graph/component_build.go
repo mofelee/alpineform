@@ -120,6 +120,7 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 		Desired: map[string]any{
 			"build_identity": build.Identity, "workspace": workspace, "output": build.Output,
 			"output_sha256": build.OutputSHA256, "max_output_bytes": build.MaxOutputBytes,
+			"executable": build.Executable,
 			"cache_path": outputCache, "marker_path": outputMarker, "virtual_package": virtualPackage, "owner_id": ownerID,
 			"dependency_marker": dependencyMarker, "ensure": "present", "delete_behavior": deleteBehavior,
 			"protected_input_paths": append([]string(nil), protectedInputPaths...),
@@ -151,7 +152,10 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 			"build_identity": build.Identity, "cache_path": outputCache, "output_marker": outputMarker,
 			"path": install.Path, "owner": install.Owner, "group": install.Group, "mode": install.Mode,
 			"install_marker": installMarker, "ensure": "present", "delete_behavior": deleteBehavior,
-			"delete":          map[string]any{"path": install.Path, "install_marker": installMarker, "cache_path": outputCache, "output_marker": outputMarker},
+			"delete": map[string]any{
+				"path": install.Path, "install_marker": installMarker, "cache_path": outputCache,
+				"output_marker": outputMarker, "build_identity": build.Identity,
+			},
 			"prevent_destroy": component.Lifecycle.PreventDestroy,
 		},
 		DependsOn: []string{cleanupAddress}, TriggeredBy: []string{cleanupAddress},

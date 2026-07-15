@@ -44,6 +44,7 @@ type ComponentBuildSpec struct {
 	Output             string                      `json:"output"`
 	OutputSHA256       string                      `json:"output_sha256,omitempty"`
 	MaxOutputBytes     int64                       `json:"max_output_bytes"`
+	Executable         bool                        `json:"executable,omitempty"`
 	Dependencies       []string                    `json:"dependencies,omitempty"`
 	Network            string                      `json:"network"`
 	OnRemove           string                      `json:"on_remove"`

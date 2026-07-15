@@ -349,6 +349,7 @@ func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []gra
 				step.Action = ActionCreate
 			}
 		}
+		step.Summary = sourceBuildPlanSummary(step)
 		if (step.Action == ActionDelete || step.Action == ActionDestroy) && node.Lifecycle != nil && node.Lifecycle.PreventDestroy {
 			return HostPlan{}, fmt.Errorf("%s:%d:%s: prevent_destroy blocks %s for %s", node.Source.File, node.Source.Line, node.Source.Path, step.Action, node.Address)
 		}
@@ -386,6 +387,25 @@ func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []gra
 	}
 	hostPlan.Fingerprint = planFingerprint(hostPlan)
 	return hostPlan, nil
+}
+
+func sourceBuildPlanSummary(step Step) string {
+	if !strings.HasPrefix(step.Node.Kind, "component_build_") || step.Prior == nil {
+		return step.Summary
+	}
+	prefix := ""
+	if step.Prior.DesiredDigest != corestate.Digest(step.Node.Desired) {
+		prefix = "rebuild"
+	} else if step.Action == ActionCreate || step.Action == ActionUpdate {
+		prefix = "repair"
+	}
+	if prefix == "" {
+		return step.Summary
+	}
+	if step.Summary == "" {
+		return prefix + " source-build resource"
+	}
+	return prefix + ": " + step.Summary
 }
 
 func apkDependenciesChanged(dependencies []string, actions map[string]string) bool {

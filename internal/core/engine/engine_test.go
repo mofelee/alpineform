@@ -250,6 +250,39 @@ func TestPlanNodeActionModel(t *testing.T) {
 	}
 }
 
+func TestSourceBuildPlanDistinguishesRebuildAndRepair(t *testing.T) {
+	address := "host.node.component.tool.build.install[\"/usr/local/bin/tool\"]"
+	desired := map[string]any{"build_identity": "new", "path": "/usr/local/bin/tool"}
+	node := graph.Node{Host: "node", Address: address, Kind: "component_build_install", Managed: true, Summary: "install source-build output", Desired: desired}
+	tests := []struct {
+		name           string
+		priorDigest    string
+		observedDigest string
+		want           string
+	}{
+		{name: "definition drift", priorDigest: corestate.Digest(map[string]any{"build_identity": "old", "path": "/usr/local/bin/tool"}), observedDigest: "drifted", want: "rebuild:"},
+		{name: "installed drift", priorDigest: corestate.Digest(desired), observedDigest: "drifted", want: "repair:"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := newMemoryBackend()
+			backend.states["node"] = corestate.State{Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node", Resources: map[string]corestate.Resource{
+				address: {DesiredDigest: test.priorDigest},
+			}}
+			provider := newMemoryProvider()
+			provider.set(address, ObservedResource{Exists: true, Digest: test.observedDigest})
+			plan, err := (Engine{Backend: backend, Provider: provider}).Plan(context.Background(), staticBuild(testHost(), node))
+			if err != nil {
+				t.Fatal(err)
+			}
+			step := plan.Hosts[0].Steps[0]
+			if step.Action != ActionUpdate || !strings.HasPrefix(step.Summary, test.want) {
+				t.Fatalf("step = %#v", step)
+			}
+		})
+	}
+}
+
 func TestPlanAggregatesChangedTriggersIntoOneDependentStep(t *testing.T) {
 	first := graph.Node{Host: "node", Address: "host.node.file.init", Kind: "file", Managed: true, Desired: map[string]any{"value": "init"}}
 	second := graph.Node{Host: "node", Address: "host.node.file.conf", Kind: "file", Managed: true, Desired: map[string]any{"value": "conf"}}

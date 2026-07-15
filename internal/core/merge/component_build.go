@@ -73,6 +73,10 @@ func compileComponentBuild(template parser.Component, instance parser.ComponentI
 	if maxOutputBytes < 1 || maxOutputBytes > 1024*1024*1024 {
 		return nil, buildAttributeError(build.Attributes, "max_output_bytes", build.Source, "must be between 1 and 1073741824")
 	}
+	executable, err := buildBoolDefault(build.Attributes, "executable", false, ctx, build.Source)
+	if err != nil {
+		return nil, err
+	}
 	network, err := buildStringDefault(build.Attributes, "network", "none", ctx, build.Source)
 	if err != nil {
 		return nil, err
@@ -120,6 +124,7 @@ func compileComponentBuild(template parser.Component, instance parser.ComponentI
 		Output             string
 		OutputSHA256       string
 		MaxOutputBytes     int64
+		Executable         bool
 		Dependencies       []string
 		Network            string
 		Install            any
@@ -127,7 +132,7 @@ func compileComponentBuild(template parser.Component, instance parser.ComponentI
 	}{
 		Template: template.Name, Instance: instance.Name, WorkingDirectory: workingDirectory,
 		EnvironmentVersion: environmentVersion, Output: output, OutputSHA256: outputSHA,
-		MaxOutputBytes: maxOutputBytes, Dependencies: dependencies, Network: network,
+		MaxOutputBytes: maxOutputBytes, Executable: executable, Dependencies: dependencies, Network: network,
 		Install:  struct{ Path, Owner, Group, Mode string }{install.Path, install.Owner, install.Group, install.Mode},
 		Platform: buildPlatformIdentity(host, facts),
 	}
@@ -171,8 +176,9 @@ func compileComponentBuild(template parser.Component, instance parser.ComponentI
 		WorkingDirectory: workingDirectory, Environment: environment, EnvironmentNames: environmentNames,
 		EnvironmentVersion: environmentVersion, Output: output, OutputSHA256: outputSHA,
 		MaxOutputBytes: maxOutputBytes, Dependencies: dependencies, Network: network, OnRemove: onRemove,
-		Sensitive: environmentSensitive || commandSensitive || buildInputsSensitive(inputs),
-		Ephemeral: environmentEphemeral || commandEphemeral || buildInputsEphemeral(inputs), Source: build.Source,
+		Executable: executable,
+		Sensitive:  environmentSensitive || commandSensitive || buildInputsSensitive(inputs),
+		Ephemeral:  environmentEphemeral || commandEphemeral || buildInputsEphemeral(inputs), Source: build.Source,
 	}, nil
 }
 
@@ -461,6 +467,21 @@ func buildIntDefault(attributes map[string]parser.ResourceAttribute, name string
 		return 0, buildAttributeError(attributes, name, parent, "must evaluate to an integer")
 	}
 	return parsed, nil
+}
+
+func buildBoolDefault(attributes map[string]parser.ResourceAttribute, name string, fallback bool, ctx parser.EvalContext, parent ir.SourceRef) (bool, error) {
+	attribute, exists := attributes[name]
+	if !exists {
+		return fallback, nil
+	}
+	value, err := parser.EvaluateExpression(attribute.Expression, ctx, attribute.Source)
+	if err != nil {
+		return false, buildAttributeError(attributes, name, parent, "evaluate: %v", err)
+	}
+	if value.Kind != parser.KindBool || value.ContainsSensitive() || value.ContainsEphemeral() {
+		return false, buildAttributeError(attributes, name, parent, "must evaluate to a non-protected boolean")
+	}
+	return value.Bool, nil
 }
 
 func buildStringList(attributes map[string]parser.ResourceAttribute, name string, ctx parser.EvalContext, parent ir.SourceRef, allowEmpty bool) ([]string, error) {

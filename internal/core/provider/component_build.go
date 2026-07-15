@@ -355,6 +355,7 @@ max_bytes=$4
 cache=$5
 marker=$6
 identity=$7
+executable=$8
 source=$workspace/$output
 old_ifs=$IFS
 IFS=/
@@ -366,6 +367,7 @@ for part in "$@"; do
   if [ -L "$probe" ]; then echo 'source-build output path contains a symbolic link' >&2; exit 1; fi
 done
 if [ -L "$source" ] || [ ! -f "$source" ]; then echo 'source-build output must be one regular non-symbolic-link file' >&2; exit 1; fi
+if [ "$executable" = true ] && [ ! -x "$source" ]; then echo 'source-build output is not executable' >&2; exit 1; fi
 size=$(stat -c '%s' "$source")
 if [ "$size" -gt "$max_bytes" ]; then echo 'source-build output exceeds the declared size limit' >&2; exit 1; fi
 actual=$(sha256sum "$source" | awk '{print $1}')
@@ -383,8 +385,8 @@ if [ "$copied" != "$actual" ]; then echo 'source-build output changed while stag
 chmod 0600 "$tmp"
 printf '%s\n%s\n%s\n' "$identity" "$actual" "$size" >"$marker_tmp"
 chmod 0600 "$marker_tmp"
-mv -f "$tmp" "$cache"
-mv -f "$marker_tmp" "$marker"
+mv -fT "$tmp" "$cache"
+mv -fT "$marker_tmp" "$marker"
 trap - EXIT HUP INT TERM
 `
 
@@ -474,9 +476,14 @@ while [ "$probe" != / ]; do
   probe=${probe%/*}; [ -n "$probe" ] || probe=/
 done
 mkdir -p "$parent"
-if [ -d "$path" ]; then echo 'refusing to replace a directory with source-build output' >&2; exit 1; fi
+if [ ! -L "$path" ] && [ -d "$path" ]; then echo 'refusing to replace a directory with source-build output' >&2; exit 1; fi
 tmp=$(mktemp "$parent/.alpineform-build-install.XXXXXX")
 marker_parent=${install_marker%/*}
+probe=$marker_parent
+while [ "$probe" != / ]; do
+  if [ -L "$probe" ]; then echo 'source-build install marker parent contains a symbolic link' >&2; exit 1; fi
+  probe=${probe%/*}; [ -n "$probe" ] || probe=/
+done
 mkdir -p "$marker_parent"
 marker_tmp=$(mktemp "$marker_parent/.alpineform-build-install-marker.XXXXXX")
 cleanup() { rm -f "$tmp" "$marker_tmp"; }
@@ -488,9 +495,46 @@ chmod "$mode" "$tmp"
 printf '%s\n%s\n%s\n' "$identity" "$want" "$path" >"$marker_tmp"
 chmod 0600 "$marker_tmp"
 trap '' HUP INT TERM
-mv -f "$marker_tmp" "$install_marker"
-mv -f "$tmp" "$path"
+mv -fT "$marker_tmp" "$install_marker"
+mv -fT "$tmp" "$path"
 trap - EXIT HUP INT TERM
+`
+
+const componentBuildInstallDeleteScript = `set -eu
+path=$1
+install_marker=$2
+output_marker=$3
+cache=$4
+identity=$5
+if [ ! -f "$install_marker" ] || [ -L "$install_marker" ]; then
+  if [ -e "$path" ] || [ -L "$path" ]; then echo 'refusing to destroy source-build installation without its ownership marker' >&2; exit 1; fi
+else
+  if [ "$(sed -n '1p' "$install_marker")" != "$identity" ] || [ "$(sed -n '3p' "$install_marker")" != "$path" ]; then
+    echo 'refusing to destroy source-build installation owned by another identity' >&2
+    exit 1
+  fi
+  want=$(sed -n '2p' "$install_marker")
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    if [ -L "$path" ] || [ ! -f "$path" ] || [ "$(sha256sum "$path" | awk '{print $1}')" != "$want" ]; then
+      echo 'refusing to destroy drifted source-build installation' >&2
+      exit 1
+    fi
+    rm -f "$path"
+  fi
+fi
+if [ -e "$cache" ] || [ -L "$cache" ]; then
+  if [ -L "$cache" ] || [ ! -f "$cache" ] || [ ! -f "$output_marker" ] || [ -L "$output_marker" ] || [ "$(sed -n '1p' "$output_marker")" != "$identity" ]; then
+    echo 'refusing to destroy unverified source-build output cache' >&2
+    exit 1
+  fi
+  want=$(sed -n '2p' "$output_marker")
+  if [ "$(sha256sum "$cache" | awk '{print $1}')" != "$want" ]; then echo 'refusing to destroy drifted source-build output cache' >&2; exit 1; fi
+  rm -f "$cache" "$output_marker"
+elif [ -e "$output_marker" ] || [ -L "$output_marker" ]; then
+  echo 'refusing orphaned source-build output marker during destroy' >&2
+  exit 1
+fi
+rm -f "$install_marker"
 `
 
 func inspectComponentBuildInput(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
@@ -727,7 +771,8 @@ func inspectComponentBuildOutput(ctx context.Context, runner backend.Runner, nod
 	return buildObserved(node), nil
 }
 
-func applyComponentBuildOutput(ctx context.Context, runner backend.Runner, node graph.Node) (observed engine.ObservedResource, err error) {
+func applyComponentBuildOutput(ctx context.Context, runner backend.Runner, step engine.Step) (observed engine.ObservedResource, err error) {
+	node := step.Node
 	cache, marker, identity, err := componentBuildOutputIdentity(node)
 	if err != nil {
 		return engine.ObservedResource{}, err
@@ -742,11 +787,29 @@ func applyComponentBuildOutput(ctx context.Context, runner backend.Runner, node 
 	if !ok || maxBytes < 1 {
 		return engine.ObservedResource{}, fmt.Errorf("source-build output has invalid size metadata")
 	}
-	arguments := []string{workspace, stringValue(node.Desired, "output"), stringValue(node.Desired, "output_sha256"), strconv.FormatInt(maxBytes, 10), cache, marker, identity}
+	arguments := []string{workspace, stringValue(node.Desired, "output"), stringValue(node.Desired, "output_sha256"), strconv.FormatInt(maxBytes, 10), cache, marker, identity, strconv.FormatBool(boolValue(node.Desired, "executable"))}
 	if _, err = runner.Run(ctx, backend.Command{Name: "apply.component_build_output", Script: componentBuildOutputApplyScript, Arguments: arguments, RedactOutput: true}); err != nil {
 		return engine.ObservedResource{}, err
 	}
-	return inspectComponentBuildOutput(ctx, runner, node)
+	observed, err = inspectComponentBuildOutput(ctx, runner, node)
+	if err != nil {
+		return engine.ObservedResource{}, err
+	}
+	if step.Prior != nil {
+		oldCache, _ := step.Prior.Delete["cache_path"].(string)
+		oldMarker, _ := step.Prior.Delete["marker_path"].(string)
+		for _, previous := range []struct{ operation, path, current string }{
+			{"cleanup.component_build_output_previous", oldCache, cache},
+			{"cleanup.component_build_output_marker_previous", oldMarker, marker},
+		} {
+			if previous.path != "" && previous.path != previous.current {
+				if err := deleteBuildFile(ctx, runner, previous.operation, previous.path, stepIsProtected(step)); err != nil {
+					return engine.ObservedResource{}, err
+				}
+			}
+		}
+	}
+	return observed, nil
 }
 
 func inspectComponentBuildCleanup(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
@@ -875,12 +938,22 @@ func deleteComponentBuildResource(ctx context.Context, runner backend.Runner, st
 		}
 		return deleteBuildFile(ctx, runner, "delete.component_build_output_marker", stringValue(deletion, "marker_path"), stepIsProtected(step))
 	case "component_build_install":
-		for _, entry := range []struct{ name, operation string }{{"path", "delete.component_build_install"}, {"install_marker", "delete.component_build_install_marker"}, {"cache_path", "delete.component_build_output"}, {"output_marker", "delete.component_build_output_marker"}} {
-			if err := deleteBuildFile(ctx, runner, entry.operation, stringValue(deletion, entry.name), stepIsProtected(step)); err != nil {
+		path, installMarker := stringValue(deletion, "path"), stringValue(deletion, "install_marker")
+		cache, outputMarker := stringValue(deletion, "cache_path"), stringValue(deletion, "output_marker")
+		identity := stringValue(deletion, "build_identity")
+		if !componentProviderSHA256Pattern.MatchString(identity) {
+			return fmt.Errorf("source-build install destroy has invalid build identity")
+		}
+		for _, value := range []string{path, installMarker, cache, outputMarker} {
+			if err := validateRemoteFilePath(value); err != nil {
 				return err
 			}
 		}
-		return nil
+		_, err := runner.Run(ctx, backend.Command{
+			Name: "delete.component_build_install", Script: componentBuildInstallDeleteScript,
+			Arguments: []string{path, installMarker, outputMarker, cache, identity}, RedactOutput: stepIsProtected(step),
+		})
+		return err
 	default:
 		return fmt.Errorf("unsupported source-build deletion kind %q", kind)
 	}

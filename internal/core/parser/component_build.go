@@ -10,7 +10,7 @@ import (
 
 var componentBuildAttributes = attributeSet(
 	"working_directory", "environment", "environment_version", "output",
-	"output_sha256", "max_output_bytes", "dependencies", "network", "on_remove",
+	"output_sha256", "max_output_bytes", "executable", "dependencies", "network", "on_remove",
 )
 
 var componentBuildInputAttributes = attributeSet(

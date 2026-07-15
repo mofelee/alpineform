@@ -165,7 +165,7 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 	case "component_build_workspace":
 		return applyComponentBuildWorkspace(ctx, runner, step.Node)
 	case "component_build_output":
-		return applyComponentBuildOutput(ctx, runner, step.Node)
+		return applyComponentBuildOutput(ctx, runner, step)
 	case "component_build_cleanup":
 		return applyComponentBuildCleanup(ctx, runner, step.Node)
 	case "component_build_install":

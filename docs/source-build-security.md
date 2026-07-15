@@ -38,6 +38,11 @@ platform, APK dependencies, output policy, and install metadata. The graph
 uses separate stable addresses for input staging, dependency ownership,
 workspace execution, output verification, cleanup, and installation.
 
+The output policy can bound bytes, require an exact SHA-256, and require the
+declared output to be executable. Owner, group, and mode come from `install`.
+AlpineForm rejects missing, ambiguous/globbed, linked, parent-linked, special,
+oversized, checksum-invalid, or non-executable output before installation.
+
 ## Protected values
 
 Protected inline inputs, environment values, and command stdin require a
@@ -75,6 +80,13 @@ package, and installation identities. `lifecycle.prevent_destroy` blocks those
 recorded destructive actions before provider execution. A target with matching
 AlpineForm build and output markers can be adopted; an unmarked target is never
 silently claimed.
+
+The verified output is copied to a temporary file in the destination
+filesystem, checked again, assigned its final owner/group/mode, and replaced
+with no-follow `mv -T`. Build-definition changes are reported as rebuilds;
+installed digest or metadata drift is reported as repair. Explicit destroy
+rechecks the recorded marker and content digest and refuses to delete a linked,
+unowned, or drifted target.
 
 ## Threat boundaries
 

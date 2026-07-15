@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -192,7 +194,7 @@ func TestComponentBuildOutputFailureRunsOwnedCleanupBeforeInstall(t *testing.T) 
 			"dependency_marker": "/var/lib/alpineform/builds/owner.dependencies",
 		},
 	}
-	_, err := applyComponentBuildOutput(context.Background(), runner, node)
+	_, err := applyComponentBuildOutput(context.Background(), runner, engine.Step{Node: node})
 	if err == nil || !strings.Contains(err.Error(), "disk full") {
 		t.Fatalf("apply error = %v", err)
 	}
@@ -323,11 +325,12 @@ func TestComponentBuildOutputRejectsMissingLinkedSpecialAndOversizedCandidates(t
 		t.Fatal(err)
 	}
 	tests := []struct {
-		name     string
-		prepare  func(string) error
-		output   string
-		maxBytes int64
-		expected string
+		name       string
+		prepare    func(string) error
+		output     string
+		maxBytes   int64
+		expected   string
+		executable bool
 	}{
 		{name: "missing", output: "tool", maxBytes: 1024},
 		{name: "symlink", output: "tool", maxBytes: 1024, prepare: func(workspace string) error { return os.Symlink(installed, filepath.Join(workspace, "tool")) }},
@@ -338,6 +341,9 @@ func TestComponentBuildOutputRejectsMissingLinkedSpecialAndOversizedCandidates(t
 			return os.WriteFile(filepath.Join(workspace, "tool"), []byte("large"), 0600)
 		}},
 		{name: "checksum", output: "tool", maxBytes: 1024, expected: strings.Repeat("f", 64), prepare: func(workspace string) error {
+			return os.WriteFile(filepath.Join(workspace, "tool"), []byte("content"), 0600)
+		}},
+		{name: "not executable", output: "tool", maxBytes: 1024, executable: true, prepare: func(workspace string) error {
 			return os.WriteFile(filepath.Join(workspace, "tool"), []byte("content"), 0600)
 		}},
 	}
@@ -359,11 +365,12 @@ func TestComponentBuildOutputRejectsMissingLinkedSpecialAndOversizedCandidates(t
 			node := graph.Node{Kind: "component_build_output", Desired: map[string]any{
 				"workspace": workspace, "build_identity": identity, "output": test.output,
 				"output_sha256": test.expected, "max_output_bytes": test.maxBytes,
+				"executable": test.executable,
 				"cache_path": cache, "marker_path": cache + ".sha256",
 				"virtual_package": ".alpineform-build-0123456789abcdef01234567", "owner_id": testBuildOwner,
 				"dependency_marker": filepath.Join(root, "missing.dependencies"), "protected_input_paths": []string{},
 			}}
-			if _, err := applyComponentBuildOutput(context.Background(), localRunner{}, node); err == nil {
+			if _, err := applyComponentBuildOutput(context.Background(), localRunner{}, engine.Step{Node: node}); err == nil {
 				t.Fatal("invalid source-build output unexpectedly passed verification")
 			}
 			data, err := os.ReadFile(installed)
@@ -371,5 +378,117 @@ func TestComponentBuildOutputRejectsMissingLinkedSpecialAndOversizedCandidates(t
 				t.Fatalf("failed output verification changed prior install: %q, %v", data, err)
 			}
 		})
+	}
+}
+
+func TestComponentBuildInstallAtomicApplyDriftRepairAndOwnedDestroy(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache", "artifact")
+	if err := os.MkdirAll(filepath.Dir(cache), 0700); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("built-output")
+	if err := os.WriteFile(cache, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256String(string(content))
+	outputMarker := cache + ".sha256"
+	if err := os.WriteFile(outputMarker, []byte(testBuildIdentity+"\n"+digest+"\n"+fmt.Sprint(len(content))+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "bin", "tool")
+	installMarker := filepath.Join(root, "state", "installed")
+	node := graph.Node{Kind: "component_build_install", Desired: map[string]any{
+		"build_identity": testBuildIdentity, "cache_path": cache, "output_marker": outputMarker,
+		"path": target, "owner": strconv.Itoa(os.Getuid()), "group": strconv.Itoa(os.Getgid()), "mode": "0755",
+		"install_marker": installMarker, "ensure": "present", "delete_behavior": "destroy",
+		"delete": map[string]any{
+			"path": target, "install_marker": installMarker, "cache_path": cache,
+			"output_marker": outputMarker, "build_identity": testBuildIdentity,
+		},
+	}}
+	observed, err := applyComponentBuildInstall(context.Background(), localRunner{}, node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !observed.Exists || corestate.Digest(observed.Values) != corestate.Digest(node.Desired) {
+		t.Fatalf("observed = %#v", observed)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != string(content) {
+		t.Fatalf("installed = %q, %v", data, err)
+	}
+	if err := os.WriteFile(target, []byte("drifted"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	drifted, err := inspectComponentBuildInstall(context.Background(), localRunner{}, node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !drifted.Exists || corestate.Digest(drifted.Values) == corestate.Digest(node.Desired) {
+		t.Fatalf("drift observation = %#v", drifted)
+	}
+	if _, err := applyComponentBuildInstall(context.Background(), localRunner{}, node); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != string(content) {
+		t.Fatalf("repaired = %q, %v", data, err)
+	}
+
+	if err := os.WriteFile(target, []byte("external"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteComponentBuildResource(context.Background(), localRunner{}, engine.Step{Action: engine.ActionDestroy, Node: node}); err == nil {
+		t.Fatal("destroy unexpectedly removed a drifted installation")
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "external" {
+		t.Fatalf("refused destroy changed external content: %q, %v", data, err)
+	}
+	if _, err := applyComponentBuildInstall(context.Background(), localRunner{}, node); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteComponentBuildResource(context.Background(), localRunner{}, engine.Step{Action: engine.ActionDestroy, Node: node}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{target, installMarker, cache, outputMarker} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("owned destroy left %s: %v", path, err)
+		}
+	}
+}
+
+func TestComponentBuildInstallReplacesTargetSymlinkWithoutFollowing(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	content := []byte("verified")
+	if err := os.WriteFile(cache, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256String(string(content))
+	outputMarker := cache + ".sha256"
+	if err := os.WriteFile(outputMarker, []byte(testBuildIdentity+"\n"+digest+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside")
+	if err := os.Mkdir(outside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "tool")
+	if err := os.Symlink(outside, target); err != nil {
+		t.Fatal(err)
+	}
+	node := graph.Node{Kind: "component_build_install", Desired: map[string]any{
+		"build_identity": testBuildIdentity, "cache_path": cache, "output_marker": outputMarker,
+		"path": target, "owner": strconv.Itoa(os.Getuid()), "group": strconv.Itoa(os.Getgid()), "mode": "0755",
+		"install_marker": filepath.Join(root, "state", "installed"),
+	}}
+	if _, err := applyComponentBuildInstall(context.Background(), localRunner{}, node); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(target)
+	if err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("target = %#v, %v", info, err)
+	}
+	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+		t.Fatalf("symlink destination was followed: %#v, %v", entries, err)
 	}
 }
