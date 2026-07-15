@@ -119,22 +119,67 @@ if [ -L "$workspace" ]; then echo 'refusing symbolic-link source-build workspace
 rm -rf "$workspace"
 mkdir -p "$workspace"
 chmod 0700 "$workspace"
-case "$working" in .) ;; *) mkdir -p "$workspace/$working";; esac
 while [ "$#" -gt 0 ]; do
-  if [ "$#" -lt 3 ]; then echo 'invalid source-build input manifest' >&2; exit 1; fi
+  if [ "$#" -lt 5 ]; then echo 'invalid source-build input manifest' >&2; exit 1; fi
   cache=$1
   destination=$2
   want=$3
-  shift 3
+  format=$4
+  strip=$5
+  shift 5
   if [ ! -f "$cache" ] || [ -L "$cache" ]; then echo 'verified source-build input is missing or unsafe' >&2; exit 1; fi
   actual=$(sha256sum "$cache" | awk '{print $1}')
   if [ "$actual" != "$want" ]; then echo 'source-build input checksum changed before execution' >&2; exit 1; fi
   target="$workspace/$destination"
   parent=${target%/*}
   mkdir -p "$parent"
-  cp "$cache" "$target"
-  chmod 0600 "$target"
+  if [ -z "$format" ]; then
+    cp "$cache" "$target"
+    chmod 0600 "$target"
+    continue
+  fi
+  if [ "$format" != tar.gz ]; then echo 'unsupported source-build input archive format' >&2; exit 1; fi
+  staging=$(mktemp -d "$workspace/.alpineform-build-extract.XXXXXX")
+  manifest="$staging.archive.list"
+  stripped="$staging.stripped.list"
+  tar -tzf "$cache" >"$manifest"
+  if [ ! -s "$manifest" ]; then echo 'source-build input archive contains no entries' >&2; exit 1; fi
+  if [ "$(wc -l <"$manifest" | tr -d ' ')" -gt 100000 ]; then echo 'source-build input archive has too many entries' >&2; exit 1; fi
+  while IFS= read -r entry; do
+    if [ -z "$entry" ]; then echo 'source-build input archive contains an empty path' >&2; exit 1; fi
+    case "$entry" in
+      -*|/*|..|../*|*/..|*/../*) echo 'source-build input archive contains an unsafe path' >&2; exit 1;;
+      *[[:space:]\\:]*) echo 'source-build input archive paths containing whitespace, backslash, or colon are unsupported' >&2; exit 1;;
+    esac
+  done <"$manifest"
+  if tar -tvzf "$cache" | awk '{print substr($1,1,1)}' | grep -qvE '^[-d]$'; then
+    echo 'source-build input archive links and special entries are forbidden' >&2
+    exit 1
+  fi
+  awk -v strip="$strip" '
+    {
+      n = split($0, part, "/")
+      if (part[n] == "") n--
+      if (n <= strip) next
+      out = part[strip + 1]
+      for (i = strip + 2; i <= n; i++) out = out "/" part[i]
+      print out
+    }
+  ' "$manifest" | LC_ALL=C sort >"$stripped"
+  if [ ! -s "$stripped" ]; then echo 'source-build input archive has no entries after strip_components' >&2; exit 1; fi
+  if uniq -d "$stripped" | grep -q .; then echo 'source-build input archive entries collide after strip_components' >&2; exit 1; fi
+  tar -xzf "$cache" -C "$staging" --strip-components "$strip"
+  rm -f "$manifest" "$stripped"
+  if find "$staging" -type l -print -quit | grep -q . || find "$staging" ! -type f ! -type d -print -quit | grep -q .; then
+    echo 'source-build input extraction produced a link or special entry' >&2
+    exit 1
+  fi
+  line_count=$(find "$staging" -mindepth 1 -print | wc -l | tr -d ' ')
+  nul_count=$(find "$staging" -mindepth 1 -print0 | tr -cd '\000' | wc -c | tr -d ' ')
+  if [ "$line_count" != "$nul_count" ] || [ "$nul_count" = 0 ]; then echo 'source-build input extraction produced unsafe or no entries' >&2; exit 1; fi
+  mv "$staging" "$target"
 done
+case "$working" in .) ;; *) mkdir -p "$workspace/$working";; esac
 `
 
 const componentBuildCommandScript = `set -eu
@@ -380,7 +425,8 @@ func inspectComponentBuildInput(ctx context.Context, runner backend.Runner, node
 	return buildObserved(node), nil
 }
 
-func applyComponentBuildInput(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
+func applyComponentBuildInput(ctx context.Context, runner backend.Runner, step engine.Step) (engine.ObservedResource, error) {
+	node := step.Node
 	path, digest, err := componentBuildInputIdentity(node)
 	if err != nil {
 		return engine.ObservedResource{}, err
@@ -406,7 +452,19 @@ func applyComponentBuildInput(ctx context.Context, runner backend.Runner, node g
 	if _, err := runner.Run(ctx, command); err != nil {
 		return engine.ObservedResource{}, err
 	}
-	return inspectComponentBuildInput(ctx, runner, node)
+	observed, err := inspectComponentBuildInput(ctx, runner, node)
+	if err != nil {
+		return engine.ObservedResource{}, err
+	}
+	if step.Prior != nil {
+		oldPath, _ := step.Prior.Delete["path"].(string)
+		if oldPath != "" && oldPath != path {
+			if err := deleteBuildFile(ctx, runner, "cleanup.component_build_input_previous", oldPath, stepIsProtected(step)); err != nil {
+				return engine.ObservedResource{}, err
+			}
+		}
+	}
+	return observed, nil
 }
 
 func inspectComponentBuildDependencies(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
@@ -487,6 +545,10 @@ func applyComponentBuildWorkspace(ctx context.Context, runner backend.Runner, no
 	if !ok {
 		return engine.ObservedResource{}, fmt.Errorf("source-build workspace input digests are invalid")
 	}
+	inputExtract, ok := node.Payload["input_extract"].(map[string]map[string]any)
+	if !ok {
+		return engine.ObservedResource{}, fmt.Errorf("source-build workspace input extraction metadata is invalid")
+	}
 	destinations := make([]string, 0, len(inputPaths))
 	for destination := range inputPaths {
 		destinations = append(destinations, destination)
@@ -499,7 +561,16 @@ func applyComponentBuildWorkspace(ctx context.Context, runner backend.Runner, no
 		if !componentProviderSHA256Pattern.MatchString(digest) {
 			return engine.ObservedResource{}, fmt.Errorf("source-build input %q has invalid digest metadata", destination)
 		}
-		arguments = append(arguments, inputPaths[destination], destination, digest)
+		format := ""
+		strip := 0
+		if extract, exists := inputExtract[destination]; exists {
+			format, _ = extract["format"].(string)
+			strip, _ = extract["strip_components"].(int)
+			if format != "tar.gz" || strip < 0 || strip > 1024 {
+				return engine.ObservedResource{}, fmt.Errorf("source-build input %q has invalid extraction metadata", destination)
+			}
+		}
+		arguments = append(arguments, inputPaths[destination], destination, digest, format, strconv.Itoa(strip))
 	}
 	if _, err = runner.Run(ctx, backend.Command{Name: "apply.component_build_workspace.prepare", Script: componentBuildWorkspacePrepareScript, Arguments: arguments, RedactOutput: true}); err != nil {
 		return engine.ObservedResource{}, err

@@ -53,18 +53,25 @@ type ComponentBuildSpec struct {
 }
 
 type ComponentBuildInputSpec struct {
-	Name           string    `json:"name"`
-	Kind           string    `json:"kind"`
-	SourcePath     string    `json:"-"`
-	URL            string    `json:"url,omitempty"`
-	Content        []byte    `json:"-"`
-	ContentVersion string    `json:"content_version,omitempty"`
-	SHA256         string    `json:"sha256,omitempty"`
-	PayloadSHA256  string    `json:"-"`
-	Destination    string    `json:"destination"`
-	Sensitive      bool      `json:"sensitive,omitempty"`
-	Ephemeral      bool      `json:"ephemeral,omitempty"`
-	Source         SourceRef `json:"source"`
+	Name           string                          `json:"name"`
+	Kind           string                          `json:"kind"`
+	SourcePath     string                          `json:"-"`
+	URL            string                          `json:"url,omitempty"`
+	Content        []byte                          `json:"-"`
+	ContentVersion string                          `json:"content_version,omitempty"`
+	SHA256         string                          `json:"sha256,omitempty"`
+	PayloadSHA256  string                          `json:"-"`
+	Destination    string                          `json:"destination"`
+	Extract        *ComponentBuildInputExtractSpec `json:"extract,omitempty"`
+	Sensitive      bool                            `json:"sensitive,omitempty"`
+	Ephemeral      bool                            `json:"ephemeral,omitempty"`
+	Source         SourceRef                       `json:"source"`
+}
+
+type ComponentBuildInputExtractSpec struct {
+	Format          string    `json:"format"`
+	StripComponents int       `json:"strip_components,omitempty"`
+	Source          SourceRef `json:"source"`
 }
 
 type ComponentBuildCommandSpec struct {

@@ -39,7 +39,11 @@ component "tool" {
     input "source" {
       content     = "int main(void) { return 0; }"
       sha256      = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-      destination = "main.c"
+      destination = "src"
+      extract {
+        format           = "tar.gz"
+        strip_components = 1
+      }
     }
     command { argv = ["cc", "-o", "tool", "main.c"] }
     output = "tool"
@@ -52,7 +56,7 @@ component "tool" {
 		t.Fatal(err)
 	}
 	build := config.Components["tool"].Build
-	if build == nil || len(build.Inputs) != 1 || len(build.Commands) != 1 || build.Inputs[0].Name != "source" {
+	if build == nil || len(build.Inputs) != 1 || len(build.Commands) != 1 || build.Inputs[0].Name != "source" || build.Inputs[0].Extract == nil {
 		t.Fatalf("source build = %#v", build)
 	}
 }

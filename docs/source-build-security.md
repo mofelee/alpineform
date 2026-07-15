@@ -11,6 +11,10 @@ block. Every build has at least one named input with an exact SHA-256 and a
 fixed workspace-relative destination. Inputs come from a controller-local
 regular file, inline content, or an HTTP(S) transport locator with no embedded
 credentials. The checksum, not a URL or branch name, is the content identity.
+An optional `extract` block accepts only `format = "tar.gz"` and a bounded
+`strip_components`. Archive listing and extracted output both reject absolute
+or parent paths, links, special files, unsafe names, empty results, excessive
+entry counts, and paths that collide after stripping.
 
 Commands are repeated `command` blocks whose `argv` value is a non-empty string
 array. AlpineForm never accepts a shell command string and never interpolates

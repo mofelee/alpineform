@@ -51,6 +51,12 @@ type ComponentBuild struct {
 type ComponentBuildInput struct {
 	Name       string
 	Attributes map[string]ResourceAttribute
+	Extract    *ComponentBuildInputExtract
+	Source     ir.SourceRef
+}
+
+type ComponentBuildInputExtract struct {
+	Attributes map[string]ResourceAttribute
 	Source     ir.SourceRef
 }
 

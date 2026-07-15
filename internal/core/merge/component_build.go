@@ -136,7 +136,16 @@ func compileComponentBuild(template parser.Component, instance parser.ComponentI
 		if input.Sensitive || input.Ephemeral {
 			identity = "version:" + input.ContentVersion
 		}
-		identityDocument.Inputs = append(identityDocument.Inputs, struct{ Name, Kind, Identity, Destination string }{input.Name, input.Kind, identity, input.Destination})
+		extractFormat := ""
+		stripComponents := 0
+		if input.Extract != nil {
+			extractFormat = input.Extract.Format
+			stripComponents = input.Extract.StripComponents
+		}
+		identityDocument.Inputs = append(identityDocument.Inputs, struct {
+			Name, Kind, Identity, Destination, ExtractFormat string
+			StripComponents                                  int
+		}{input.Name, input.Kind, identity, input.Destination, extractFormat, stripComponents})
 	}
 	for _, command := range commands {
 		stdinIdentity := command.StdinSHA256
@@ -218,6 +227,23 @@ func compileBuildInputs(build parser.ComponentBuild, ctx parser.EvalContext, out
 			return nil, buildError(declaration.Source, "input requires exactly one of source, url, or content")
 		}
 		spec := ir.ComponentBuildInputSpec{Name: declaration.Name, Kind: selected, Destination: destination, SHA256: shaValue, PayloadSHA256: shaValue, Source: declaration.Source}
+		if declaration.Extract != nil {
+			format, formatErr := buildStringDefault(declaration.Extract.Attributes, "format", "tar.gz", ctx, declaration.Extract.Source)
+			if formatErr != nil {
+				return nil, formatErr
+			}
+			if format != "tar.gz" {
+				return nil, buildAttributeError(declaration.Extract.Attributes, "format", declaration.Extract.Source, "must be \"tar.gz\"")
+			}
+			strip, stripErr := buildIntDefault(declaration.Extract.Attributes, "strip_components", 0, ctx, declaration.Extract.Source)
+			if stripErr != nil {
+				return nil, stripErr
+			}
+			if strip < 0 || strip > 1024 {
+				return nil, buildAttributeError(declaration.Extract.Attributes, "strip_components", declaration.Extract.Source, "must be between 0 and 1024")
+			}
+			spec.Extract = &ir.ComponentBuildInputExtractSpec{Format: format, StripComponents: int(strip), Source: declaration.Extract.Source}
+		}
 		switch selected {
 		case "url":
 			value, valueErr := buildStringDefault(declaration.Attributes, "url", "", ctx, declaration.Source)

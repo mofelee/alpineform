@@ -18,6 +18,7 @@ var componentBuildInputAttributes = attributeSet(
 )
 
 var componentBuildCommandAttributes = attributeSet("argv", "stdin", "stdin_version")
+var componentBuildInputExtractAttributes = attributeSet("format", "strip_components")
 
 func parseComponentBuild(file, componentPath string, block *hclsyntax.Block) (ComponentBuild, error) {
 	path := componentPath + ".build"
@@ -61,14 +62,29 @@ func parseComponentBuildInput(file, buildPath string, block *hclsyntax.Block) (C
 	}
 	name := block.Labels[0]
 	path := buildPath + ".input[" + strconv.Quote(name) + "]"
-	if len(block.Body.Blocks) != 0 {
-		return ComponentBuildInput{}, fmt.Errorf("%s:%d:%s does not support nested blocks", file, block.Body.Blocks[0].TypeRange.Start.Line, path)
-	}
 	attributes, err := buildAttributes(file, path, block.Body.Attributes, componentBuildInputAttributes)
 	if err != nil {
 		return ComponentBuildInput{}, err
 	}
-	return ComponentBuildInput{Name: name, Attributes: attributes, Source: ir.SourceRef{File: file, Line: block.TypeRange.Start.Line, Path: path}}, nil
+	input := ComponentBuildInput{Name: name, Attributes: attributes, Source: ir.SourceRef{File: file, Line: block.TypeRange.Start.Line, Path: path}}
+	for _, child := range block.Body.Blocks {
+		if child.Type != "extract" {
+			return ComponentBuildInput{}, fmt.Errorf("%s:%d: unsupported block %s.%s", file, child.TypeRange.Start.Line, path, child.Type)
+		}
+		if input.Extract != nil {
+			return ComponentBuildInput{}, fmt.Errorf("%s:%d: duplicate %s.extract block", file, child.TypeRange.Start.Line, path)
+		}
+		if len(child.Labels) != 0 || len(child.Body.Blocks) != 0 {
+			return ComponentBuildInput{}, fmt.Errorf("%s:%d:%s.extract must be an unlabeled attribute-only block", file, child.TypeRange.Start.Line, path)
+		}
+		extractPath := path + ".extract"
+		extractAttributes, err := buildAttributes(file, extractPath, child.Body.Attributes, componentBuildInputExtractAttributes)
+		if err != nil {
+			return ComponentBuildInput{}, err
+		}
+		input.Extract = &ComponentBuildInputExtract{Attributes: extractAttributes, Source: ir.SourceRef{File: file, Line: child.TypeRange.Start.Line, Path: extractPath}}
+	}
+	return input, nil
 }
 
 func parseComponentBuildCommand(file, buildPath string, index int, block *hclsyntax.Block) (ComponentBuildCommand, error) {

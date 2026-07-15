@@ -31,6 +31,7 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 	inputAddresses := make([]string, 0, len(build.Inputs))
 	inputPaths := make(map[string]string, len(build.Inputs))
 	inputSHA256 := make(map[string]string, len(build.Inputs))
+	inputExtract := make(map[string]map[string]any, len(build.Inputs))
 	protectedInputPaths := []string{}
 	for _, input := range build.Inputs {
 		cacheKey := input.PayloadSHA256
@@ -46,6 +47,9 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 		inputAddresses = append(inputAddresses, address)
 		inputPaths[input.Destination] = cachePath
 		inputSHA256[input.Destination] = input.PayloadSHA256
+		if input.Extract != nil {
+			inputExtract[input.Destination] = map[string]any{"format": input.Extract.Format, "strip_components": input.Extract.StripComponents}
+		}
 		desired := map[string]any{
 			"name": input.Name, "kind": input.Kind, "path": cachePath, "destination": input.Destination,
 			"sha256": input.SHA256, "content_version": input.ContentVersion, "url": input.URL,
@@ -100,7 +104,10 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 			"ensure":                "present", "delete_behavior": deleteBehavior,
 			"delete": map[string]any{"workspace": workspace}, "prevent_destroy": component.Lifecycle.PreventDestroy,
 		},
-		Payload:   map[string]any{"environment": cloneStringMap(build.Environment), "commands": commandPayload, "input_sha256": inputSHA256},
+		Payload: map[string]any{
+			"environment": cloneStringMap(build.Environment), "commands": commandPayload,
+			"input_sha256": inputSHA256, "input_extract": inputExtract,
+		},
 		DependsOn: append(append([]string(nil), inputAddresses...), dependenciesAddress), TriggeredBy: append(append([]string(nil), inputAddresses...), dependenciesAddress),
 		Sensitive: build.Sensitive, Ephemeral: build.Ephemeral, DigestSafe: true,
 	})

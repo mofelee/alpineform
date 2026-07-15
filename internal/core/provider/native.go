@@ -159,7 +159,7 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 	case "component_script":
 		return applyComponentScript(ctx, runner, step)
 	case "component_build_input":
-		return applyComponentBuildInput(ctx, runner, step.Node)
+		return applyComponentBuildInput(ctx, runner, step)
 	case "component_build_dependencies":
 		return applyComponentBuildDependencies(ctx, runner, step.Node)
 	case "component_build_workspace":

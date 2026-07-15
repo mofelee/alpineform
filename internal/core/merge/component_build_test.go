@@ -90,3 +90,115 @@ host "node" {
 		t.Fatalf("definition drift did not change identity %q", first)
 	}
 }
+
+func TestCompileSourceBuildInputOrderingIsDeterministic(t *testing.T) {
+	oneDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("one")))
+	twoDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("two")))
+	first := `
+    input "one" {
+      content = "one"
+      sha256 = "` + oneDigest + `"
+      destination = "one.txt"
+    }
+`
+	second := `
+    input "two" {
+      content = "two"
+      sha256 = "` + twoDigest + `"
+      destination = "two.txt"
+    }
+`
+	compileIdentity := func(inputs string) string {
+		config, err := compileConfig(t, `
+component "tool" {
+  type = "source"
+  build {
+`+inputs+`
+    command { argv = ["cp", "one.txt", "tool"] }
+    output = "tool"
+  }
+  install { path = "/usr/local/bin/tool" }
+}
+host "node" {
+  platform { architecture = "x86_64" }
+  component "tool" { source = component.tool }
+}
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		program, err := Compile(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return program.Hosts[0].Components[0].Build.Identity
+	}
+	if left, right := compileIdentity(first+second), compileIdentity(second+first); left != right {
+		t.Fatalf("input declaration order changed identity: %q != %q", left, right)
+	}
+}
+
+func TestCompileSourceBuildArchiveInputContract(t *testing.T) {
+	config, err := compileConfig(t, `
+component "tool" {
+  type = "source"
+  build {
+    input "source" {
+      url = "https://example.invalid/tool-1.0.tar.gz"
+      sha256 = "`+artifactSHA+`"
+      destination = "src"
+      extract {
+        format = "tar.gz"
+        strip_components = 1
+      }
+    }
+    command { argv = ["make", "-C", "src"] }
+    output = "src/tool"
+  }
+  install { path = "/usr/local/bin/tool" }
+}
+host "node" {
+  platform { architecture = "x86_64" }
+  component "tool" { source = component.tool }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Compile(config)
+	if err == nil || !strings.Contains(err.Error(), "must not overlap declared output") {
+		t.Fatalf("overlapping archive output error = %v", err)
+	}
+
+	config, err = compileConfig(t, strings.ReplaceAll(`
+component "tool" {
+  type = "source"
+  build {
+    input "source" {
+      url = "https://example.invalid/tool-1.0.tar.gz"
+      sha256 = "SHA"
+      destination = "src"
+      extract { strip_components = 1 }
+    }
+    command { argv = ["make", "-C", "src", "BUILD_DIR=../build"] }
+    output = "build/tool"
+  }
+  install { path = "/usr/local/bin/tool" }
+}
+host "node" {
+  platform { architecture = "x86_64" }
+  component "tool" { source = component.tool }
+}
+`, "SHA", artifactSHA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extract := program.Hosts[0].Components[0].Build.Inputs[0].Extract
+	if extract == nil || extract.Format != "tar.gz" || extract.StripComponents != 1 {
+		t.Fatalf("compiled extract = %#v", extract)
+	}
+}
