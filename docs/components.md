@@ -72,8 +72,10 @@ cache. Archive destinations are removed recursively. Use
 `lifecycle.prevent_destroy` on the component instance when removal must require
 an explicit configuration change.
 
-Target-side `build` blocks are rejected during validation. Source builds are
-tracked separately in follow-up issue #14.
+Target-side builds are an independent Preview capability. Their schema,
+protected-value rules, ownership, failure behavior, and threat boundary are
+documented in [Target-side source-build security](source-build-security.md).
+They do not weaken the prebuilt artifact contract above.
 
 ## Change scripts
 

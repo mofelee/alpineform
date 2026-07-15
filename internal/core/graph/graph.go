@@ -284,6 +284,7 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 			})
 			appendComponentResourceNodes(graph, host, component, address)
 			appendComponentArtifactNodes(graph, host, component, address)
+			appendComponentBuildNodes(graph, host, component, address)
 		}
 		appendComponentScriptNodes(graph, host)
 	}
@@ -340,6 +341,9 @@ func appendComponentScriptNodes(resourceGraph *ResourceGraph, host ir.HostSpec) 
 		}
 		if component.Install != nil && component.Install.OnChange != nil {
 			trigger := componentAddress + ".artifact.install[" + strconv.Quote(component.Install.Path) + "]"
+			if component.Build != nil {
+				trigger = componentAddress + ".build.install[" + strconv.Quote(component.Install.Path) + "]"
+			}
 			add(*component.Install.OnChange, component.Name, trigger, component.Install.Path)
 		}
 	}

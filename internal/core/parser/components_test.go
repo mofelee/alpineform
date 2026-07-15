@@ -2,7 +2,6 @@ package parser
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -31,15 +30,29 @@ component "tool" {
 	}
 }
 
-func TestParseRejectsTargetBuildWithFollowUp(t *testing.T) {
+func TestParseSourceBuildSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "build.apf.hcl")
 	writeConfig(t, path, `
 component "tool" {
-  build {}
+  type = "source"
+  build {
+    input "source" {
+      content     = "int main(void) { return 0; }"
+      sha256      = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      destination = "main.c"
+    }
+    command { argv = ["cc", "-o", "tool", "main.c"] }
+    output = "tool"
+  }
+  install { path = "/usr/local/bin/tool" }
 }
 `)
-	_, err := ParseFiles([]string{path})
-	if err == nil || !strings.Contains(err.Error(), "unsupported in v0.1") || !strings.Contains(err.Error(), "#14") {
-		t.Fatalf("ParseFiles() error = %v", err)
+	config, err := ParseFiles([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := config.Components["tool"].Build
+	if build == nil || len(build.Inputs) != 1 || len(build.Commands) != 1 || build.Inputs[0].Name != "source" {
+		t.Fatalf("source build = %#v", build)
 	}
 }

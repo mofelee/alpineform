@@ -34,10 +34,29 @@ type Component struct {
 	Sources      map[string]ComponentArtifactSource
 	Extract      *ComponentArtifactExtract
 	Install      *ComponentArtifactInstall
+	Build        *ComponentBuild
 	OpenRC       *OpenRC
 	Resources    []ResourceDeclaration
 	Asserts      []Assert
 	Source       ir.SourceRef
+}
+
+type ComponentBuild struct {
+	Attributes map[string]ResourceAttribute
+	Inputs     []ComponentBuildInput
+	Commands   []ComponentBuildCommand
+	Source     ir.SourceRef
+}
+
+type ComponentBuildInput struct {
+	Name       string
+	Attributes map[string]ResourceAttribute
+	Source     ir.SourceRef
+}
+
+type ComponentBuildCommand struct {
+	Attributes map[string]ResourceAttribute
+	Source     ir.SourceRef
 }
 
 type ComponentArtifactSource struct {
@@ -376,7 +395,14 @@ func parseComponent(file string, block *hclsyntax.Block, ctx EvalContext) (Compo
 			}
 			component.Install = &install
 		case "build":
-			return Component{}, fmt.Errorf("%s:%d:%s.build: target-side build blocks are unsupported in v0.1; see follow-up #14", file, child.TypeRange.Start.Line, path)
+			if component.Build != nil {
+				return Component{}, fmt.Errorf("%s:%d: duplicate %s.build block", file, child.TypeRange.Start.Line, path)
+			}
+			build, err := parseComponentBuild(file, path, child)
+			if err != nil {
+				return Component{}, err
+			}
+			component.Build = &build
 		case "assert":
 			assertion, err := parseAssert(file, path+".assert", child, ctx)
 			if err != nil {

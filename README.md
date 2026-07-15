@@ -28,8 +28,11 @@ implemented Preview domain with a dedicated Alpine 3.24 x86_64 VM gate; they
 remain outside the v0.1 core promise because they depend on Alpine `community`.
 Rollback-safe named-table nftables is also an implemented Preview domain with
 a dedicated blocking Alpine 3.24 x86_64 rollback gate and a separate
-network-disruption approval. Target-side source builds (#14) remain an
-independent follow-up. See the complete [support matrix](docs/support-matrix.md).
+network-disruption approval. Target-side source builds are an independent
+Preview domain with checksummed inputs, offline argv execution, owned build
+dependencies, and atomic installation; they remain outside the core promise
+until their destructive VM matrix is complete. See the complete
+[support matrix](docs/support-matrix.md).
 
 ## Install
 

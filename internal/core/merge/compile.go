@@ -468,6 +468,10 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 		}
 		install.OnChange = &resolvedReference
 	}
+	build, err := compileComponentBuild(template, instance, host, facts, inputContext, install)
+	if err != nil {
+		return ir.ComponentInstanceSpec{}, err
+	}
 	componentHost := host
 	componentHost.Resources = append([]parser.ResourceDeclaration(nil), template.Resources...)
 	componentHost.OpenRC = template.OpenRC
@@ -506,6 +510,7 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 		SelectedSource:  selectedSource,
 		Extract:         extract,
 		Install:         install,
+		Build:           build,
 		Scripts:         scripts,
 		OpenRC:          openrc,
 		Files:           files,

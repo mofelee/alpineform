@@ -1,7 +1,9 @@
 package merge
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -254,7 +256,7 @@ host "node" {
   component "tool" { source = component.tool }
 }
 `, want: "exactly 64 hexadecimal"},
-		{name: "unsupported type", body: `
+		{name: "source requires build", body: `
 component "tool" {
   type = "source"
   source {
@@ -266,7 +268,7 @@ component "tool" {
 host "node" {
   component "tool" { source = component.tool }
 }
-`, want: "supports binary, file, archive, and ca_certificate"},
+`, want: "source components require a build block"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -279,6 +281,69 @@ host "node" {
 				t.Fatalf("Compile() error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestCompileSourceBuildResolvesIdentityAndProtectedPayload(t *testing.T) {
+	content := "int main(void) { return 0; }\n"
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+	config, err := compileConfig(t, `
+component "tool" {
+  type = "source"
+  input "token" {
+    type      = string
+    sensitive = true
+  }
+  build {
+    input "source" {
+      content     = "`+strings.ReplaceAll(content, "\n", "\\n")+`"
+      sha256      = "`+digest+`"
+      destination = "main.c"
+    }
+    command { argv = ["cc", "-Os", "-o", "tool", "main.c"] }
+    working_directory   = "."
+    environment         = { BUILD_TOKEN = input.token }
+    environment_version = "token-v1"
+    output              = "tool"
+    dependencies        = ["build-base", "musl-dev", "build-base"]
+    network             = "none"
+  }
+  install {
+    path = "/usr/local/bin/tool"
+    mode = "0750"
+  }
+}
+host "node" {
+  platform {
+    architecture = "x86_64"
+    version      = "3.24"
+  }
+  component "cli" {
+    source = component.tool
+    inputs = { token = "top-secret" }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := program.Hosts[0].Components[0].Build
+	if build == nil || len(build.Identity) != 64 || !build.Sensitive || build.Ephemeral || build.Environment["BUILD_TOKEN"] != "top-secret" {
+		t.Fatalf("compiled build = %#v", build)
+	}
+	if got := build.Dependencies; len(got) != 2 || got[0] != "build-base" || got[1] != "musl-dev" {
+		t.Fatalf("dependencies = %#v", got)
+	}
+	encoded, err := json.Marshal(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "top-secret") {
+		t.Fatalf("program JSON leaked protected build environment: %s", encoded)
 	}
 }
 

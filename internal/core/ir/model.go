@@ -29,7 +29,52 @@ type ComponentTemplateSpec struct {
 	Sources      map[string]ComponentArtifactSourceSpec `json:"sources,omitempty"`
 	Extract      *ComponentArtifactExtractSpec          `json:"extract,omitempty"`
 	Install      *ComponentArtifactInstallSpec          `json:"install,omitempty"`
+	Build        *ComponentBuildSpec                    `json:"build,omitempty"`
 	Source       SourceRef                              `json:"source"`
+}
+
+type ComponentBuildSpec struct {
+	Identity           string                      `json:"identity"`
+	Inputs             []ComponentBuildInputSpec   `json:"inputs"`
+	Commands           []ComponentBuildCommandSpec `json:"commands"`
+	WorkingDirectory   string                      `json:"working_directory"`
+	Environment        map[string]string           `json:"-"`
+	EnvironmentNames   []string                    `json:"environment_names,omitempty"`
+	EnvironmentVersion string                      `json:"environment_version,omitempty"`
+	Output             string                      `json:"output"`
+	OutputSHA256       string                      `json:"output_sha256,omitempty"`
+	MaxOutputBytes     int64                       `json:"max_output_bytes"`
+	Dependencies       []string                    `json:"dependencies,omitempty"`
+	Network            string                      `json:"network"`
+	OnRemove           string                      `json:"on_remove"`
+	Sensitive          bool                        `json:"sensitive,omitempty"`
+	Ephemeral          bool                        `json:"ephemeral,omitempty"`
+	Source             SourceRef                   `json:"source"`
+}
+
+type ComponentBuildInputSpec struct {
+	Name           string    `json:"name"`
+	Kind           string    `json:"kind"`
+	SourcePath     string    `json:"-"`
+	URL            string    `json:"url,omitempty"`
+	Content        []byte    `json:"-"`
+	ContentVersion string    `json:"content_version,omitempty"`
+	SHA256         string    `json:"sha256,omitempty"`
+	PayloadSHA256  string    `json:"-"`
+	Destination    string    `json:"destination"`
+	Sensitive      bool      `json:"sensitive,omitempty"`
+	Ephemeral      bool      `json:"ephemeral,omitempty"`
+	Source         SourceRef `json:"source"`
+}
+
+type ComponentBuildCommandSpec struct {
+	Argv         []string  `json:"argv"`
+	Stdin        []byte    `json:"-"`
+	StdinSHA256  string    `json:"stdin_sha256,omitempty"`
+	StdinVersion string    `json:"stdin_version,omitempty"`
+	Sensitive    bool      `json:"sensitive,omitempty"`
+	Ephemeral    bool      `json:"ephemeral,omitempty"`
+	Source       SourceRef `json:"source"`
 }
 
 type ComponentArtifactSourceSpec struct {
@@ -389,6 +434,7 @@ type ComponentInstanceSpec struct {
 	SelectedSource  *ComponentArtifactSourceSpec  `json:"selected_source,omitempty"`
 	Extract         *ComponentArtifactExtractSpec `json:"extract,omitempty"`
 	Install         *ComponentArtifactInstallSpec `json:"install,omitempty"`
+	Build           *ComponentBuildSpec           `json:"build,omitempty"`
 	Scripts         map[string]ScriptSpec         `json:"scripts,omitempty"`
 	OpenRC          []OpenRCServiceSpec           `json:"openrc,omitempty"`
 	Files           []ManagedFileSpec             `json:"files,omitempty"`

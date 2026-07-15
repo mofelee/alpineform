@@ -2,6 +2,7 @@ package graph
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mofelee/alpineform/internal/core/ir"
@@ -36,6 +37,91 @@ func TestCompileArtifactSourceAndInstallNodes(t *testing.T) {
 	}
 	if installNode.Kind != "component_binary" || !reflect.DeepEqual(installNode.DependsOn, []string{sourceAddress}) || installNode.Desired["content_sha256"] != componentArtifactSHA || installNode.Desired["version"] != "1.2.3" {
 		t.Fatalf("install node = %#v", installNode)
+	}
+}
+
+func TestCompileSourceBuildStablePhaseGraphAndRedaction(t *testing.T) {
+	build := &ir.ComponentBuildSpec{
+		Identity: componentArtifactSHA, WorkingDirectory: ".", Output: "tool", MaxOutputBytes: 1024,
+		Network: "none", OnRemove: "forget", Sensitive: true, Environment: map[string]string{"TOKEN": "secret"},
+		EnvironmentNames: []string{"TOKEN"}, EnvironmentVersion: "token-v1", Dependencies: []string{"build-base"},
+		Inputs:   []ir.ComponentBuildInputSpec{{Name: "source", Kind: "content", Content: []byte("source"), SHA256: componentArtifactSHA, PayloadSHA256: componentArtifactSHA, Destination: "main.c", Source: source(3)}},
+		Commands: []ir.ComponentBuildCommandSpec{{Argv: []string{"cc", "-o", "tool", "main.c"}, Source: source(4)}}, Source: source(2),
+	}
+	component := ir.ComponentInstanceSpec{
+		Name: "cli", Template: "tool", ArtifactType: "source", Build: build, Source: source(2),
+		Install: &ir.ComponentArtifactInstallSpec{Path: "/usr/local/bin/tool", Owner: "root", Group: "root", Mode: "0755", Source: source(5)},
+	}
+	resourceGraph, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{component}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "host.node.component.cli.build"
+	wantKinds := map[string]string{
+		prefix + `.input["source"]`: "component_build_input", prefix + ".dependencies": "component_build_dependencies",
+		prefix + ".workspace": "component_build_workspace", prefix + `.output["tool"]`: "component_build_output",
+		prefix + ".cleanup": "component_build_cleanup", prefix + `.install["/usr/local/bin/tool"]`: "component_build_install",
+	}
+	byAddress := map[string]Node{}
+	for _, node := range resourceGraph.Nodes {
+		byAddress[node.Address] = node
+	}
+	for address, kind := range wantKinds {
+		if byAddress[address].Kind != kind {
+			t.Fatalf("node %s = %#v", address, byAddress[address])
+		}
+	}
+	workspace := byAddress[prefix+".workspace"]
+	if got := byAddress[prefix+`.install["/usr/local/bin/tool"]`].Desired["delete_behavior"]; got != "" {
+		t.Fatalf("default source-build removal = %#v, want forget", got)
+	}
+	encoded, err := workspace.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "secret") || strings.Contains(string(encoded), "desired") || !strings.Contains(string(encoded), `"protected":true`) {
+		t.Fatalf("protected workspace JSON = %s", encoded)
+	}
+	again, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{component}}}})
+	if err != nil || !reflect.DeepEqual(resourceGraph, again) {
+		t.Fatalf("source-build graph is not deterministic: err=%v", err)
+	}
+}
+
+func TestCompileSourceBuildOwnershipIdentitiesDoNotCollide(t *testing.T) {
+	makeComponent := func(name, path string) ir.ComponentInstanceSpec {
+		return ir.ComponentInstanceSpec{
+			Name: name, Template: "tool", ArtifactType: "source", Source: source(2),
+			Build: &ir.ComponentBuildSpec{
+				Identity: componentArtifactSHA, WorkingDirectory: ".", Output: "tool", MaxOutputBytes: 1024,
+				Network: "none", OnRemove: "destroy", Inputs: []ir.ComponentBuildInputSpec{{Name: "source", Kind: "content", SHA256: componentArtifactSHA, PayloadSHA256: componentArtifactSHA, Destination: "main.c", Source: source(3)}},
+				Commands: []ir.ComponentBuildCommandSpec{{Argv: []string{"cc"}, Source: source(4)}}, Source: source(2),
+			},
+			Install: &ir.ComponentArtifactInstallSpec{Path: path, Owner: "root", Group: "root", Mode: "0755", Source: source(5)},
+		}
+	}
+	resourceGraph, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{
+		makeComponent("first", "/usr/local/bin/first"), makeComponent("second", "/usr/local/bin/second"),
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	virtuals := map[string]bool{}
+	for _, node := range resourceGraph.Nodes {
+		if node.Kind != "component_build_dependencies" {
+			continue
+		}
+		virtual, _ := node.Desired["virtual_package"].(string)
+		if virtuals[virtual] {
+			t.Fatalf("virtual package collision for %q", virtual)
+		}
+		virtuals[virtual] = true
+		if node.Desired["delete_behavior"] != "destroy" {
+			t.Fatalf("explicit destroy was not retained: %#v", node.Desired)
+		}
+	}
+	if len(virtuals) != 2 {
+		t.Fatalf("virtual packages = %#v", virtuals)
 	}
 }
 

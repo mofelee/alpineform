@@ -35,6 +35,7 @@ Status meanings:
 | Hostname, timezone, modules, and sysctls | Beta | [`system-kernel`](../test/integration/libvirt/cases/system-kernel) |
 | Binary and archive components, shared `on_change` scripts | Beta | [`components`](../test/integration/libvirt/cases/components) |
 | File and CA-certificate components | Preview | [Compiler tests](../internal/core/merge/components_test.go), [graph tests](../internal/core/graph/components_test.go), and [provider tests](../internal/core/provider/component_archive_test.go); no blocking VM fixture |
+| Target-side component source builds | Preview | [Compiler contract tests](../internal/core/merge/component_build_test.go), [phase graph tests](../internal/core/graph/components_test.go), [provider transaction tests](../internal/core/provider/component_build_test.go), and the [source-build threat model](source-build-security.md); destructive Alpine VM coverage is not complete |
 | `prevent_destroy`, forget, and recorded destroy | Beta | [`lifecycle`](../test/integration/libvirt/cases/lifecycle), [`accounts`](../test/integration/libvirt/cases/accounts), and [`apk`](../test/integration/libvirt/cases/apk) |
 | Docker Engine, OpenRC, daemon configuration, and Compose | Preview | [`docker`](../test/integration/libvirt/cases/docker), [compiler/graph tests](../internal/core/merge/docker_test.go), and [provider tests](../internal/core/provider/docker_test.go); Alpine `community` lifecycle and no aarch64 VM gate keep this outside Beta |
 | Named-table nftables, non-flushing OpenRC persistence, and rollback watchdog | Preview | [`nftables`](../test/integration/libvirt/cases/nftables), [compiler/graph tests](../internal/core/merge/nftables_test.go), [provider tests](../internal/core/provider/nftables_test.go), and the dedicated [nftables Preview gate](../.github/workflows/ci.yml); whole-ruleset ownership is unsupported and live changes require separate network-disruption approval |
@@ -57,10 +58,5 @@ The CLI platform is independent of the managed target platform. A macOS arm64
 control host can manage the Beta Alpine 3.24 x86_64 target, but that does not
 promote Alpine aarch64 target support.
 
-## Deferred Follow-Up
-
-- Target-side component source builds: issue #14.
-
-Docker/Compose and nftables are implemented Preview schema and remain outside
-the v0.1 core/Beta promise. The item above is not dormant schema; its absence
-does not fail the v0.1 core gate.
+Docker/Compose, nftables, and target-side source builds are implemented Preview
+schema and remain outside the v0.1 core/Beta promise.

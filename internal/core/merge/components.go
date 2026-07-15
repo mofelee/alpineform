@@ -19,7 +19,7 @@ var (
 func validateComponentArtifacts(components map[string]parser.Component) error {
 	for _, name := range sortedComponentNames(components) {
 		component := components[name]
-		hasArtifact := component.ArtifactType != "" || component.Version != "" || len(component.Sources) > 0 || component.Extract != nil || component.Install != nil
+		hasArtifact := component.ArtifactType != "" || component.Version != "" || len(component.Sources) > 0 || component.Extract != nil || component.Install != nil || component.Build != nil
 		if !hasArtifact {
 			continue
 		}
@@ -27,10 +27,20 @@ func validateComponentArtifacts(components map[string]parser.Component) error {
 			return fmt.Errorf("%s:%d:%s.type: artifact component requires type", component.Source.File, component.Source.Line, component.Source.Path)
 		}
 		switch component.ArtifactType {
-		case "binary", "file":
+		case "binary", "file", "source":
 		case "archive", "ca_certificate":
 		default:
-			return fmt.Errorf("%s:%d:%s.type: unsupported artifact type %q; v0.1 supports binary, file, archive, and ca_certificate", component.Source.File, component.Source.Line, component.Source.Path, component.ArtifactType)
+			return fmt.Errorf("%s:%d:%s.type: unsupported artifact type %q; supported types are binary, file, archive, ca_certificate, and source", component.Source.File, component.Source.Line, component.Source.Path, component.ArtifactType)
+		}
+		if component.Build != nil {
+			if component.ArtifactType != "source" {
+				return fmt.Errorf("%s:%d:%s: build blocks require component type \"source\"", component.Build.Source.File, component.Build.Source.Line, component.Build.Source.Path)
+			}
+			if len(component.Sources) != 0 || component.Extract != nil {
+				return fmt.Errorf("%s:%d:%s: source-build components cannot use artifact source or extract blocks", component.Build.Source.File, component.Build.Source.Line, component.Build.Source.Path)
+			}
+		} else if component.ArtifactType == "source" {
+			return fmt.Errorf("%s:%d:%s.build: source components require a build block", component.Source.File, component.Source.Line, component.Source.Path)
 		}
 		switch component.ArtifactType {
 		case "archive":
@@ -59,7 +69,7 @@ func validateComponentArtifacts(components map[string]parser.Component) error {
 				return fmt.Errorf("%s:%d:%s: %s artifact does not support extraction", component.Extract.Source.File, component.Extract.Source.Line, component.Extract.Source.Path, component.ArtifactType)
 			}
 		}
-		if len(component.Sources) == 0 {
+		if component.Build == nil && len(component.Sources) == 0 {
 			return fmt.Errorf("%s:%d:%s.source: artifact component requires at least one fixed source", component.Source.File, component.Source.Line, component.Source.Path)
 		}
 		if _, unlabelled := component.Sources[""]; unlabelled && len(component.Sources) != 1 {

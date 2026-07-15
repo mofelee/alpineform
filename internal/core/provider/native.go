@@ -77,6 +77,18 @@ func (provider Native) Inspect(ctx context.Context, node graph.Node) (engine.Obs
 		return inspectComponentArchive(ctx, runner, node)
 	case "component_script":
 		return inspectComponentScript(ctx, runner, node)
+	case "component_build_input":
+		return inspectComponentBuildInput(ctx, runner, node)
+	case "component_build_dependencies":
+		return inspectComponentBuildDependencies(ctx, runner, node)
+	case "component_build_workspace":
+		return inspectComponentBuildWorkspace(ctx, runner, node)
+	case "component_build_output":
+		return inspectComponentBuildOutput(ctx, runner, node)
+	case "component_build_cleanup":
+		return inspectComponentBuildCleanup(ctx, runner, node)
+	case "component_build_install":
+		return inspectComponentBuildInstall(ctx, runner, node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", node.Kind)
 	}
@@ -146,6 +158,18 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 		return applyComponentArchive(ctx, runner, step.Node)
 	case "component_script":
 		return applyComponentScript(ctx, runner, step)
+	case "component_build_input":
+		return applyComponentBuildInput(ctx, runner, step.Node)
+	case "component_build_dependencies":
+		return applyComponentBuildDependencies(ctx, runner, step.Node)
+	case "component_build_workspace":
+		return applyComponentBuildWorkspace(ctx, runner, step.Node)
+	case "component_build_output":
+		return applyComponentBuildOutput(ctx, runner, step.Node)
+	case "component_build_cleanup":
+		return applyComponentBuildCleanup(ctx, runner, step.Node)
+	case "component_build_install":
+		return applyComponentBuildInstall(ctx, runner, step.Node)
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", step.Node.Kind)
 	}
@@ -215,6 +239,8 @@ func (provider Native) Delete(ctx context.Context, step engine.Step) error {
 		return deleteComponentArchive(ctx, runner, step)
 	case "component_script":
 		return fmt.Errorf("component scripts can only be forgotten when their declaration is removed")
+	case "component_build_input", "component_build_dependencies", "component_build_workspace", "component_build_output", "component_build_cleanup", "component_build_install":
+		return deleteComponentBuildResource(ctx, runner, step)
 	default:
 		return fmt.Errorf("no Alpine provider is registered for resource kind %q", kind)
 	}

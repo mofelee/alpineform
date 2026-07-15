@@ -46,6 +46,12 @@ special files, unsafe names, and post-strip collisions. APK repositories accept
 HTTPS URLs without embedded credentials, queries, or fragments. AlpineForm does
 not invoke distribution upgrades.
 
+Preview target-side builds have a separate
+[threat model and ownership contract](source-build-security.md). They require
+checksummed inputs and argv commands, disable build-command networking, omit
+build logs, and replace an installation only after output verification and
+owned cleanup succeed.
+
 ## Docker And Compose
 
 Docker packages come only from the supported Alpine repository set or an
