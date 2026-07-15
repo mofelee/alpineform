@@ -71,11 +71,12 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 		Summary: "own source-build APK dependencies through " + virtualPackage, Source: build.Source, Lifecycle: &component.Lifecycle,
 		Desired: map[string]any{
 			"build_identity": build.Identity, "packages": append([]string(nil), build.Dependencies...),
-			"virtual_package": virtualPackage, "marker_path": dependencyMarker, "output_marker": outputMarker,
+			"virtual_package": virtualPackage, "owner_id": ownerID, "marker_path": dependencyMarker, "output_marker": outputMarker,
 			"ensure": "present", "delete_behavior": deleteBehavior,
 			"delete": map[string]any{
 				"virtual_package": virtualPackage, "marker_path": dependencyMarker,
-				"build_identity": build.Identity, "workspace": workspace,
+				"owner_id": ownerID, "build_identity": build.Identity, "workspace": workspace,
+				"packages": append([]string(nil), build.Dependencies...),
 			},
 			"prevent_destroy": component.Lifecycle.PreventDestroy,
 		},
@@ -99,7 +100,7 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 			"build_identity": build.Identity, "workspace": workspace, "working_directory": build.WorkingDirectory,
 			"input_paths": inputPaths, "commands": commands, "environment_names": append([]string(nil), build.EnvironmentNames...),
 			"environment_version": build.EnvironmentVersion, "network": build.Network, "output": build.Output,
-			"output_marker": outputMarker, "virtual_package": virtualPackage, "dependency_marker": dependencyMarker,
+			"output_marker": outputMarker, "virtual_package": virtualPackage, "owner_id": ownerID, "dependency_marker": dependencyMarker,
 			"protected_input_paths": append([]string(nil), protectedInputPaths...),
 			"ensure":                "present", "delete_behavior": deleteBehavior,
 			"delete": map[string]any{"workspace": workspace}, "prevent_destroy": component.Lifecycle.PreventDestroy,
@@ -119,7 +120,7 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 		Desired: map[string]any{
 			"build_identity": build.Identity, "workspace": workspace, "output": build.Output,
 			"output_sha256": build.OutputSHA256, "max_output_bytes": build.MaxOutputBytes,
-			"cache_path": outputCache, "marker_path": outputMarker, "virtual_package": virtualPackage,
+			"cache_path": outputCache, "marker_path": outputMarker, "virtual_package": virtualPackage, "owner_id": ownerID,
 			"dependency_marker": dependencyMarker, "ensure": "present", "delete_behavior": deleteBehavior,
 			"protected_input_paths": append([]string(nil), protectedInputPaths...),
 			"delete":                map[string]any{"cache_path": outputCache, "marker_path": outputMarker},
@@ -135,7 +136,7 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 		Summary: "clean source-build workspace and owned APK dependencies", Source: build.Source, Lifecycle: &component.Lifecycle,
 		Desired: map[string]any{
 			"build_identity": build.Identity, "workspace": workspace, "output_marker": outputMarker,
-			"virtual_package": virtualPackage, "dependency_marker": dependencyMarker,
+			"virtual_package": virtualPackage, "owner_id": ownerID, "dependency_marker": dependencyMarker,
 			"protected_input_paths": append([]string(nil), protectedInputPaths...),
 			"ensure":                "present", "delete_behavior": "", "prevent_destroy": component.Lifecycle.PreventDestroy,
 		},

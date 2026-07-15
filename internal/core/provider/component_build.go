@@ -18,6 +18,7 @@ import (
 
 var (
 	componentBuildVirtualPackagePattern = regexp.MustCompile(`^\.alpineform-build-[a-f0-9]{24}$`)
+	componentBuildOwnerPattern          = regexp.MustCompile(`^[a-f0-9]{32}$`)
 	buildEnvironmentNamePattern         = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
@@ -47,50 +48,103 @@ trap - EXIT HUP INT TERM
 const componentBuildDependenciesInspectScript = `set -eu
 virtual=$1
 marker=$2
-identity=$3
-output_marker=$4
+owner=$3
+identity=$4
+output_marker=$5
+shift 5
 if [ -f "$output_marker" ] && [ "$(sed -n '1p' "$output_marker")" = "$identity" ] && ! apk info --exists "$virtual" >/dev/null 2>&1 && [ ! -e "$marker" ]; then
   echo satisfied
   exit 0
 fi
+if [ -L /etc/apk/world ] || { [ -e /etc/apk/world ] && [ ! -f /etc/apk/world ]; }; then
+  echo 'refusing unsafe APK world path during source-build dependency inspection' >&2
+  exit 1
+fi
 installed=false
 if apk info --exists "$virtual" >/dev/null 2>&1; then installed=true; fi
 owned=false
-if [ -f "$marker" ] && [ "$(sed -n '1p' "$marker")" = "$identity" ] && [ "$(sed -n '2p' "$marker")" = "$virtual" ]; then owned=true; fi
+marker_identity=
+if [ -f "$marker" ] && [ ! -L "$marker" ] && [ "$(sed -n '1p' "$marker")" = "$virtual" ] && [ "$(sed -n '2p' "$marker")" = "$owner" ]; then
+  owned=true
+  marker_identity=$(sed -n '3p' "$marker")
+fi
 if [ "$installed" = true ] && [ "$owned" != true ]; then
   echo 'source-build virtual package collides with unowned APK state' >&2
   exit 1
 fi
-if [ "$owned" = true ]; then
+if [ -e "$marker" ] && [ "$owned" != true ]; then
+  echo 'source-build dependency marker collides with another owner' >&2
+  exit 1
+fi
+if [ "$installed" != true ]; then
+  if [ "$#" -eq 0 ] && [ "$owned" = true ] && [ "$marker_identity" = "$identity" ]; then echo active; exit 0; fi
+  echo missing
+  exit 0
+fi
+world=false
+if [ -f /etc/apk/world ] && awk -v virtual="$virtual" '$0 == virtual { found=1 } END { exit !found }' /etc/apk/world; then world=true; fi
+packages_ok=true
+for package in "$@"; do
+  if ! apk info --exists "$package" >/dev/null 2>&1; then packages_ok=false; fi
+done
+if [ "$marker_identity" = "$identity" ] && [ "$world" = true ] && [ "$packages_ok" = true ]; then
   echo active
 else
-  echo missing
+  printf 'stale\n%s\n' "$marker_identity"
 fi
 `
 
 const componentBuildDependenciesApplyScript = `set -eu
 virtual=$1
 marker=$2
-identity=$3
-shift 3
+owner=$3
+identity=$4
+shift 4
+if [ -L /etc/apk/world ] || { [ -e /etc/apk/world ] && [ ! -f /etc/apk/world ]; }; then
+  echo 'refusing unsafe APK world path during source-build dependency apply' >&2
+  exit 1
+fi
+if [ -e "$marker" ]; then
+  if [ ! -f "$marker" ] || [ -L "$marker" ] || [ "$(sed -n '1p' "$marker")" != "$virtual" ] || [ "$(sed -n '2p' "$marker")" != "$owner" ]; then
+    echo 'refusing source-build dependency marker owned by another resource' >&2
+    exit 1
+  fi
+fi
+if [ -f /etc/apk/world ] && awk -v virtual="$virtual" '$0 == virtual { found=1 } END { exit !found }' /etc/apk/world && [ ! -f "$marker" ]; then
+  echo 'refusing to adopt unowned source-build virtual package world intent' >&2
+  exit 1
+fi
 if apk info --exists "$virtual" >/dev/null 2>&1; then
-  if [ ! -f "$marker" ] || [ "$(sed -n '1p' "$marker")" != "$identity" ] || [ "$(sed -n '2p' "$marker")" != "$virtual" ]; then
+  if [ ! -f "$marker" ]; then
     echo 'refusing to adopt an unowned source-build virtual package' >&2
     exit 1
   fi
-else
-  if [ "$#" -gt 0 ]; then
-    apk --quiet add --virtual "$virtual" "$@"
-  fi
+  apk --quiet del "$virtual"
 fi
 parent=${marker%/*}
 mkdir -p "$parent"
 tmp=$(mktemp "$parent/.alpineform-build-dependencies.XXXXXX")
-cleanup() { rm -f "$tmp"; }
+success=0
+cleanup() {
+  rm -f "$tmp"
+  if [ "$success" != 1 ]; then
+    if apk info --exists "$virtual" >/dev/null 2>&1; then apk --quiet del "$virtual" >/dev/null 2>&1 || true; fi
+    rm -f "$marker"
+  fi
+}
 trap cleanup EXIT HUP INT TERM
-printf '%s\n%s\n' "$identity" "$virtual" >"$tmp"
+printf '%s\n%s\n%s\n' "$virtual" "$owner" "$identity" >"$tmp"
 chmod 0600 "$tmp"
 mv -f "$tmp" "$marker"
+if [ "$#" -gt 0 ]; then apk --quiet add --virtual "$virtual" "$@"; fi
+if [ "$#" -gt 0 ] && { [ ! -f /etc/apk/world ] || ! awk -v virtual="$virtual" '$0 == virtual { found=1 } END { exit !found }' /etc/apk/world; }; then
+  echo 'source-build virtual package was not recorded in APK world' >&2
+  exit 1
+fi
+for package in "$@"; do
+  if ! apk info --exists "$package" >/dev/null 2>&1; then echo 'source-build dependency is not installed after apk add' >&2; exit 1; fi
+done
+success=1
 trap - EXIT HUP INT TERM
 `
 
@@ -318,11 +372,11 @@ const componentBuildCleanupScript = `set -eu
 workspace=$1
 virtual=$2
 marker=$3
-identity=$4
+owner=$4
 shift 4
 case "$workspace" in /var/tmp/alpineform/builds/[a-f0-9]*) ;; *) echo 'invalid source-build workspace cleanup path' >&2; exit 1;; esac
 if [ -e "$marker" ]; then
-  if [ ! -f "$marker" ] || [ "$(sed -n '1p' "$marker")" != "$identity" ] || [ "$(sed -n '2p' "$marker")" != "$virtual" ]; then
+  if [ ! -f "$marker" ] || [ -L "$marker" ] || [ "$(sed -n '1p' "$marker")" != "$virtual" ] || [ "$(sed -n '2p' "$marker")" != "$owner" ]; then
     echo 'refusing to clean unowned source-build dependency state' >&2
     exit 1
   fi
@@ -468,26 +522,7 @@ func applyComponentBuildInput(ctx context.Context, runner backend.Runner, step e
 }
 
 func inspectComponentBuildDependencies(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
-	virtual, marker, identity, outputMarker, err := componentBuildDependencyIdentity(node)
-	if err != nil {
-		return engine.ObservedResource{}, err
-	}
-	output, err := runner.Run(ctx, backend.Command{Name: "inspect.component_build_dependencies", Script: componentBuildDependenciesInspectScript, Arguments: []string{virtual, marker, identity, outputMarker}})
-	if err != nil {
-		return engine.ObservedResource{}, err
-	}
-	status := strings.TrimSpace(string(output))
-	if status == "missing" || status == "" {
-		return engine.ObservedResource{}, nil
-	}
-	if status != "active" && status != "satisfied" {
-		return engine.ObservedResource{}, fmt.Errorf("inspect source-build dependencies returned invalid status %q", status)
-	}
-	return buildObserved(node), nil
-}
-
-func applyComponentBuildDependencies(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
-	virtual, marker, identity, _, err := componentBuildDependencyIdentity(node)
+	virtual, marker, owner, identity, outputMarker, err := componentBuildDependencyIdentity(node)
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
@@ -500,7 +535,42 @@ func applyComponentBuildDependencies(ctx context.Context, runner backend.Runner,
 			return engine.ObservedResource{}, fmt.Errorf("invalid source-build APK dependency %q", pkg)
 		}
 	}
-	arguments := append([]string{virtual, marker, identity}, packages...)
+	arguments := append([]string{virtual, marker, owner, identity, outputMarker}, packages...)
+	output, err := runner.Run(ctx, backend.Command{Name: "inspect.component_build_dependencies", Script: componentBuildDependenciesInspectScript, Arguments: arguments})
+	if err != nil {
+		return engine.ObservedResource{}, err
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	status := lines[0]
+	if status == "missing" || status == "" {
+		return engine.ObservedResource{}, nil
+	}
+	if status == "stale" && len(lines) == 2 {
+		observed := cloneDesired(node.Desired)
+		observed["build_identity"] = lines[1]
+		return engine.ObservedResource{Exists: true, Values: observed}, nil
+	}
+	if status != "active" && status != "satisfied" {
+		return engine.ObservedResource{}, fmt.Errorf("inspect source-build dependencies returned invalid status %q", status)
+	}
+	return buildObserved(node), nil
+}
+
+func applyComponentBuildDependencies(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
+	virtual, marker, owner, identity, _, err := componentBuildDependencyIdentity(node)
+	if err != nil {
+		return engine.ObservedResource{}, err
+	}
+	packages, err := desiredStringList(node.Desired, "packages")
+	if err != nil {
+		return engine.ObservedResource{}, err
+	}
+	for _, pkg := range packages {
+		if !providerAPKPackageNamePattern.MatchString(pkg) {
+			return engine.ObservedResource{}, fmt.Errorf("invalid source-build APK dependency %q", pkg)
+		}
+	}
+	arguments := append([]string{virtual, marker, owner, identity}, packages...)
 	if _, err := runner.Run(ctx, backend.Command{Name: "apply.component_build_dependencies", Script: componentBuildDependenciesApplyScript, Arguments: arguments, RedactOutput: true}); err != nil {
 		return engine.ObservedResource{}, err
 	}
@@ -647,7 +717,7 @@ func applyComponentBuildOutput(ctx context.Context, runner backend.Runner, node 
 }
 
 func inspectComponentBuildCleanup(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
-	workspace, virtual, dependencyMarker, outputMarker, identity, err := componentBuildCleanupIdentity(node)
+	workspace, virtual, dependencyMarker, outputMarker, identity, _, err := componentBuildCleanupIdentity(node)
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
@@ -667,7 +737,7 @@ func inspectComponentBuildCleanup(ctx context.Context, runner backend.Runner, no
 }
 
 func applyComponentBuildCleanup(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
-	workspace, virtual, marker, _, identity, err := componentBuildCleanupIdentity(node)
+	workspace, virtual, marker, _, _, owner, err := componentBuildCleanupIdentity(node)
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
@@ -675,7 +745,7 @@ func applyComponentBuildCleanup(ctx context.Context, runner backend.Runner, node
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
-	arguments := append([]string{workspace, virtual, marker, identity}, protectedPaths...)
+	arguments := append([]string{workspace, virtual, marker, owner}, protectedPaths...)
 	if _, err := runner.Run(ctx, backend.Command{Name: "apply.component_build_cleanup", Script: componentBuildCleanupScript, Arguments: arguments, RedactOutput: true}); err != nil {
 		return engine.ObservedResource{}, err
 	}
@@ -751,11 +821,18 @@ func deleteComponentBuildResource(ctx context.Context, runner backend.Runner, st
 		if identity == "" {
 			return fmt.Errorf("source-build dependency destroy requires current ownership identity")
 		}
+		owner := stringValue(deletion, "owner_id")
+		if owner == "" && step.Node.Desired != nil {
+			owner = stringValue(step.Node.Desired, "owner_id")
+		}
+		if !componentBuildOwnerPattern.MatchString(owner) {
+			return fmt.Errorf("source-build dependency destroy requires current ownership metadata")
+		}
 		workspace := stringValue(deletion, "workspace")
 		if workspace == "" {
 			workspace = "/var/tmp/alpineform/builds/" + identity
 		}
-		_, err := runner.Run(ctx, backend.Command{Name: "delete.component_build_dependencies", Script: componentBuildCleanupScript, Arguments: []string{workspace, virtual, marker, identity}, RedactOutput: true})
+		_, err := runner.Run(ctx, backend.Command{Name: "delete.component_build_dependencies", Script: componentBuildCleanupScript, Arguments: []string{workspace, virtual, marker, owner}, RedactOutput: true})
 		return err
 	case "component_build_workspace", "component_build_cleanup":
 		return nil
@@ -791,19 +868,19 @@ func componentBuildInputIdentity(node graph.Node) (string, string, error) {
 	return path, digest, nil
 }
 
-func componentBuildDependencyIdentity(node graph.Node) (string, string, string, string, error) {
+func componentBuildDependencyIdentity(node graph.Node) (string, string, string, string, string, error) {
 	virtual, marker := stringValue(node.Desired, "virtual_package"), stringValue(node.Desired, "marker_path")
-	identity, outputMarker := stringValue(node.Desired, "build_identity"), stringValue(node.Desired, "output_marker")
-	if !componentBuildVirtualPackagePattern.MatchString(virtual) || !componentProviderSHA256Pattern.MatchString(identity) {
-		return "", "", "", "", fmt.Errorf("source-build dependency ownership metadata is invalid")
+	owner, identity, outputMarker := stringValue(node.Desired, "owner_id"), stringValue(node.Desired, "build_identity"), stringValue(node.Desired, "output_marker")
+	if !componentBuildVirtualPackagePattern.MatchString(virtual) || !componentBuildOwnerPattern.MatchString(owner) || !componentProviderSHA256Pattern.MatchString(identity) {
+		return "", "", "", "", "", fmt.Errorf("source-build dependency ownership metadata is invalid")
 	}
 	if err := validateRemoteFilePath(marker); err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", err
 	}
 	if err := validateRemoteFilePath(outputMarker); err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", err
 	}
-	return virtual, marker, identity, outputMarker, nil
+	return virtual, marker, owner, identity, outputMarker, nil
 }
 
 func componentBuildWorkspaceIdentity(node graph.Node) (string, string, string, error) {
@@ -831,19 +908,19 @@ func componentBuildOutputIdentity(node graph.Node) (string, string, string, erro
 	return cache, marker, identity, nil
 }
 
-func componentBuildCleanupIdentity(node graph.Node) (string, string, string, string, string, error) {
+func componentBuildCleanupIdentity(node graph.Node) (string, string, string, string, string, string, error) {
 	workspace, identity, outputMarker, err := componentBuildWorkspaceIdentity(node)
 	if err != nil {
-		return "", "", "", "", "", err
+		return "", "", "", "", "", "", err
 	}
-	virtual, dependencyMarker := stringValue(node.Desired, "virtual_package"), stringValue(node.Desired, "dependency_marker")
-	if !componentBuildVirtualPackagePattern.MatchString(virtual) {
-		return "", "", "", "", "", fmt.Errorf("source-build cleanup virtual package is invalid")
+	virtual, owner, dependencyMarker := stringValue(node.Desired, "virtual_package"), stringValue(node.Desired, "owner_id"), stringValue(node.Desired, "dependency_marker")
+	if !componentBuildVirtualPackagePattern.MatchString(virtual) || !componentBuildOwnerPattern.MatchString(owner) {
+		return "", "", "", "", "", "", fmt.Errorf("source-build cleanup ownership is invalid")
 	}
 	if err := validateRemoteFilePath(dependencyMarker); err != nil {
-		return "", "", "", "", "", err
+		return "", "", "", "", "", "", err
 	}
-	return workspace, virtual, dependencyMarker, outputMarker, identity, nil
+	return workspace, virtual, dependencyMarker, outputMarker, identity, owner, nil
 }
 
 func componentBuildInstallIdentity(node graph.Node) (string, string, string, string, error) {
@@ -864,14 +941,14 @@ func cleanupComponentBuildFailure(runner backend.Runner, node graph.Node) {
 	workspace := stringValue(node.Desired, "workspace")
 	virtual := stringValue(node.Desired, "virtual_package")
 	marker := stringValue(node.Desired, "dependency_marker")
-	identity := stringValue(node.Desired, "build_identity")
-	if workspace == "" || virtual == "" || marker == "" || identity == "" {
+	owner := stringValue(node.Desired, "owner_id")
+	if workspace == "" || virtual == "" || marker == "" || owner == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	protectedPaths, _ := optionalDesiredStringList(node.Desired, "protected_input_paths")
-	arguments := append([]string{workspace, virtual, marker, identity}, protectedPaths...)
+	arguments := append([]string{workspace, virtual, marker, owner}, protectedPaths...)
 	_, _ = runner.Run(ctx, backend.Command{Name: "cleanup.component_build_failure", Script: componentBuildCleanupScript, Arguments: arguments, RedactOutput: true})
 }
 

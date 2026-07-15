@@ -45,6 +45,14 @@ Declared APK build dependencies belong to one address-derived
 may remove only that exact owned virtual package. APK retains packages that
 remain in world or are required by another package.
 
+The stable owner ID is derived from the component resource address and is
+separate from the changing build identity. Before mutation AlpineForm checks
+the virtual package, `/etc/apk/world`, every declared installed package, and
+the ownership marker. A matching leftover marker/package is recoverable after
+interruption; a virtual package or marker belonging to another owner is a hard
+collision. Failed or cancelled dependency installation removes only the owned
+virtual package and marker.
+
 Inputs are verified before dependency installation. Commands run in a
 deterministic environment and a network namespace. Output verification stages
 one regular, non-symlink file in AlpineForm's cache. The prior installation is

@@ -16,6 +16,7 @@ import (
 )
 
 const testBuildIdentity = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+const testBuildOwner = "0123456789abcdef0123456789abcdef"
 
 func TestComponentBuildInputStagesProtectedBytesOnlyThroughStdin(t *testing.T) {
 	content := []byte("protected-build-input")
@@ -88,6 +89,7 @@ func TestComponentBuildWorkspaceUsesArgvAndProtectedManifest(t *testing.T) {
 			"output_marker": "/var/cache/alpineform/builds/outputs/" + testBuildIdentity + "/artifact.sha256",
 			"output":        "tool", "working_directory": ".", "input_paths": map[string]string{},
 			"virtual_package":   ".alpineform-build-0123456789abcdef01234567",
+			"owner_id":          testBuildOwner,
 			"dependency_marker": "/var/lib/alpineform/builds/owner.dependencies",
 		},
 		Payload: map[string]any{
@@ -175,6 +177,7 @@ func TestComponentBuildOutputFailureRunsOwnedCleanupBeforeInstall(t *testing.T) 
 			"cache_path":        "/var/cache/alpineform/builds/outputs/" + testBuildIdentity + "/artifact",
 			"marker_path":       "/var/cache/alpineform/builds/outputs/" + testBuildIdentity + "/artifact.sha256",
 			"virtual_package":   ".alpineform-build-0123456789abcdef01234567",
+			"owner_id":          testBuildOwner,
 			"dependency_marker": "/var/lib/alpineform/builds/owner.dependencies",
 		},
 	}
@@ -203,6 +206,7 @@ func TestComponentBuildCancelledStagingRunsBoundedCleanup(t *testing.T) {
 			"output_marker": "/var/cache/alpineform/builds/outputs/" + testBuildIdentity + "/artifact.sha256",
 			"output":        "tool", "working_directory": ".", "input_paths": map[string]string{},
 			"virtual_package":       ".alpineform-build-0123456789abcdef01234567",
+			"owner_id":              testBuildOwner,
 			"dependency_marker":     "/var/lib/alpineform/builds/owner.dependencies",
 			"protected_input_paths": []string{"/run/alpineform/build-inputs/0123456789abcdef"},
 		},
@@ -221,5 +225,82 @@ func TestComponentBuildCancelledStagingRunsBoundedCleanup(t *testing.T) {
 	cleanup := runner.commands[1]
 	if cleanup.Arguments[len(cleanup.Arguments)-1] != "/run/alpineform/build-inputs/0123456789abcdef" || !cleanup.RedactOutput {
 		t.Fatalf("cleanup command = %#v", cleanup)
+	}
+}
+
+func TestComponentBuildDependencyOwnershipInstallInspectAndRecovery(t *testing.T) {
+	node := graph.Node{Kind: "component_build_dependencies", Desired: map[string]any{
+		"virtual_package": ".alpineform-build-0123456789abcdef01234567",
+		"owner_id":        testBuildOwner, "build_identity": testBuildIdentity,
+		"marker_path":   "/var/lib/alpineform/builds/owner.dependencies",
+		"output_marker": "/var/cache/alpineform/builds/outputs/" + testBuildIdentity + "/artifact.sha256",
+		"packages":      []string{"build-base", "musl-dev"},
+	}}
+	runner := &commandRunner{outputs: map[string][]byte{"inspect.component_build_dependencies": []byte("active\n")}, errors: map[string]error{}}
+	observed, err := applyComponentBuildDependencies(context.Background(), runner, node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !observed.Exists || len(runner.commands) != 2 {
+		t.Fatalf("observed=%#v commands=%#v", observed, runner.commands)
+	}
+	apply := runner.commands[0]
+	wantPrefix := []string{
+		".alpineform-build-0123456789abcdef01234567", "/var/lib/alpineform/builds/owner.dependencies",
+		testBuildOwner, testBuildIdentity, "build-base", "musl-dev",
+	}
+	if strings.Join(apply.Arguments, "\x00") != strings.Join(wantPrefix, "\x00") || !apply.RedactOutput {
+		t.Fatalf("dependency apply = %#v", apply)
+	}
+	if !strings.Contains(apply.Script, "/etc/apk/world") || !strings.Contains(apply.Script, "apk --quiet add --virtual \"$virtual\"") {
+		t.Fatalf("dependency apply script does not inspect world and own a virtual package")
+	}
+
+	oldIdentity := strings.Repeat("a", 64)
+	staleRunner := &commandRunner{outputs: map[string][]byte{"inspect.component_build_dependencies": []byte("stale\n" + oldIdentity + "\n")}, errors: map[string]error{}}
+	stale, err := inspectComponentBuildDependencies(context.Background(), staleRunner, node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stale.Exists || stale.Values["build_identity"] != oldIdentity || stale.Digest == corestate.Digest(node.Desired) {
+		t.Fatalf("stale dependency observation = %#v", stale)
+	}
+}
+
+func TestComponentBuildDependencyFailureAndCleanupAreOwnerScoped(t *testing.T) {
+	node := graph.Node{Kind: "component_build_dependencies", Desired: map[string]any{
+		"virtual_package": ".alpineform-build-0123456789abcdef01234567",
+		"owner_id":        testBuildOwner, "build_identity": testBuildIdentity,
+		"marker_path":   "/var/lib/alpineform/builds/owner.dependencies",
+		"output_marker": "/var/cache/alpineform/builds/outputs/" + testBuildIdentity + "/artifact.sha256",
+		"packages":      []string{"build-base"},
+	}}
+	for _, failure := range []error{errors.New("apk add failed"), context.Canceled} {
+		runner := &commandRunner{outputs: map[string][]byte{}, errors: map[string]error{"apply.component_build_dependencies": failure}}
+		_, err := applyComponentBuildDependencies(context.Background(), runner, node)
+		if !errors.Is(err, failure) {
+			t.Fatalf("dependency apply error = %v, want %v", err, failure)
+		}
+		if len(runner.commands) != 1 || !strings.Contains(runner.commands[0].Script, "success=0") || !strings.Contains(runner.commands[0].Script, "apk --quiet del \"$virtual\"") {
+			t.Fatalf("failed dependency command = %#v", runner.commands)
+		}
+	}
+
+	cleanupNode := graph.Node{Kind: "component_build_cleanup", Desired: map[string]any{
+		"workspace": "/var/tmp/alpineform/builds/" + testBuildIdentity, "build_identity": testBuildIdentity,
+		"output_marker":   "/var/cache/alpineform/builds/outputs/" + testBuildIdentity + "/artifact.sha256",
+		"virtual_package": ".alpineform-build-0123456789abcdef01234567", "owner_id": testBuildOwner,
+		"dependency_marker": "/var/lib/alpineform/builds/owner.dependencies", "protected_input_paths": []string{},
+	}}
+	runner := &commandRunner{outputs: map[string][]byte{"inspect.component_build_cleanup": []byte("clean\n")}, errors: map[string]error{}}
+	if _, err := applyComponentBuildCleanup(context.Background(), runner, cleanupNode); err != nil {
+		t.Fatal(err)
+	}
+	cleanup := runner.commands[0]
+	if len(cleanup.Arguments) != 4 || cleanup.Arguments[3] != testBuildOwner || strings.Contains(strings.Join(cleanup.Arguments, "\x00"), "build-base") {
+		t.Fatalf("dependency cleanup = %#v", cleanup)
+	}
+	if strings.Contains(cleanup.Script, `apk --quiet del "$package"`) || !strings.Contains(cleanup.Script, `apk --quiet del "$virtual"`) {
+		t.Fatalf("cleanup can delete outside the owned virtual package")
 	}
 }
