@@ -91,7 +91,7 @@ func compileComponentBuild(template parser.Component, instance parser.ComponentI
 	if err != nil {
 		return nil, err
 	}
-	dependencies = sortedDistinct(dependencies)
+	dependencies = sortedDistinct(append(dependencies, "bubblewrap"))
 	for _, dependency := range dependencies {
 		if !apkPackageNamePattern.MatchString(dependency) {
 			return nil, buildAttributeError(build.Attributes, "dependencies", build.Source, "package %q must be an unversioned APK package name", dependency)
@@ -506,7 +506,7 @@ func evaluateBuildAttribute(attributes map[string]parser.ResourceAttribute, name
 }
 
 func validateBuildRelativePath(value string, allowDot bool) error {
-	if value == "" || filepath.IsAbs(value) || filepath.Clean(value) != value || strings.ContainsAny(value, "\x00\r\n") {
+	if value == "" || filepath.IsAbs(value) || filepath.Clean(value) != value || strings.ContainsAny(value, "\x00\r\n*?[]\\") {
 		return fmt.Errorf("must be a clean relative workspace path")
 	}
 	if !allowDot && value == "." {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/mofelee/alpineform/internal/core/backend"
@@ -118,6 +119,16 @@ func TestComponentBuildWorkspaceUsesArgvAndProtectedManifest(t *testing.T) {
 	}
 	if strings.Contains(execute.Script, "cc -o") {
 		t.Fatal("user argv was interpolated into remote shell source")
+	}
+	for _, required := range []string{"--unshare-net", "--cap-drop ALL", "--ro-bind /usr /usr", "--bind \"$workspace\" /workspace", ">/dev/null 2>&1"} {
+		if !strings.Contains(execute.Script, required) {
+			t.Fatalf("build sandbox script is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"--ro-bind / /", "--bind /etc", "--bind /var/lib", "--share-net"} {
+		if strings.Contains(execute.Script, forbidden) {
+			t.Fatalf("build sandbox exposes forbidden host surface %q", forbidden)
+		}
 	}
 }
 
@@ -302,5 +313,63 @@ func TestComponentBuildDependencyFailureAndCleanupAreOwnerScoped(t *testing.T) {
 	}
 	if strings.Contains(cleanup.Script, `apk --quiet del "$package"`) || !strings.Contains(cleanup.Script, `apk --quiet del "$virtual"`) {
 		t.Fatalf("cleanup can delete outside the owned virtual package")
+	}
+}
+
+func TestComponentBuildOutputRejectsMissingLinkedSpecialAndOversizedCandidates(t *testing.T) {
+	root := t.TempDir()
+	installed := filepath.Join(root, "installed")
+	if err := os.WriteFile(installed, []byte("previous-install"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		prepare  func(string) error
+		output   string
+		maxBytes int64
+		expected string
+	}{
+		{name: "missing", output: "tool", maxBytes: 1024},
+		{name: "symlink", output: "tool", maxBytes: 1024, prepare: func(workspace string) error { return os.Symlink(installed, filepath.Join(workspace, "tool")) }},
+		{name: "parent symlink", output: "out/tool", maxBytes: 1024, prepare: func(workspace string) error { return os.Symlink(root, filepath.Join(workspace, "out")) }},
+		{name: "directory", output: "tool", maxBytes: 1024, prepare: func(workspace string) error { return os.Mkdir(filepath.Join(workspace, "tool"), 0700) }},
+		{name: "fifo", output: "tool", maxBytes: 1024, prepare: func(workspace string) error { return syscall.Mkfifo(filepath.Join(workspace, "tool"), 0600) }},
+		{name: "oversized", output: "tool", maxBytes: 3, prepare: func(workspace string) error {
+			return os.WriteFile(filepath.Join(workspace, "tool"), []byte("large"), 0600)
+		}},
+		{name: "checksum", output: "tool", maxBytes: 1024, expected: strings.Repeat("f", 64), prepare: func(workspace string) error {
+			return os.WriteFile(filepath.Join(workspace, "tool"), []byte("content"), 0600)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			identity := sha256String(t.Name())
+			workspace := "/var/tmp/alpineform/builds/" + identity
+			_ = os.RemoveAll(workspace)
+			if err := os.MkdirAll(workspace, 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(workspace) })
+			if test.prepare != nil {
+				if err := test.prepare(workspace); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cache := filepath.Join(root, test.name, "artifact")
+			node := graph.Node{Kind: "component_build_output", Desired: map[string]any{
+				"workspace": workspace, "build_identity": identity, "output": test.output,
+				"output_sha256": test.expected, "max_output_bytes": test.maxBytes,
+				"cache_path": cache, "marker_path": cache + ".sha256",
+				"virtual_package": ".alpineform-build-0123456789abcdef01234567", "owner_id": testBuildOwner,
+				"dependency_marker": filepath.Join(root, "missing.dependencies"), "protected_input_paths": []string{},
+			}}
+			if _, err := applyComponentBuildOutput(context.Background(), localRunner{}, node); err == nil {
+				t.Fatal("invalid source-build output unexpectedly passed verification")
+			}
+			data, err := os.ReadFile(installed)
+			if err != nil || string(data) != "previous-install" {
+				t.Fatalf("failed output verification changed prior install: %q, %v", data, err)
+			}
+		})
 	}
 }

@@ -335,7 +335,7 @@ host "node" {
 	if build == nil || len(build.Identity) != 64 || !build.Sensitive || build.Ephemeral || build.Environment["BUILD_TOKEN"] != "top-secret" {
 		t.Fatalf("compiled build = %#v", build)
 	}
-	if got := build.Dependencies; len(got) != 2 || got[0] != "build-base" || got[1] != "musl-dev" {
+	if got := build.Dependencies; len(got) != 3 || got[0] != "bubblewrap" || got[1] != "build-base" || got[2] != "musl-dev" {
 		t.Fatalf("dependencies = %#v", got)
 	}
 	encoded, err := json.Marshal(program)

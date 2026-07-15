@@ -246,12 +246,14 @@ case "$working" in .) directory=$workspace;; *) directory=$workspace/$working;; 
 if [ ! -d "$directory" ] || [ -L "$directory" ]; then echo 'source-build working directory is missing or unsafe' >&2; exit 1; fi
 physical=$(cd -P "$directory" && pwd)
 case "$physical" in "$workspace"|"$workspace"/*) ;; *) echo 'source-build working directory escapes workspace' >&2; exit 1;; esac
-manifest=$(mktemp "$workspace/.alpineform-build-manifest.XXXXXX")
-stdin_file=$(mktemp "$workspace/.alpineform-build-stdin.XXXXXX")
-log=$(mktemp "$workspace/.alpineform-build-log.XXXXXX")
-env_names=$(mktemp "$workspace/.alpineform-build-env.XXXXXX")
+runtime_root=/run/alpineform/build-runtime
+mkdir -p "$runtime_root"
+chmod 0700 "$runtime_root"
+manifest=$(mktemp "$runtime_root/manifest.XXXXXX")
+stdin_file=$(mktemp "$runtime_root/stdin.XXXXXX")
+env_names=$(mktemp "$runtime_root/env.XXXXXX")
 pid=
-cleanup() { rm -f "$manifest" "$stdin_file" "$log" "$env_names"; }
+cleanup() { rm -f "$manifest" "$stdin_file" "$env_names"; }
 terminate() {
   if [ -n "$pid" ]; then kill -TERM "-$pid" >/dev/null 2>&1 || true; fi
   cleanup
@@ -271,21 +273,43 @@ while IFS= read -r inherited; do
   case "$inherited" in ''|*[!A-Za-z0-9_]*) ;; *) unset "$inherited" || true;; esac
 done <"$env_names"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-export HOME="$workspace" TMPDIR="$workspace/.tmp" LC_ALL=C LANG=C TZ=UTC SOURCE_DATE_EPOCH=0
-mkdir -p "$TMPDIR"
-chmod 0700 "$TMPDIR"
+export HOME=/workspace TMPDIR=/tmp LC_ALL=C LANG=C TZ=UTC SOURCE_DATE_EPOCH=0 USER=root LOGNAME=root
 while IFS="$(printf '\t')" read -r name encoded <&3; do
   case "$name" in [A-Za-z_][A-Za-z0-9_]*) ;; *) echo 'invalid protected build environment key' >&2; exit 1;; esac
   value=$(printf '%s' "$encoded" | base64 -d)
   export "$name=$value"
 done
 exec 3<&-
-if ! command -v unshare >/dev/null 2>&1 || ! command -v setsid >/dev/null 2>&1; then
-  echo 'source builds require unshare and setsid on the managed target' >&2
+rm -f "$manifest" "$env_names"
+if ! command -v bwrap >/dev/null 2>&1 || ! command -v setsid >/dev/null 2>&1; then
+  echo 'source builds require bubblewrap and setsid on the managed target' >&2
   exit 1
 fi
-cd "$physical"
-setsid unshare -n -- "$@" <"$stdin_file" >"$log" 2>&1 &
+case "$working" in .) sandbox_directory=/workspace;; *) sandbox_directory=/workspace/$working;; esac
+ulimit -c 0
+ulimit -f 2097152
+setsid bwrap \
+  --die-with-parent \
+  --unshare-pid \
+  --unshare-ipc \
+  --unshare-uts \
+  --unshare-cgroup-try \
+  --unshare-net \
+  --cap-drop ALL \
+  --ro-bind /bin /bin \
+  --ro-bind /sbin /sbin \
+  --ro-bind /lib /lib \
+  --ro-bind /usr /usr \
+  --dev /dev \
+  --proc /proc \
+  --tmpfs /tmp \
+  --dir /etc \
+  --dir /run \
+  --dir /var \
+  --dir /var/tmp \
+  --bind "$workspace" /workspace \
+  --chdir "$sandbox_directory" \
+  -- "$@" <"$stdin_file" >/dev/null 2>&1 &
 pid=$!
 if ! wait "$pid"; then
   pid=
@@ -332,6 +356,15 @@ cache=$5
 marker=$6
 identity=$7
 source=$workspace/$output
+old_ifs=$IFS
+IFS=/
+set -- $output
+IFS=$old_ifs
+probe=$workspace
+for part in "$@"; do
+  probe=$probe/$part
+  if [ -L "$probe" ]; then echo 'source-build output path contains a symbolic link' >&2; exit 1; fi
+done
 if [ -L "$source" ] || [ ! -f "$source" ]; then echo 'source-build output must be one regular non-symbolic-link file' >&2; exit 1; fi
 size=$(stat -c '%s' "$source")
 if [ "$size" -gt "$max_bytes" ]; then echo 'source-build output exceeds the declared size limit' >&2; exit 1; fi

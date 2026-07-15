@@ -23,6 +23,15 @@ single declared output are clean relative paths. The first Preview contract
 fixes `network = "none"`; undeclared downloads and network-enabled builds are
 unsupported.
 
+`bubblewrap` is an automatic, visible member of the owned build-dependency
+virtual package. Each command gets a new PID, IPC, UTS, cgroup, mount, and
+network namespace with all capabilities dropped. The workspace is the only
+persistent writable bind; `/tmp` is a private tmpfs. `/bin`, `/sbin`, `/lib`,
+and `/usr` are read-only toolchain mounts. Host `/etc`, `/run`, `/var`, state,
+SSH material, caches, and install destinations are not mounted. Command output
+is discarded, core dumps are disabled, and the shell kills the owned process
+group on cancellation.
+
 The build identity covers the resolved component instance, input identities,
 argv, protected-value versions, deterministic environment policy, target
 platform, APK dependencies, output policy, and install metadata. The graph

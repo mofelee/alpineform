@@ -14,6 +14,7 @@ func TestCompileSourceBuildRejectsUnsafeContractBeforeExecution(t *testing.T) {
 	}{
 		{"shell command string", "command { argv = \"cc -o tool source.c\" }\noutput = \"tool\"", "argv must"},
 		{"workspace escape", "command { argv = [\"cc\"] }\noutput = \"../tool\"", "must not escape the workspace"},
+		{"ambiguous output", "command { argv = [\"cc\"] }\noutput = \"dist/*.bin\"", "clean relative workspace path"},
 		{"output overlap", "command { argv = [\"cc\"] }\noutput = \"source.c\"", "must not overlap"},
 		{"package intent", "command { argv = [\"cc\"] }\noutput = \"tool\"\ndependencies = [\"gcc@edge\"]", "unversioned APK package"},
 		{"environment key", "command { argv = [\"cc\"] }\noutput = \"tool\"\nenvironment = { PATH = \"/tmp\" }", "key \"PATH\" is not allowed"},
