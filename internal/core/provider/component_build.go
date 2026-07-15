@@ -82,7 +82,7 @@ if [ "$installed" != true ]; then
   exit 0
 fi
 world=false
-if [ -f /etc/apk/world ] && awk -v virtual="$virtual" '$0 == virtual { found=1 } END { exit !found }' /etc/apk/world; then world=true; fi
+if [ -f /etc/apk/world ] && awk -v virtual="$virtual" '$0 == virtual || index($0, virtual "=") == 1 { found=1 } END { exit !found }' /etc/apk/world; then world=true; fi
 packages_ok=true
 for package in "$@"; do
   if ! apk info --exists "$package" >/dev/null 2>&1; then packages_ok=false; fi
@@ -110,7 +110,7 @@ if [ -e "$marker" ]; then
     exit 1
   fi
 fi
-if [ -f /etc/apk/world ] && awk -v virtual="$virtual" '$0 == virtual { found=1 } END { exit !found }' /etc/apk/world && [ ! -f "$marker" ]; then
+if [ -f /etc/apk/world ] && awk -v virtual="$virtual" '$0 == virtual || index($0, virtual "=") == 1 { found=1 } END { exit !found }' /etc/apk/world && [ ! -f "$marker" ]; then
   echo 'refusing to adopt unowned source-build virtual package world intent' >&2
   exit 1
 fi
@@ -137,7 +137,7 @@ printf '%s\n%s\n%s\n' "$virtual" "$owner" "$identity" >"$tmp"
 chmod 0600 "$tmp"
 mv -f "$tmp" "$marker"
 if [ "$#" -gt 0 ]; then apk --quiet add --virtual "$virtual" "$@"; fi
-if [ "$#" -gt 0 ] && { [ ! -f /etc/apk/world ] || ! awk -v virtual="$virtual" '$0 == virtual { found=1 } END { exit !found }' /etc/apk/world; }; then
+if [ "$#" -gt 0 ] && { [ ! -f /etc/apk/world ] || ! awk -v virtual="$virtual" '$0 == virtual || index($0, virtual "=") == 1 { found=1 } END { exit !found }' /etc/apk/world; }; then
   echo 'source-build virtual package was not recorded in APK world' >&2
   exit 1
 fi

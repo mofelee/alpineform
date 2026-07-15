@@ -25,6 +25,15 @@ All notable user-visible changes to AlpineForm are recorded here.
   table preservation, SSH-blocking activation, local process termination,
   detached rollback, stale-artifact cleanup, scoped delete, and scrubbed
   diagnostics.
+- Add Preview target-side component source builds with checksummed local,
+  inline, remote, and archive inputs; argv commands; deterministic protected
+  environments and stdin; network/filesystem isolation; APK virtual-package
+  ownership; verified atomic installation; rebuild/repair plans; safe
+  forget/destroy behavior; and protected state.
+- Add an eleventh Alpine 3.24.1 x86_64 VM case and dedicated Preview gate for
+  musl compilation, no-op, source/build/output drift, reboot, checksum,
+  compiler, missing/symlink output, cancellation, ENOSPC, secret redaction,
+  shared dependency retention, and interrupted-build recovery.
 
 ### Compatibility
 
@@ -34,6 +43,10 @@ All notable user-visible changes to AlpineForm are recorded here.
 - The nftables DSL, `host.<name>.nftables.*` resource addresses, and additive
   `network_disruption` plan risk are alpha interfaces. Named-table nftables
   remains Preview despite its blocking rollback gate.
+- The source-build DSL and `host.<name>.component.<instance>.build.*` resource
+  addresses are additive alpha interfaces. Target-side builds remain Preview,
+  require root plus Bubblewrap on persistent Alpine, and do not support build
+  command networking or unchecked inputs.
 
 ## [v0.1.0-alpha.5] - 2026-07-13
 

@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SCRIPT_DIR="$ROOT_DIR/test/integration/libvirt"
 CASES_DIR="$SCRIPT_DIR/cases"
-EXPECTED_CASE_COUNT=10
+EXPECTED_CASE_COUNT=11
 APF_BIN="${APF_INTEGRATION_APF_BIN:-}"
 TEMP_APF=""
 TEMP_PLAN=""

@@ -47,6 +47,34 @@ Use `apf apply --debug` for structural fact, state, lock, inspect, operation,
 apply, and cleanup events. Debug does not include command stdin/output or
 protected values.
 
+## Source-Build Failure Recovery
+
+Preview source builds keep the prior installation until input staging,
+compilation, output verification, dependency cleanup, and destination staging
+all succeed. After a failed or cancelled build, re-run `apf plan`; the owned
+`.alpineform-build-*` virtual package, dependency marker, workspace, and
+verified-output marker are deterministic and the next apply can reconcile
+them.
+
+Do not run `apk del` on compiler/header packages individually. Confirm the
+virtual package and marker belong together before manual intervention:
+
+```sh
+virtual=.alpineform-build-0123456789abcdef01234567
+marker=/var/lib/alpineform/builds/0123456789abcdef0123456789abcdef.dependencies
+test -f "$marker"
+test "$(sed -n '1p' "$marker")" = "$virtual"
+apk info --exists "$virtual"
+```
+
+Prefer a normal `apf apply`, which removes only that virtual package and lets
+APK retain packages still present in world or required elsewhere. If the
+marker/virtual owner does not match the plan, stop: it is an ownership
+collision, not stale data to delete. Never publish the marker, workspace,
+output cache, state, build stdin/environment, or failure diagnostics before
+redaction. Network-enabled builds and unchecked replacement inputs are not a
+recovery option.
+
 ## nftables Approval And Recovery
 
 Every live nftables create, update, repair, or recorded delete is marked

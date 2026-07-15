@@ -12,7 +12,7 @@ Status meanings:
 
 | Target | Status | Evidence and boundary |
 | --- | --- | --- |
-| Alpine 3.24 x86_64, persistent install, OpenRC | Beta | [Ten-case VM matrix](../test/integration/libvirt/cases) and aggregate [CI gate](../.github/workflows/ci.yml) |
+| Alpine 3.24 x86_64, persistent install, OpenRC | Beta | [Eleven-case VM matrix](../test/integration/libvirt/cases) and aggregate [CI gate](../.github/workflows/ci.yml) |
 | Alpine 3.24 aarch64 | Preview | [Fact normalization test](../internal/core/engine/facts_test.go) and [Linux arm64 cross-build](../.github/workflows/ci.yml); no real-VM gate |
 | Alpine 3.23 and earlier | Unsupported | [Fact rejection tests](../internal/core/engine/facts_test.go) reject other branches before write-capable execution |
 | Alpine edge | Unsupported | [Fact rejection tests](../internal/core/engine/facts_test.go) reject a rolling version before write-capable execution |
@@ -35,7 +35,7 @@ Status meanings:
 | Hostname, timezone, modules, and sysctls | Beta | [`system-kernel`](../test/integration/libvirt/cases/system-kernel) |
 | Binary and archive components, shared `on_change` scripts | Beta | [`components`](../test/integration/libvirt/cases/components) |
 | File and CA-certificate components | Preview | [Compiler tests](../internal/core/merge/components_test.go), [graph tests](../internal/core/graph/components_test.go), and [provider tests](../internal/core/provider/component_archive_test.go); no blocking VM fixture |
-| Target-side component source builds | Preview | [Compiler contract tests](../internal/core/merge/component_build_test.go), [phase graph tests](../internal/core/graph/components_test.go), [provider transaction tests](../internal/core/provider/component_build_test.go), and the [source-build threat model](source-build-security.md); destructive Alpine VM coverage is not complete |
+| Target-side component source builds | Preview | [`source-build`](../test/integration/libvirt/cases/source-build), [compiler contract tests](../internal/core/merge/component_build_test.go), [provider transaction tests](../internal/core/provider/component_build_test.go), and the dedicated [source-build Preview gate](../.github/workflows/ci.yml); network-enabled builds remain unsupported |
 | `prevent_destroy`, forget, and recorded destroy | Beta | [`lifecycle`](../test/integration/libvirt/cases/lifecycle), [`accounts`](../test/integration/libvirt/cases/accounts), and [`apk`](../test/integration/libvirt/cases/apk) |
 | Docker Engine, OpenRC, daemon configuration, and Compose | Preview | [`docker`](../test/integration/libvirt/cases/docker), [compiler/graph tests](../internal/core/merge/docker_test.go), and [provider tests](../internal/core/provider/docker_test.go); Alpine `community` lifecycle and no aarch64 VM gate keep this outside Beta |
 | Named-table nftables, non-flushing OpenRC persistence, and rollback watchdog | Preview | [`nftables`](../test/integration/libvirt/cases/nftables), [compiler/graph tests](../internal/core/merge/nftables_test.go), [provider tests](../internal/core/provider/nftables_test.go), and the dedicated [nftables Preview gate](../.github/workflows/ci.yml); whole-ruleset ownership is unsupported and live changes require separate network-disruption approval |

@@ -29,7 +29,8 @@ for the exact flag spelling shipped by the installed binary.
 - `locals` contains HCL expressions evaluated after input precedence resolves.
 - `assert` rejects a false condition with a declared message.
 - `profile` groups host configuration for deterministic imports.
-- `component` defines typed reusable native resources or one prebuilt artifact.
+- `component` defines typed reusable native resources, one prebuilt artifact,
+  or an independently Preview checksummed source build.
 - `script` defines argv-safe commands or redacted interpreter content and
   optional observed outputs.
 - `host` selects SSH, optional offline platform facts, imports, components, and
@@ -50,6 +51,7 @@ read-only detected facts.
 - `system.hostname` and `system.timezone`: [system](system.md)
 - `kernel.module` and `kernel.sysctl`: [kernel](kernel.md)
 - prebuilt artifacts and `on_change`: [components](components.md)
+- Preview checksummed target-side builds: [components](components.md#preview-source-builds)
 - Preview Docker Engine and Compose projects: [Docker](docker.md)
 - Preview rollback-safe named tables: [nftables](nftables.md)
 

@@ -52,8 +52,8 @@ jobs:
           from pathlib import Path
 
           cases = sorted(path.name for path in Path("test/integration/libvirt/cases").iterdir() if path.is_dir())
-          if len(cases) != 10:
-              raise SystemExit(f"expected 10 libvirt integration cases, discovered {len(cases)}")
+          if len(cases) != 11:
+              raise SystemExit(f"expected 11 libvirt integration cases, discovered {len(cases)}")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               print("cases=" + json.dumps(cases), file=output)
           print("Discovered Alpine libvirt cases: " + ", ".join(cases))
@@ -142,6 +142,22 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Require rollback-safe nftables matrix
+        env:
+          CORE_RESULT: ${{ needs.core.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+        run: |
+          test "$CORE_RESULT" = success
+          test "$INTEGRATION_RESULT" = success
+
+  source-build-preview-gate:
+    name: Alpine 3.24 source-build Preview gate
+    if: always()
+    needs:
+      - core
+      - integration
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require source-build failure and recovery matrix
         env:
           CORE_RESULT: ${{ needs.core.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}

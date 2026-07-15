@@ -1,6 +1,6 @@
 # Alpine 3.24 libvirt integration
 
-The blocking ten-case managed-target gate boots a fresh persistent Alpine
+The blocking eleven-case managed-target gate boots a fresh persistent Alpine
 3.24.1 x86_64 VM for every case. The runner downloads this immutable official
 image:
 
@@ -43,14 +43,22 @@ drift and repair, three reboots, invalid syntax and approval refusal without
 mutation, external ownership, real SSH loss, local `SIGKILL`, detached and
 synchronous confirmed rollback, state preservation, stale-artifact cleanup,
 and protected-log scanning.
+The source-build case is the eleventh case and the dedicated Preview gate. It
+compiles a checksummed C fixture against musl, proves no-op, source drift,
+build-definition drift, installed drift, repair, cleanup, and reboot, then
+exercises checksum, compiler, missing-output, symlink-output, cancellation,
+ENOSPC, and owned-leftover recovery paths while requiring the prior installation
+and protected state to survive.
 The account and lifecycle cases prove recorded destroy ordering. The layout
 validator requires contiguous configs, a check hook for every step, at least
 one drift hook per case, pinned offline facts, shell syntax, the nftables-only
 risk marker, and no committed keys or state.
 
-CI discovers exactly ten cases. The aggregate `Alpine 3.24 core gate` requires
+CI discovers exactly eleven cases. The aggregate `Alpine 3.24 core gate` requires
 the full matrix, and the separate `Alpine 3.24 nftables Preview gate` prevents
-the Preview schema from passing without the rollback case.
+the Preview schema from passing without the rollback case. The separate
+`Alpine 3.24 source-build Preview gate` names the source-build failure/recovery
+contract independently of prebuilt components.
 
 ## Run locally
 

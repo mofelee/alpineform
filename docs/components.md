@@ -77,6 +77,70 @@ protected-value rules, ownership, failure behavior, and threat boundary are
 documented in [Target-side source-build security](source-build-security.md).
 They do not weaken the prebuilt artifact contract above.
 
+## Preview source builds
+
+A source build has fixed inputs, argv commands, one relative output, and a
+normal component install destination:
+
+```hcl
+component "musl_hello" {
+  type = "source"
+
+  build {
+    input "source" {
+      source      = "fixtures/hello.c"
+      sha256      = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      destination = "hello.c"
+    }
+    command { argv = ["mkdir", "-p", "build"] }
+    command { argv = ["cc", "-Os", "-static", "-o", "build/hello", "hello.c"] }
+
+    output           = "build/hello"
+    max_output_bytes = 67108864
+    executable       = true
+    dependencies     = ["build-base"]
+    network          = "none"
+    on_remove        = "forget"
+  }
+
+  install {
+    path = "/usr/local/bin/musl-hello"
+    mode = "0755"
+  }
+}
+```
+
+An input selects exactly one of `source`, `url`, or `content`, always with an
+exact `sha256` and a clean workspace-relative `destination`. `source` is a
+controller-local regular file below the declaring module directory. `url` is
+an HTTP(S) transport locator; its response is not trusted until the checksum
+passes. `content` may use protected component inputs and then also requires a
+public `content_version`. An input may add:
+
+```hcl
+extract {
+  format           = "tar.gz"
+  strip_components = 1
+}
+```
+
+`working_directory` defaults to `.`. Every `command` requires `argv`; optional
+`stdin` derived from a sensitive or ephemeral value requires `stdin_version`.
+`environment` is a string map; protected entries require one public
+`environment_version`. `PATH`, loader injection variables, shell startup
+variables, `HOME`, and `TMPDIR` cannot be overridden.
+
+`output_sha256` is optional. `max_output_bytes` defaults to 64 MiB and cannot
+exceed 1 GiB. `executable = true` adds a pre-install execution-bit check.
+Bubblewrap is added automatically to `dependencies`; all dependencies belong
+to one address-derived APK virtual package and are removed after verification.
+The only network policy is `none`.
+
+Removal defaults to state-only forget. `on_remove = "destroy"` records the
+verified installation/cache identity for guarded deletion, and component
+`lifecycle.prevent_destroy` blocks it. See the complete runnable
+[source-build example](../examples/source-build.apf.hcl).
+
 ## Change scripts
 
 Scripts use either command arrays or interpreter content:
