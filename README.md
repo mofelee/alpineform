@@ -15,19 +15,19 @@ guarantees are documented in [the compatibility policy](docs/compatibility-polic
 
 ## Supported Core
 
-The blocking target is persistent Alpine 3.24 x86_64 with OpenRC. The core
-manages files, directories, groups, users, authorized keys, APK repositories
-and packages, bounded or raw OpenRC services, hostname, timezone, kernel
-modules, sysctls, and verified prebuilt components. Every Beta domain runs in
-a fresh Alpine 3.24.1 VM through apply, no-op plan, drift and repair where
-applicable, and reboot.
+The blocking targets are persistent Alpine 3.21 through 3.24 x86_64 with
+OpenRC. The core manages files, directories, groups, users, authorized keys,
+APK repositories and packages, bounded or raw OpenRC services, hostname,
+timezone, kernel modules, sysctls, and verified prebuilt components. Every
+Beta domain runs in a fresh VM for every supported branch through apply, no-op
+plan, drift and repair where applicable, and reboot.
 
-Alpine 3.24 aarch64 remains Preview because it has cross-build and selector
-coverage but no blocking real-VM gate. Docker Engine and Compose are an
-implemented Preview domain with a dedicated Alpine 3.24 x86_64 VM gate; they
+Alpine 3.21 through 3.24 aarch64 remains Preview because it has cross-build and
+selector coverage but no blocking real-VM gate. Docker Engine and Compose are
+an implemented Preview domain covered by the four-branch x86_64 VM gate; they
 remain outside the v0.1 core promise because they depend on Alpine `community`.
 Rollback-safe named-table nftables is also an implemented Preview domain with
-a dedicated blocking Alpine 3.24 x86_64 rollback gate and a separate
+a dedicated blocking four-branch rollback gate and a separate
 network-disruption approval. Target-side source builds are an independent
 Preview domain with checksummed inputs, offline argv execution, owned build
 dependencies, atomic installation, and a dedicated destructive Alpine VM
@@ -64,9 +64,9 @@ are resolved through the GitHub API.
 ## Quickstart
 
 The control host needs `apf` and OpenSSH. The managed host must be a persistent
-Alpine 3.24 installation reachable as root with a key. Put the target in your
-OpenSSH configuration; online fact discovery does not require platform values
-in the AlpineForm file:
+Alpine 3.21 through 3.24 installation reachable as root with a key. Put the
+target in your OpenSSH configuration; online fact discovery does not require
+platform values in the AlpineForm file:
 
 ```sshconfig
 Host alpine

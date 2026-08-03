@@ -72,6 +72,26 @@ host "node" {
 	}
 }
 
+func TestCompileDockerUsesOldestSupportedCommunityRepository(t *testing.T) {
+	config, err := compileConfig(t, `
+host "node" {
+  platform { version = "3.21.7" }
+  docker {}
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositories := program.Hosts[0].APK.Repositories
+	if len(repositories) != 1 || repositories[0].Line != "https://dl-cdn.alpinelinux.org/alpine/v3.21/community" {
+		t.Fatalf("repositories = %#v", repositories)
+	}
+}
+
 func TestCompileDockerRejectsUnsafeContracts(t *testing.T) {
 	tests := []struct {
 		name string

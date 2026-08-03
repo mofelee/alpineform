@@ -62,7 +62,7 @@ jobs:
         run: git diff --check
 
   integration:
-    name: Alpine 3.24 x86_64 libvirt (${{ matrix.case }})
+    name: Alpine ${{ matrix.alpine }} x86_64 libvirt (${{ matrix.case }})
     needs: core
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -70,6 +70,7 @@ jobs:
       fail-fast: false
       max-parallel: 8
       matrix:
+        alpine: [v3.21, v3.22, v3.23, v3.24]
         case: ${{ fromJSON(needs.core.outputs.integration_cases) }}
 
     steps:
@@ -84,7 +85,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/alpine-image-cache
-          key: alpine-3.24.1-x86_64-cloudinit-ed976ef40de1
+          key: alpine-${{ matrix.alpine }}-x86_64-cloudinit-v1
       - name: Install libvirt and cloud image tools
         run: |
           sudo apt-get update
@@ -104,6 +105,7 @@ jobs:
           fi
       - name: Run Alpine VM integration case
         env:
+          APF_INTEGRATION_ALPINE_BRANCH: ${{ matrix.alpine }}
           APF_INTEGRATION_CASE: ${{ matrix.case }}
           APF_INTEGRATION_IMAGE_CACHE: ${{ runner.temp }}/alpine-image-cache
           APF_INTEGRATION_ARTIFACT_DIR: ${{ runner.temp }}/alpineform-integration-artifacts
@@ -112,13 +114,13 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: alpineform-libvirt-${{ matrix.case }}-diagnostics
+          name: alpineform-libvirt-${{ matrix.alpine }}-${{ matrix.case }}-diagnostics
           path: ${{ runner.temp }}/alpineform-integration-artifacts
           if-no-files-found: ignore
           retention-days: 7
 
   managed-target-gate:
-    name: Alpine 3.24 core gate
+    name: Alpine 3.21-3.24 core gate
     if: always()
     needs:
       - core
@@ -134,7 +136,7 @@ jobs:
           test "$INTEGRATION_RESULT" = success
 
   nftables-preview-gate:
-    name: Alpine 3.24 nftables Preview gate
+    name: Alpine 3.21-3.24 nftables Preview gate
     if: always()
     needs:
       - core
@@ -150,7 +152,7 @@ jobs:
           test "$INTEGRATION_RESULT" = success
 
   source-build-preview-gate:
-    name: Alpine 3.24 source-build Preview gate
+    name: Alpine 3.21-3.24 source-build Preview gate
     if: always()
     needs:
       - core

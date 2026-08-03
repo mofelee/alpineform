@@ -56,6 +56,26 @@ func TestDiscoverHostFacts(t *testing.T) {
 	}
 }
 
+func TestDiscoverHostFactsSupportsAlpineBranches(t *testing.T) {
+	for _, version := range []string{"3.21.7", "3.22.5", "3.23.5", "3.24.1"} {
+		t.Run(version, func(t *testing.T) {
+			reader := &factsReader{outputs: map[string]string{
+				osReleaseCommand:  "ID=alpine\nVERSION_ID=" + version + "\n",
+				apkArchCommand:    "x86_64\n",
+				kernelArchCommand: "x86_64\n",
+			}}
+			facts, err := DiscoverHostFacts(context.Background(), reader, FactDiscoveryOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantBranch := "v" + version[:4]
+			if facts.Version != version || facts.Branch != wantBranch {
+				t.Fatalf("facts = %#v, want version %q branch %q", facts, version, wantBranch)
+			}
+		})
+	}
+}
+
 func TestDiscoverHostFactsRejectsBeforeAnyWriteCapabilityExists(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -68,7 +88,8 @@ func TestDiscoverHostFactsRejectsBeforeAnyWriteCapabilityExists(t *testing.T) {
 		{name: "Ubuntu", osRelease: "ID=ubuntu\nVERSION_ID=24.04\n", apkArch: "x86_64", kernel: "x86_64", want: `unsupported target OS "ubuntu"`},
 		{name: "missing ID", osRelease: "VERSION_ID=3.24.1\n", apkArch: "x86_64", kernel: "x86_64", want: "missing required ID"},
 		{name: "edge", osRelease: "ID=alpine\nVERSION_ID=edge\n", apkArch: "x86_64", kernel: "x86_64", want: "invalid Alpine VERSION_ID"},
-		{name: "old branch", osRelease: "ID=alpine\nVERSION_ID=3.23.4\n", apkArch: "x86_64", kernel: "x86_64", want: `unsupported Alpine branch "v3.23"`},
+		{name: "below minimum branch", osRelease: "ID=alpine\nVERSION_ID=3.20.10\n", apkArch: "x86_64", kernel: "x86_64", want: `unsupported Alpine branch "v3.20"`},
+		{name: "above maximum branch", osRelease: "ID=alpine\nVERSION_ID=3.25.0\n", apkArch: "x86_64", kernel: "x86_64", want: `unsupported Alpine branch "v3.25"`},
 		{name: "unsupported APK architecture", osRelease: "ID=alpine\nVERSION_ID=3.24.1\n", apkArch: "armv7", kernel: "armv7", want: "unsupported architecture"},
 		{name: "APK alias", osRelease: "ID=alpine\nVERSION_ID=3.24.1\n", apkArch: "amd64", kernel: "x86_64", want: "non-native architecture"},
 		{name: "architecture mismatch", osRelease: "ID=alpine\nVERSION_ID=3.24.1\n", apkArch: "x86_64", kernel: "aarch64", want: "architecture mismatch"},

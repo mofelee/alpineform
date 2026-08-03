@@ -16,7 +16,6 @@ const (
 	osReleaseCommand  = "cat /etc/os-release"
 	apkArchCommand    = "apk --print-arch"
 	kernelArchCommand = "uname -m"
-	supportedBranch   = product.SupportedBranch
 )
 
 var (
@@ -58,8 +57,8 @@ func DiscoverHostFacts(ctx context.Context, reader FactsReader, options FactDisc
 	if err != nil {
 		return ir.HostFacts{}, err
 	}
-	if branch != supportedBranch {
-		return ir.HostFacts{}, fmt.Errorf("unsupported Alpine branch %q from version %q; AlpineForm v0.1 supports %s", branch, version, supportedBranch)
+	if !product.SupportsBranch(branch) {
+		return ir.HostFacts{}, fmt.Errorf("unsupported Alpine branch %q from version %q; AlpineForm v0.1 supports %s", branch, version, product.SupportedBranchRange)
 	}
 
 	nativeArchitectureRaw, err := reader.Read(ctx, apkArchCommand)

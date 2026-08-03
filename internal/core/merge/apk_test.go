@@ -74,7 +74,7 @@ func TestCompileAPKRejectsUnsafeRepositoryAndKeyInputs(t *testing.T) {
 		{name: "http URL", body: `repository "main" { url = "http://example.test/alpine" }`, wantErr: "must be an HTTPS base URL"},
 		{name: "credentials", body: `repository "main" { url = "https://user:pass@example.test/alpine" }`, wantErr: "without credentials"},
 		{name: "query", body: `repository "main" { url = "https://example.test/alpine?command=bad" }`, wantErr: "without credentials, query, or fragment"},
-		{name: "branch", body: "repository \"main\" {\n      url = \"https://example.test/alpine\"\n      branch = \"edge\"\n    }", wantErr: "must match supported target branch"},
+		{name: "branch", body: "repository \"main\" {\n      url = \"https://example.test/alpine\"\n      branch = \"edge\"\n    }", wantErr: "must match a supported target branch"},
 		{name: "tag", body: "repository \"main\" {\n      url = \"https://example.test/alpine\"\n      tag = \"bad tag\"\n    }", wantErr: "tag"},
 		{name: "key traversal", body: `key "../vendor.rsa.pub" { ensure = "absent" }`, wantErr: "safe basename"},
 		{name: "missing key source", body: `key "vendor.rsa.pub" { sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }`, wantErr: "source"},
@@ -94,5 +94,29 @@ func TestCompileAPKRejectsUnsafeRepositoryAndKeyInputs(t *testing.T) {
 				t.Fatalf("CompileWithOptions() error = %v, want %q", err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestCompileAPKUsesOldestSupportedTargetBranch(t *testing.T) {
+	config, err := compileConfig(t, `
+host "node" {
+  platform { version = "3.21.7" }
+  apk {
+    repository "main" {
+      url = "https://dl-cdn.alpinelinux.org/alpine"
+    }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := program.Hosts[0].APK.Repositories[0]
+	if repository.Branch != "3.21" || repository.Line != "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" {
+		t.Fatalf("repository = %#v", repository)
 	}
 }

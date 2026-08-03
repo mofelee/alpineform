@@ -22,7 +22,8 @@ The URL is an HTTPS repository root. AlpineForm appends the detected or
 offline-declared branch and the `component`, which defaults to the repository
 label. An optional `tag` produces APK's `@tag` repository syntax. URLs with
 credentials, query strings, fragments, encoded paths, or non-HTTPS schemes
-are rejected. Branches must match the supported Alpine 3.24 target branch.
+are rejected. Branches must match the detected or declared target branch and
+must be one of Alpine 3.21 through 3.24.
 
 ## Repository ownership
 

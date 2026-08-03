@@ -14,6 +14,9 @@ linux_amd64_installer=failed
 darwin_amd64_installer=failed
 darwin_arm64_installer=failed
 supply_chain=failed
+alpine_3_21_x86_64_quickstart=failed
+alpine_3_22_x86_64_quickstart=failed
+alpine_3_23_x86_64_quickstart=failed
 alpine_3_24_x86_64_quickstart=failed
 result_count=0
 
@@ -25,6 +28,9 @@ while IFS= read -r -d '' result; do
       darwin_amd64_installer=yes) darwin_amd64_installer=yes ;;
       darwin_arm64_installer=yes) darwin_arm64_installer=yes ;;
       supply_chain=yes) supply_chain=yes ;;
+      alpine_3_21_x86_64_quickstart=yes) alpine_3_21_x86_64_quickstart=yes ;;
+      alpine_3_22_x86_64_quickstart=yes) alpine_3_22_x86_64_quickstart=yes ;;
+      alpine_3_23_x86_64_quickstart=yes) alpine_3_23_x86_64_quickstart=yes ;;
       alpine_3_24_x86_64_quickstart=yes) alpine_3_24_x86_64_quickstart=yes ;;
       '') ;;
       *)
@@ -46,6 +52,9 @@ cat > "$OUTPUT" <<EOF
 | Artifact build | yes | yes | yes | yes |
 | Installer | ${linux_amd64_installer} | build-only | ${darwin_amd64_installer} | ${darwin_arm64_installer} |
 | Supply chain | ${supply_chain} | ${supply_chain} | ${supply_chain} | ${supply_chain} |
+| Alpine 3.21 x86_64 quickstart | ${alpine_3_21_x86_64_quickstart} | n/a | n/a | n/a |
+| Alpine 3.22 x86_64 quickstart | ${alpine_3_22_x86_64_quickstart} | n/a | n/a | n/a |
+| Alpine 3.23 x86_64 quickstart | ${alpine_3_23_x86_64_quickstart} | n/a | n/a | n/a |
 | Alpine 3.24 x86_64 quickstart | ${alpine_3_24_x86_64_quickstart} | n/a | n/a | n/a |
 EOF
 

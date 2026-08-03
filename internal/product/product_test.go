@@ -7,26 +7,42 @@ func TestProductContractNames(t *testing.T) {
 		got  string
 		want string
 	}{
-		"Name":               {Name, "AlpineForm"},
-		"CLIName":            {CLIName, "apf"},
-		"ConfigSuffix":       {ConfigSuffix, ".apf.hcl"},
-		"VarFileSuffix":      {VarFileSuffix, ".apfvars"},
-		"VarJSONSuffix":      {VarJSONSuffix, ".apfvars.json"},
-		"DefaultVarFile":     {DefaultVarFile, "alpineform.apfvars"},
-		"DefaultVarJSONFile": {DefaultVarJSONFile, "alpineform.apfvars.json"},
-		"AutoVarSuffix":      {AutoVarSuffix, ".auto.apfvars"},
-		"AutoVarJSONSuffix":  {AutoVarJSONSuffix, ".auto.apfvars.json"},
-		"EnvironmentPrefix":  {EnvironmentPrefix, "APF_VAR_"},
-		"DefaultStatePath":   {DefaultStatePath, "/var/lib/alpineform/state.json"},
-		"DefaultLockPath":    {DefaultLockPath, "/run/lock/alpineform/lock"},
-		"DefaultInstallDir":  {DefaultInstallDir, "/usr/local/share/alpineform"},
-		"TargetOSID":         {TargetOSID, "alpine"},
-		"SupportedBranch":    {SupportedBranch, "v3.24"},
-		"TargetLibc":         {TargetLibc, "musl"},
+		"Name":                   {Name, "AlpineForm"},
+		"CLIName":                {CLIName, "apf"},
+		"ConfigSuffix":           {ConfigSuffix, ".apf.hcl"},
+		"VarFileSuffix":          {VarFileSuffix, ".apfvars"},
+		"VarJSONSuffix":          {VarJSONSuffix, ".apfvars.json"},
+		"DefaultVarFile":         {DefaultVarFile, "alpineform.apfvars"},
+		"DefaultVarJSONFile":     {DefaultVarJSONFile, "alpineform.apfvars.json"},
+		"AutoVarSuffix":          {AutoVarSuffix, ".auto.apfvars"},
+		"AutoVarJSONSuffix":      {AutoVarJSONSuffix, ".auto.apfvars.json"},
+		"EnvironmentPrefix":      {EnvironmentPrefix, "APF_VAR_"},
+		"DefaultStatePath":       {DefaultStatePath, "/var/lib/alpineform/state.json"},
+		"DefaultLockPath":        {DefaultLockPath, "/run/lock/alpineform/lock"},
+		"DefaultInstallDir":      {DefaultInstallDir, "/usr/local/share/alpineform"},
+		"TargetOSID":             {TargetOSID, "alpine"},
+		"MinimumSupportedBranch": {MinimumSupportedBranch, "v3.21"},
+		"MaximumSupportedBranch": {MaximumSupportedBranch, "v3.24"},
+		"PrimarySupportedBranch": {PrimarySupportedBranch, "v3.24"},
+		"SupportedBranchRange":   {SupportedBranchRange, "v3.21 through v3.24"},
+		"TargetLibc":             {TargetLibc, "musl"},
 	}
 	for name, test := range tests {
 		if test.got != test.want {
 			t.Fatalf("%s = %q, want %q", name, test.got, test.want)
+		}
+	}
+}
+
+func TestSupportsBranchUsesExplicitAllowlist(t *testing.T) {
+	for _, branch := range []string{"v3.21", "v3.22", "v3.23", "v3.24"} {
+		if !SupportsBranch(branch) {
+			t.Fatalf("SupportsBranch(%q) = false", branch)
+		}
+	}
+	for _, branch := range []string{"v3.20", "v3.25", "3.24", "edge", ""} {
+		if SupportsBranch(branch) {
+			t.Fatalf("SupportsBranch(%q) = true", branch)
 		}
 	}
 }

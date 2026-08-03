@@ -94,11 +94,11 @@ The package and OpenRC integration addresses are
 `host.edge.nftables.service`. Runtime tokens and snapshots are never part of
 these addresses and must never be serialized.
 
-## Alpine 3.24 package and OpenRC layout
+## Alpine package and OpenRC layout
 
-AlpineForm's integration evidence uses Alpine 3.24.1 x86_64. Installing the
-official `nftables` world intent installs `nftables 1.1.6-r1` together with
-`nftables-openrc`. The package owns `/etc/nftables.nft`,
+AlpineForm's blocking integration evidence spans Alpine 3.21 through 3.24
+x86_64. Package revisions vary by branch. Installing the official `nftables`
+world intent also installs `nftables-openrc`; the packages own `/etc/nftables.nft`,
 `/etc/conf.d/nftables`, and `/etc/init.d/nftables`.
 
 The stock `/etc/nftables.nft` starts with `flush ruleset`, and the stock
@@ -199,8 +199,8 @@ that locked replans cannot introduce the risk, and that bounded reconnect
 reports a confirmed rollback after actual SSH loss. It also verified reboot,
 state preservation, durable ownership recovery, and completed-artifact cleanup.
 
-The blocking Loop 6 [`nftables` case](../test/integration/libvirt/cases/nftables)
-passed 41 explicit assertions in a fresh Alpine 3.24.1 x86_64 VM. It covers
+The blocking [`nftables` case](../test/integration/libvirt/cases/nftables)
+runs 41 explicit assertions on every supported x86_64 branch. It covers
 safe create, update, JSON no-op, check, three-way drift, repair, scoped delete,
 three reboots, invalid syntax without mutation, approval refusal without
 mutation, external table/service/configuration preservation, real SSH loss,

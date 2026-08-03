@@ -6,6 +6,10 @@ All notable user-visible changes to AlpineForm are recorded here.
 
 ### Added
 
+- Add explicit Alpine 3.21, 3.22, 3.23, and 3.24 managed-target support with
+  branch-aware APK and Docker repositories, pinned official cloud images, a
+  44-job blocking x86_64 VM matrix, and four-branch published-release
+  quickstart verification.
 - Add a Preview Alpine-native Docker Engine and Compose domain with official or
   explicitly tagged APK sources, OpenRC convergence, group membership,
   validated atomic daemon configuration, deduplicated restart, Compose
@@ -37,6 +41,9 @@ All notable user-visible changes to AlpineForm are recorded here.
 
 ### Compatibility
 
+- Promote persistent Alpine 3.21 through 3.24 x86_64 targets to the v0.1 Beta
+  support set. Branches outside this explicit allowlist remain rejected before
+  write-capable execution; aarch64 remains Preview without a real-VM gate.
 - The Docker DSL and `host.<name>.docker.*` resource addresses are additive
   alpha interfaces. Docker remains Preview and outside the v0.1 core/Beta
   promise.

@@ -12,9 +12,9 @@ Status meanings:
 
 | Target | Status | Evidence and boundary |
 | --- | --- | --- |
-| Alpine 3.24 x86_64, persistent install, OpenRC | Beta | [Eleven-case VM matrix](../test/integration/libvirt/cases) and aggregate [CI gate](../.github/workflows/ci.yml) |
-| Alpine 3.24 aarch64 | Preview | [Fact normalization test](../internal/core/engine/facts_test.go) and [Linux arm64 cross-build](../.github/workflows/ci.yml); no real-VM gate |
-| Alpine 3.23 and earlier | Unsupported | [Fact rejection tests](../internal/core/engine/facts_test.go) reject other branches before write-capable execution |
+| Alpine 3.21-3.24 x86_64, persistent install, OpenRC | Beta | Four branches by [eleven-case VM matrix](../test/integration/libvirt/cases), 44 jobs, and aggregate [CI gate](../.github/workflows/ci.yml) |
+| Alpine 3.21-3.24 aarch64 | Preview | [Fact normalization tests](../internal/core/engine/facts_test.go) and [Linux arm64 cross-build](../.github/workflows/ci.yml); no real-VM gate |
+| Alpine 3.20 and earlier, or 3.25 and later | Unsupported | [Fact rejection tests](../internal/core/engine/facts_test.go) reject branches outside the explicit allowlist before write-capable execution |
 | Alpine edge | Unsupported | [Fact rejection tests](../internal/core/engine/facts_test.go) reject a rolling version before write-capable execution |
 | Diskless/data mode and `lbu commit` | Unsupported | The documented [state backend](state-backend.md) assumes a persistent root filesystem; no mode selector exists in the [v0.1 DSL](dsl-reference.md) |
 | Non-Alpine systems | Unsupported | [Fact gate](../test/integration/libvirt/cases/facts-state-lock/negative.sh) rejects before state or resource writes |
@@ -35,10 +35,10 @@ Status meanings:
 | Hostname, timezone, modules, and sysctls | Beta | [`system-kernel`](../test/integration/libvirt/cases/system-kernel) |
 | Binary and archive components, shared `on_change` scripts | Beta | [`components`](../test/integration/libvirt/cases/components) |
 | File and CA-certificate components | Preview | [Compiler tests](../internal/core/merge/components_test.go), [graph tests](../internal/core/graph/components_test.go), and [provider tests](../internal/core/provider/component_archive_test.go); no blocking VM fixture |
-| Target-side component source builds | Preview | [`source-build`](../test/integration/libvirt/cases/source-build), [compiler contract tests](../internal/core/merge/component_build_test.go), [provider transaction tests](../internal/core/provider/component_build_test.go), and the dedicated [source-build Preview gate](../.github/workflows/ci.yml); network-enabled builds remain unsupported |
+| Target-side component source builds | Preview | Four-branch [`source-build`](../test/integration/libvirt/cases/source-build), [compiler contract tests](../internal/core/merge/component_build_test.go), [provider transaction tests](../internal/core/provider/component_build_test.go), and the dedicated [source-build Preview gate](../.github/workflows/ci.yml); network-enabled builds remain unsupported |
 | `prevent_destroy`, forget, and recorded destroy | Beta | [`lifecycle`](../test/integration/libvirt/cases/lifecycle), [`accounts`](../test/integration/libvirt/cases/accounts), and [`apk`](../test/integration/libvirt/cases/apk) |
-| Docker Engine, OpenRC, daemon configuration, and Compose | Preview | [`docker`](../test/integration/libvirt/cases/docker), [compiler/graph tests](../internal/core/merge/docker_test.go), and [provider tests](../internal/core/provider/docker_test.go); Alpine `community` lifecycle and no aarch64 VM gate keep this outside Beta |
-| Named-table nftables, non-flushing OpenRC persistence, and rollback watchdog | Preview | [`nftables`](../test/integration/libvirt/cases/nftables), [compiler/graph tests](../internal/core/merge/nftables_test.go), [provider tests](../internal/core/provider/nftables_test.go), and the dedicated [nftables Preview gate](../.github/workflows/ci.yml); whole-ruleset ownership is unsupported and live changes require separate network-disruption approval |
+| Docker Engine, OpenRC, daemon configuration, and Compose | Preview | Four-branch [`docker`](../test/integration/libvirt/cases/docker), [compiler/graph tests](../internal/core/merge/docker_test.go), and [provider tests](../internal/core/provider/docker_test.go); Alpine `community` security support is shorter than `main`, and no aarch64 VM gate exists |
+| Named-table nftables, non-flushing OpenRC persistence, and rollback watchdog | Preview | Four-branch [`nftables`](../test/integration/libvirt/cases/nftables), [compiler/graph tests](../internal/core/merge/nftables_test.go), [provider tests](../internal/core/provider/nftables_test.go), and the dedicated [nftables Preview gate](../.github/workflows/ci.yml); whole-ruleset ownership is unsupported and live changes require separate network-disruption approval |
 
 All VM cases validate, build an offline plan, build an observed plan, apply,
 assert a JSON no-op plan, run clean `check`, introduce drift where applicable,
@@ -55,7 +55,7 @@ require nonzero `check`, repair, recheck, reboot, and verify persistence.
 | Windows | Unsupported | Rejected by the [installer platform selector](../scripts/install.sh) and absent from the [fixed release targets](../.goreleaser.yaml) |
 
 The CLI platform is independent of the managed target platform. A macOS arm64
-control host can manage the Beta Alpine 3.24 x86_64 target, but that does not
+control host can manage the Beta Alpine 3.21-3.24 x86_64 targets, but that does not
 promote Alpine aarch64 target support.
 
 Docker/Compose, nftables, and target-side source builds are implemented Preview

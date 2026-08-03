@@ -3,6 +3,7 @@ package merge
 import (
 	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -477,7 +478,6 @@ host "node" {
     version      = "3.24.1"
   }
 }
-
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -506,6 +506,31 @@ host "node" {
 			_, err := CompileWithOptions(config, CompileOptions{HostFacts: map[string]ir.HostFacts{test.host: facts}})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("CompileWithOptions() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestCompileWithDetectedFactsSupportsAlpineBranches(t *testing.T) {
+	for _, version := range []string{"3.21.7", "3.22.5", "3.23.5", "3.24.1"} {
+		t.Run(version, func(t *testing.T) {
+			config, err := compileConfig(t, fmt.Sprintf(`
+host "node" {
+  platform {
+    architecture = "amd64"
+    version      = %q
+  }
+}
+`, version))
+			if err != nil {
+				t.Fatal(err)
+			}
+			facts := ir.HostFacts{
+				OSID: "alpine", Version: version, Branch: "v" + version[:4], Architecture: "amd64",
+				NativeArchitecture: "x86_64", KernelArchitecture: "x86_64", Libc: "musl",
+			}
+			if _, err := CompileWithOptions(config, CompileOptions{HostFacts: map[string]ir.HostFacts{"node": facts}}); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

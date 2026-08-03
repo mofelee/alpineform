@@ -646,10 +646,11 @@ func hostEvalContext(base parser.EvalContext, host parser.Host, facts *ir.HostFa
 }
 
 func validateDetectedFacts(host parser.Host, facts ir.HostFacts) error {
-	if facts.OSID != product.TargetOSID || facts.Branch != product.SupportedBranch || facts.Libc != product.TargetLibc {
-		return fmt.Errorf("detected facts for host %q are not a supported Alpine %s %s target", host.Name, product.SupportedBranch, product.TargetLibc)
+	if facts.OSID != product.TargetOSID || !product.SupportsBranch(facts.Branch) || facts.Libc != product.TargetLibc {
+		return fmt.Errorf("detected facts for host %q are not a supported Alpine %s %s target", host.Name, product.SupportedBranchRange, product.TargetLibc)
 	}
-	if facts.Version != "3.24" && !strings.HasPrefix(facts.Version, "3.24.") {
+	branchVersion := strings.TrimPrefix(facts.Branch, "v")
+	if facts.Version != branchVersion && !strings.HasPrefix(facts.Version, branchVersion+".") {
 		return fmt.Errorf("detected facts for host %q contain unsupported exact version %q", host.Name, facts.Version)
 	}
 	switch facts.Architecture {

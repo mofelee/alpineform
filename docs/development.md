@@ -125,8 +125,9 @@ make vulncheck
 git diff --check
 ```
 
-`make check` includes the static layout gate for the Alpine 3.24 libvirt
-matrix. Run `make test-integration` for all real-VM cases or
-`make test-integration-case CASE=<name>` for one. The pinned image, lifecycle,
+`make check` includes the static layout gate for the Alpine 3.21-3.24 libvirt
+matrix. Run `make ALPINE_BRANCH=v3.21 test-integration` for all real-VM cases
+on one branch or `make ALPINE_BRANCH=v3.21 test-integration-case CASE=<name>`
+for one. The pinned images, lifecycle,
 case contract, remote-libvirt settings, diagnostics, and cleanup behavior are
 documented in [the integration runbook](../test/integration/libvirt/README.md).

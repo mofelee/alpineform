@@ -291,8 +291,8 @@ func ensureDockerAPK(apk *ir.APKSpec, docker *ir.DockerSpec, host parser.Host, f
 	if branch == "" {
 		return nil, resourceError(docker.Source, "docker.package_source = \"alpine\" requires detected target facts or host platform.version")
 	}
-	if branch != strings.TrimPrefix(product.SupportedBranch, "v") {
-		return nil, resourceError(docker.Source, "Docker packages are supported only on Alpine %s", product.SupportedBranch)
+	if !product.SupportsBranch("v" + branch) {
+		return nil, resourceError(docker.Source, "Docker packages are supported only on Alpine %s", product.SupportedBranchRange)
 	}
 	line := dockerCommunityRepositoryURL + "/v" + branch + "/community"
 	if apk == nil {

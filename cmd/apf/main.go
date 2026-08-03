@@ -626,6 +626,6 @@ Usage:
 
 Validate, plan, apply, check, and variable inspect load top-level *.apf.hcl
 files and support repeated -f, -var-file, and -var inputs. Online commands use
-root SSH, validate Alpine 3.24 facts before backend access, and re-plan apply
+root SSH, validate Alpine 3.21 through 3.24 facts before backend access, and re-plan apply
 under a renewable per-host lease. Fmt validates before writing.`)
 }

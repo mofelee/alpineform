@@ -82,12 +82,15 @@ func compileAPKRepository(declaration parser.ResourceDeclaration, host parser.Ho
 		branch = targetAPKBranch(host, facts)
 	}
 	branch = strings.TrimPrefix(branch, "v")
-	wantBranch := strings.TrimPrefix(product.SupportedBranch, "v")
 	if branch == "" {
 		return ir.APKRepositorySpec{}, resourceAttributeError(declaration, "branch", "requires detected target facts or host platform.version")
 	}
-	if branch != wantBranch {
-		return ir.APKRepositorySpec{}, resourceAttributeError(declaration, "branch", "must match supported target branch %q, got %q", wantBranch, branch)
+	if !product.SupportsBranch("v" + branch) {
+		return ir.APKRepositorySpec{}, resourceAttributeError(declaration, "branch", "must match a supported target branch (%s), got %q", product.SupportedBranchRange, branch)
+	}
+	targetBranch := strings.TrimPrefix(targetAPKBranch(host, facts), "v")
+	if targetBranch != "" && branch != targetBranch {
+		return ir.APKRepositorySpec{}, resourceAttributeError(declaration, "branch", "must match target branch %q, got %q", targetBranch, branch)
 	}
 	component, err := resourceStringDefault(declaration, "component", declaration.Label, host, facts, ctx)
 	if err != nil {

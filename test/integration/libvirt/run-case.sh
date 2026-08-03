@@ -281,6 +281,13 @@ source "$SCRIPT_DIR/network.sh"
 
 mkdir -p "$CASE_WORK" "$CASE_DIR" "$LOG_DIR" "$APF_HOME/.ssh"
 cp -a "$CASE_SOURCE/." "$CASE_DIR/"
+while IFS= read -r fixture; do
+  sed -i \
+    -e "s/3\\.24\\.1/$APF_INTEGRATION_ALPINE_VERSION/g" \
+    -e "s/v3\\.24/$APF_INTEGRATION_ALPINE_BRANCH/g" \
+    -e "s/alpine:3\\.24/alpine:${APF_INTEGRATION_ALPINE_BRANCH#v}/g" \
+    "$fixture"
+done < <(find "$CASE_DIR" -type f \( -name '*.apf.hcl' -o -name '*.sh' \))
 chmod 0700 "$APF_HOME" "$APF_HOME/.ssh"
 REMOTE_HYPERVISOR="${APF_INTEGRATION_HYPERVISOR:-$(infer_remote_hypervisor)}"
 prepare_vm_paths

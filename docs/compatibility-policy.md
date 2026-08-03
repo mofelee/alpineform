@@ -48,10 +48,11 @@ redacted representation may gain metadata but must never reveal a value.
 
 ## Managed Target Compatibility
 
-The v0.1 Beta target is the Alpine 3.24 branch on x86_64. Exact patch facts are
-observed online; an explicitly declared exact version must match. Alpine branch
-promotion or aarch64 target promotion requires a corresponding real-VM gate
-and support-matrix update.
+The v0.1 Beta targets are the Alpine 3.21, 3.22, 3.23, and 3.24 branches on
+x86_64. Exact patch facts are observed online; an explicitly declared exact
+version must match. Branches outside that explicit allowlist are rejected.
+Adding or removing a branch, or promoting an aarch64 target, requires a
+corresponding real-VM gate and support-matrix update.
 
 ## Change Review
 

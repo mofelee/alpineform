@@ -198,10 +198,14 @@ jobs:
           if-no-files-found: error
 
   verify-alpine:
-    name: Verify fresh install against Alpine 3.24 VM
+    name: Verify fresh install against Alpine ${{ matrix.alpine }} VM
     needs: release
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        alpine: [v3.21, v3.22, v3.23, v3.24]
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -218,6 +222,7 @@ jobs:
           scripts/install.sh --version "${{ needs.release.outputs.tag }}" --prefix "${RUNNER_TEMP}/alpineform-install" --os linux --arch amd64 --force
       - name: Run promoted quickstart in a fresh VM
         env:
+          APF_INTEGRATION_ALPINE_BRANCH: ${{ matrix.alpine }}
           APF_INTEGRATION_APF_BIN: ${{ runner.temp }}/alpineform-install/bin/apf
           APF_INTEGRATION_CASE_SOURCE: test/release/quickstart
           APF_INTEGRATION_IMAGE_CACHE: ${{ runner.temp }}/alpine-image-cache
@@ -227,16 +232,21 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-quickstart-diagnostics-${{ needs.release.outputs.tag }}
+          name: release-quickstart-${{ matrix.alpine }}-diagnostics-${{ needs.release.outputs.tag }}
           path: ${{ runner.temp }}/alpineform-integration-artifacts
           if-no-files-found: ignore
       - name: Record verification
-        run: printf '%s\n' 'alpine_3_24_x86_64_quickstart=yes' > "${RUNNER_TEMP}/alpine.env"
+        env:
+          ALPINE_BRANCH: ${{ matrix.alpine }}
+        run: |
+          version="${ALPINE_BRANCH#v}"
+          printf 'alpine_%s_x86_64_quickstart=yes\n' "${version/./_}" \
+            > "${RUNNER_TEMP}/alpine-${ALPINE_BRANCH}.env"
       - name: Upload verification result
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-verification-alpine-${{ needs.release.outputs.tag }}
-          path: ${{ runner.temp }}/alpine.env
+          name: release-verification-alpine-${{ matrix.alpine }}-${{ needs.release.outputs.tag }}
+          path: ${{ runner.temp }}/alpine-${{ matrix.alpine }}.env
           if-no-files-found: error
 
   verify-summary:

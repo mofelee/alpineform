@@ -6,6 +6,7 @@ DATADIR ?= $(PREFIX)/share/alpineform
 DESTDIR ?=
 INSTALL ?= install
 GOVULNCHECK_VERSION ?= v1.4.0
+ALPINE_BRANCH ?= v3.24
 VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -39,11 +40,11 @@ test-release-layout:
 	scripts/validate-release.sh
 
 test-integration:
-	APF_INTEGRATION_DISABLE_KVM="$(INTEGRATION_DISABLE_KVM)" test/integration/libvirt/run.sh
+	APF_INTEGRATION_ALPINE_BRANCH="$(ALPINE_BRANCH)" APF_INTEGRATION_DISABLE_KVM="$(INTEGRATION_DISABLE_KVM)" test/integration/libvirt/run.sh
 
 test-integration-case:
 	test -n "$(CASE)"
-	APF_INTEGRATION_CASE="$(CASE)" APF_INTEGRATION_DISABLE_KVM="$(INTEGRATION_DISABLE_KVM)" test/integration/libvirt/run.sh
+	APF_INTEGRATION_ALPINE_BRANCH="$(ALPINE_BRANCH)" APF_INTEGRATION_CASE="$(CASE)" APF_INTEGRATION_DISABLE_KVM="$(INTEGRATION_DISABLE_KVM)" test/integration/libvirt/run.sh
 
 test-integration-layout:
 	test/integration/libvirt/validate-cases.sh

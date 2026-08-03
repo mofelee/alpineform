@@ -40,7 +40,7 @@ until install, test, and upgrade have blocking evidence.
    git diff --check
    ```
 
-4. Run the full Alpine 3.24 VM matrix and verify exact cleanup.
+4. Run the full Alpine 3.21-3.24 VM matrix and verify exact cleanup.
 5. Confirm GitHub artifact attestations are available. Public repositories pass
    directly; a private Enterprise Cloud repository must explicitly set the
    repository variable `APF_PRIVATE_ATTESTATIONS_ENABLED=true` after confirming
@@ -54,8 +54,8 @@ until install, test, and upgrade have blocking evidence.
 The tag workflow reruns unit, race, vet, vulnerability, and release checks,
 publishes the four archives, signs checksums keylessly, creates SBOMs and
 attestations, then tests installers. Its Linux verification installs the
-published binary in a fresh prefix and runs the promoted quickstart against a
-fresh Alpine 3.24.1 VM.
+published binary in a fresh prefix and runs the promoted quickstart against
+fresh Alpine 3.21, 3.22, 3.23, and 3.24 VMs.
 
 After workflow success:
 

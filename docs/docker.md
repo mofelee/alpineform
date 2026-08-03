@@ -1,9 +1,10 @@
 # Docker Engine And Compose
 
-Docker and Compose are a Preview domain for persistent Alpine 3.24 x86_64
-hosts. AlpineForm uses Alpine's `docker` and `docker-cli-compose` packages,
-the packaged OpenRC service, and the Docker CLI plugin. It never configures a
-Docker APT repository, a systemd unit, or Docker's upstream package repository.
+Docker and Compose are a Preview domain for persistent Alpine 3.21 through
+3.24 x86_64 hosts. AlpineForm uses Alpine's `docker` and
+`docker-cli-compose` packages, the packaged OpenRC service, and the Docker CLI
+plugin. It never configures a Docker APT repository, a systemd unit, or
+Docker's upstream package repository.
 
 ```hcl
 variable "app_env" {
@@ -57,8 +58,9 @@ The `docker` block accepts:
 | `daemon_config_version` | none | Public change token required when the JSON expression is ephemeral. |
 | `daemon_config_sensitive` | `false` | Protect the entire daemon-config resource even when its expression is not marked sensitive. |
 
-`package_source = "alpine"` manages the exact official
-`https://dl-cdn.alpinelinux.org/alpine/v3.24/community` entry and the explicit
+`package_source = "alpine"` manages the exact official `community` entry for
+the detected target branch, such as
+`https://dl-cdn.alpinelinux.org/alpine/v3.21/community`, and the explicit
 APK world intents `docker` and `docker-cli-compose`. An already equivalent
 present repository is reused. If host APK ownership is authoritative, that
 repository must be explicitly present in the `apk` block; AlpineForm refuses
@@ -181,11 +183,12 @@ runtime state and the next apply will converge them. See the
 
 ## Support Boundary
 
-The blocking `docker` libvirt case proves Alpine 3.24.1 x86_64 package install
-and version reporting, OpenRC/reboot persistence, Docker-invalid daemon and
+The four-branch blocking `docker` libvirt matrix proves package install and
+version reporting, OpenRC/reboot persistence, Docker-invalid daemon and
 Compose-invalid candidate isolation, one-trigger daemon repair, protected env
 content, fresh running/stopped projects, partial/degraded drift recovery,
 forget/adopt, scoped destroy with retained named volumes, explicit absence, and
 complete engine removal. The domain remains Preview because Alpine `community`
-has a shorter support window than `main` and no Alpine aarch64 Docker VM gate
-exists.
+has a shorter support window than `main`; AlpineForm's compatibility gate does
+not extend upstream security maintenance for an older branch. No Alpine
+aarch64 Docker VM gate exists.

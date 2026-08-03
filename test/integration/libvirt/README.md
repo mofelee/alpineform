@@ -1,23 +1,29 @@
-# Alpine 3.24 libvirt integration
+# Alpine 3.21-3.24 libvirt integration
 
-The blocking eleven-case managed-target gate boots a fresh persistent Alpine
-3.24.1 x86_64 VM for every case. The runner downloads this immutable official
-image:
+The blocking managed-target gate runs eleven cases on each supported branch,
+booting 44 fresh persistent x86_64 VMs. The runner pins these immutable
+official images:
 
-- URL: `https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-x86_64-uefi-cloudinit-r0.qcow2`
-- SHA-512: `ed976ef40de1f73adcb0a3b253ec9e73e43c408208fcc3c30dcdf7a69b91a387a4777f88c6b72345123edf3832d7cb49403ecce28ec84d496d4b3bad6fbd0923`
+| Branch | Image | SHA-512 prefix |
+| --- | --- | --- |
+| v3.21 | `generic_alpine-3.21.7-x86_64-uefi-cloudinit-r0.qcow2` | `612691a05c8e` |
+| v3.22 | `generic_alpine-3.22.5-x86_64-uefi-cloudinit-r0.qcow2` | `132c8f0f3926` |
+| v3.23 | `generic_alpine-3.23.5-x86_64-uefi-cloudinit-r0.qcow2` | `7f8818009bb8` |
+| v3.24 | `generic_alpine-3.24.1-x86_64-uefi-cloudinit-r0.qcow2` | `ed976ef40de1` |
 
-The version, architecture, image name, source URL, and checksum are fixed in
-`alpine-target.sh`. The runner checks Alpine's published sidecar against the
-pinned checksum before accepting either a download or cached image.
+The versions, architecture, image names, source URLs, and full checksums are
+fixed in `alpine-target.sh`. The runner checks Alpine's published sidecar
+against the pinned checksum before accepting either a download or cached image.
 
 ## Lifecycle
 
 Each case gets an overlay disk, NoCloud seed, generated root SSH key, isolated
 NAT network, and a domain whose name starts with `dbf-test-alpineform-`.
 Cloud-init installs only that run's public key and writes a completion marker.
-The runner verifies `ID=alpine`, version `3.24.1`, APK architecture `x86_64`,
-and kernel architecture `x86_64` before invoking AlpineForm.
+The runner verifies `ID=alpine`, the selected exact patch version, APK
+architecture `x86_64`, and kernel architecture `x86_64` before invoking
+AlpineForm. It rewrites only the temporary case copy from the 3.24 fixture
+baseline to the selected branch.
 
 Every numbered configuration runs these blocking phases:
 
@@ -54,11 +60,10 @@ validator requires contiguous configs, a check hook for every step, at least
 one drift hook per case, pinned offline facts, shell syntax, the nftables-only
 risk marker, and no committed keys or state.
 
-CI discovers exactly eleven cases. The aggregate `Alpine 3.24 core gate` requires
-the full matrix, and the separate `Alpine 3.24 nftables Preview gate` prevents
-the Preview schema from passing without the rollback case. The separate
-`Alpine 3.24 source-build Preview gate` names the source-build failure/recovery
-contract independently of prebuilt components.
+CI discovers exactly eleven cases and crosses them with four Alpine branches.
+The aggregate `Alpine 3.21-3.24 core gate` requires the full 44-job matrix, and
+the separate nftables and source-build Preview gates prevent either Preview
+schema from passing without its four-branch destructive coverage.
 
 ## Run locally
 
@@ -74,6 +79,7 @@ Run all cases or one case against local `qemu:///system`:
 make test-integration
 make test-integration-case CASE=files-directories-secrets
 make test-integration-case CASE=nftables
+make ALPINE_BRANCH=v3.21 test-integration-case CASE=facts-state-lock
 ```
 
 The runner also supports remote libvirt. VM files must live on the hypervisor
@@ -84,14 +90,14 @@ created:
 APF_LIBVIRT_URI=qemu+ssh://ks/system \
 APF_INTEGRATION_HYPERVISOR=ks \
 APF_INTEGRATION_POOL=vm \
-APF_INTEGRATION_REMOTE_BASE_IMAGE=/var/lib/libvirt/images/vm/alpine-3.24.1-x86_64-uefi-cloudinit.qcow2 \
-make test-integration-case CASE=facts-state-lock
+make ALPINE_BRANCH=v3.21 test-integration-case CASE=facts-state-lock
 ```
 
 Useful environment variables:
 
 | Variable | Purpose |
 | --- | --- |
+| `APF_INTEGRATION_ALPINE_BRANCH` | Select `v3.21`, `v3.22`, `v3.23`, or `v3.24`; defaults to `v3.24`. |
 | `APF_INTEGRATION_CASE` | Run one discovered case. |
 | `APF_INTEGRATION_IMAGE_CACHE` | Cache the checksum-verified official image. |
 | `APF_INTEGRATION_ARTIFACT_DIR` | Store redacted failure diagnostics. |
