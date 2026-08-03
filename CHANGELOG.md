@@ -39,6 +39,12 @@ All notable user-visible changes to AlpineForm are recorded here.
   compiler, missing/symlink output, cancellation, ENOSPC, secret redaction,
   shared dependency retention, and interrupted-build recovery.
 
+### Fixed
+
+- Use the portable `apk info -e` package-existence query so Alpine 3.21's
+  `apk-tools 2.14` correctly observes package and source-build dependency
+  convergence after apply.
+
 ### Compatibility
 
 - Promote persistent Alpine 3.21 through 3.24 x86_64 targets to the v0.1 Beta

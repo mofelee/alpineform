@@ -82,4 +82,7 @@ func TestPackageProviderRejectsInjectionAndScriptsHaveValidSyntax(t *testing.T) 
 			}
 		})
 	}
+	if !strings.Contains(packageInspectScript, "apk info -e") || strings.Contains(packageInspectScript, "apk info --exists") {
+		t.Fatal("package inspection does not use the Alpine 3.21-compatible existence flag")
+	}
 }

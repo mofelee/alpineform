@@ -22,7 +22,7 @@ name=$1
 intent=$2
 installed=false
 metadata=
-if apk info --exists "$name" >/dev/null 2>&1; then
+if apk info -e "$name" >/dev/null 2>&1; then
   installed=true
   metadata=$(apk list --installed "$name" 2>/dev/null | head -n 1 || true)
 fi

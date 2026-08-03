@@ -82,7 +82,7 @@ run_remote "inject a recoverable owned virtual package and workspace" \
   "apk --quiet add --virtual '$virtual' build-base bubblewrap zlib-dev && mkdir -p '$workspace' \"\$(dirname '$marker')\" && printf '%s\\n%s\\n%s\\n' '$virtual' '$owner' '$identity' > '$marker'"
 apf apply -f "$CASE_DIR/1.apf.hcl" --auto-approve --color never >"$LOG_DIR/leftover-recovery.log"
 assert_remote "owned interrupted-build leftovers are reconciled" \
-  "! apk info --exists '$virtual' && test ! -e '$marker' && test ! -e '$workspace' && grep -qx zlib-dev /etc/apk/world"
+  "! apk info -e '$virtual' && test ! -e '$marker' && test ! -e '$workspace' && grep -qx zlib-dev /etc/apk/world"
 
 run_remote "drift the installed source-build output" \
   "printf drift > /usr/local/bin/apf-ci-source-tool && chmod 0700 /usr/local/bin/apf-ci-source-tool"

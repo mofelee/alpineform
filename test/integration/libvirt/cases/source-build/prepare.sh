@@ -5,4 +5,4 @@ test "$(sha256sum "$CASE_DIR/fixtures/verify-env.sh" | awk '{print $1}')" = 734f
 run_remote "install a separately world-owned shared build dependency" \
   "apk --quiet add zlib-dev"
 assert_remote "shared dependency has explicit APK world intent" \
-  "grep -qx zlib-dev /etc/apk/world && apk info --exists zlib-dev"
+  "grep -qx zlib-dev /etc/apk/world && apk info -e zlib-dev"

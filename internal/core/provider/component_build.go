@@ -52,7 +52,7 @@ owner=$3
 identity=$4
 output_marker=$5
 shift 5
-if [ -f "$output_marker" ] && [ "$(sed -n '1p' "$output_marker")" = "$identity" ] && ! apk info --exists "$virtual" >/dev/null 2>&1 && [ ! -e "$marker" ]; then
+if [ -f "$output_marker" ] && [ "$(sed -n '1p' "$output_marker")" = "$identity" ] && ! apk info -e "$virtual" >/dev/null 2>&1 && [ ! -e "$marker" ]; then
   echo satisfied
   exit 0
 fi
@@ -61,7 +61,7 @@ if [ -L /etc/apk/world ] || { [ -e /etc/apk/world ] && [ ! -f /etc/apk/world ]; 
   exit 1
 fi
 installed=false
-if apk info --exists "$virtual" >/dev/null 2>&1; then installed=true; fi
+if apk info -e "$virtual" >/dev/null 2>&1; then installed=true; fi
 owned=false
 marker_identity=
 if [ -f "$marker" ] && [ ! -L "$marker" ] && [ "$(sed -n '1p' "$marker")" = "$virtual" ] && [ "$(sed -n '2p' "$marker")" = "$owner" ]; then
@@ -85,7 +85,7 @@ world=false
 if [ -f /etc/apk/world ] && awk -v virtual="$virtual" '$0 == virtual || index($0, virtual "=") == 1 { found=1 } END { exit !found }' /etc/apk/world; then world=true; fi
 packages_ok=true
 for package in "$@"; do
-  if ! apk info --exists "$package" >/dev/null 2>&1; then packages_ok=false; fi
+  if ! apk info -e "$package" >/dev/null 2>&1; then packages_ok=false; fi
 done
 if [ "$marker_identity" = "$identity" ] && [ "$world" = true ] && [ "$packages_ok" = true ]; then
   echo active
@@ -114,7 +114,7 @@ if [ -f /etc/apk/world ] && awk -v virtual="$virtual" '$0 == virtual || index($0
   echo 'refusing to adopt unowned source-build virtual package world intent' >&2
   exit 1
 fi
-if apk info --exists "$virtual" >/dev/null 2>&1; then
+if apk info -e "$virtual" >/dev/null 2>&1; then
   if [ ! -f "$marker" ]; then
     echo 'refusing to adopt an unowned source-build virtual package' >&2
     exit 1
@@ -128,7 +128,7 @@ success=0
 cleanup() {
   rm -f "$tmp"
   if [ "$success" != 1 ]; then
-    if apk info --exists "$virtual" >/dev/null 2>&1; then apk --quiet del "$virtual" >/dev/null 2>&1 || true; fi
+    if apk info -e "$virtual" >/dev/null 2>&1; then apk --quiet del "$virtual" >/dev/null 2>&1 || true; fi
     rm -f "$marker"
   fi
 }
@@ -142,7 +142,7 @@ if [ "$#" -gt 0 ] && { [ ! -f /etc/apk/world ] || ! awk -v virtual="$virtual" '$
   exit 1
 fi
 for package in "$@"; do
-  if ! apk info --exists "$package" >/dev/null 2>&1; then echo 'source-build dependency is not installed after apk add' >&2; exit 1; fi
+  if ! apk info -e "$package" >/dev/null 2>&1; then echo 'source-build dependency is not installed after apk add' >&2; exit 1; fi
 done
 success=1
 trap - EXIT HUP INT TERM
@@ -397,7 +397,7 @@ dependency_marker=$3
 output_marker=$4
 identity=$5
 if [ ! -f "$output_marker" ] || [ "$(sed -n '1p' "$output_marker")" != "$identity" ]; then echo missing; exit 0; fi
-if [ -e "$workspace" ] || [ -e "$dependency_marker" ] || apk info --exists "$virtual" >/dev/null 2>&1; then echo pending; exit 0; fi
+if [ -e "$workspace" ] || [ -e "$dependency_marker" ] || apk info -e "$virtual" >/dev/null 2>&1; then echo pending; exit 0; fi
 shift 5
 for protected_path in "$@"; do if [ -e "$protected_path" ]; then echo pending; exit 0; fi; done
 echo clean
@@ -415,9 +415,9 @@ if [ -e "$marker" ]; then
     echo 'refusing to clean unowned source-build dependency state' >&2
     exit 1
   fi
-  if apk info --exists "$virtual" >/dev/null 2>&1; then apk --quiet del "$virtual"; fi
+  if apk info -e "$virtual" >/dev/null 2>&1; then apk --quiet del "$virtual"; fi
   rm -f "$marker"
-elif apk info --exists "$virtual" >/dev/null 2>&1; then
+elif apk info -e "$virtual" >/dev/null 2>&1; then
   echo 'refusing to remove source-build virtual package without its ownership marker' >&2
   exit 1
 fi
