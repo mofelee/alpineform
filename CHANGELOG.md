@@ -44,6 +44,9 @@ All notable user-visible changes to AlpineForm are recorded here.
 - Use the portable `apk info -e` package-existence query so Alpine 3.21's
   `apk-tools 2.14` correctly observes package and source-build dependency
   convergence after apply.
+- Compare service reload advertisements with the installed OpenRC framework's
+  implicit baseline so raw reload hooks work on both OpenRC 0.55 and 0.63
+  without accepting an undeclared fallback.
 
 ### Compatibility
 

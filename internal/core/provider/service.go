@@ -79,8 +79,9 @@ case "$state" in
       *) echo 'unsupported OpenRC service operation' >&2; exit 1 ;;
     esac
     if [ "$command" = reload ]; then
+      implicit_reload_descriptions=$(openrc-run /dev/null describe 2>&1 | grep -c 'reload:' || true)
       reload_descriptions=$(rc-service "$name" describe 2>&1 | grep -c 'reload:' || true)
-      if [ "$reload_descriptions" -lt 2 ]; then
+      if [ "$reload_descriptions" -le "$implicit_reload_descriptions" ]; then
         echo "OpenRC service $name does not support operation reload" >&2
         exit 1
       fi
