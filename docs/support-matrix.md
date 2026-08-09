@@ -37,7 +37,7 @@ Status meanings:
 | Binary and archive components, shared `on_change` scripts | Beta | [`components`](../test/integration/libvirt/cases/components) |
 | File and CA-certificate components | Beta | Four-branch [`components`](../test/integration/libvirt/cases/components), plus [compiler](../internal/core/merge/components_test.go), [graph](../internal/core/graph/components_test.go), [file/source provider](../internal/core/provider/component_test.go), and [archive/CA provider](../internal/core/provider/component_archive_test.go) contracts |
 | Component-root `moved` state migrations | Preview | Four-branch [`component-moved`](../test/integration/libvirt/cases/component-moved), [engine](../internal/core/engine/moved_test.go) and [plan](../internal/core/plan/plan_test.go) contract tests, and the dedicated [component-moved Preview gate](../.github/workflows/ci.yml); the additive alpha DSL, v2-origin identity map retained by state v3, and plan fields remain outside the Beta promise |
-| Target-side component source builds | Preview | Four-branch [`source-build`](../test/integration/libvirt/cases/source-build), [compiler contract tests](../internal/core/merge/component_build_test.go), [provider transaction tests](../internal/core/provider/component_build_test.go), and the dedicated [source-build Preview gate](../.github/workflows/ci.yml); network-enabled builds remain unsupported |
+| Target-side component source builds and configurable workspace roots | Preview | Four-branch [`source-build`](../test/integration/libvirt/cases/source-build) with 48 explicit assertions per Alpine version, [workspace compiler contracts](../internal/core/merge/workspace_root_test.go), [provider ownership/transaction tests](../internal/core/provider/component_build_test.go), and the dedicated [source-build Preview gate](../.github/workflows/ci.yml); network-enabled builds remain unsupported |
 | `prevent_destroy`, forget, and recorded destroy | Beta | [`lifecycle`](../test/integration/libvirt/cases/lifecycle), [`accounts`](../test/integration/libvirt/cases/accounts), and [`apk`](../test/integration/libvirt/cases/apk) |
 | Docker Engine, OpenRC, daemon configuration, and Compose | Preview | Four-branch [`docker`](../test/integration/libvirt/cases/docker), [compiler/graph tests](../internal/core/merge/docker_test.go), and [provider tests](../internal/core/provider/docker_test.go); Alpine `community` security support is shorter than `main`, and no aarch64 VM gate exists |
 | Named-table nftables, non-flushing OpenRC persistence, and rollback watchdog | Preview | Four-branch [`nftables`](../test/integration/libvirt/cases/nftables), [compiler/graph tests](../internal/core/merge/nftables_test.go), [provider tests](../internal/core/provider/nftables_test.go), and the dedicated [nftables Preview gate](../.github/workflows/ci.yml); whole-ruleset ownership is unsupported and live changes require separate network-disruption approval |
@@ -52,6 +52,16 @@ compatibility phase is separate from runtime support: binary and archive remain
 Beta, and file and CA-certificate components are Beta only because the existing
 `components` case now blocks all four Alpine branches. The suite remains exactly
 12 cases and 48 jobs. Source-build inputs remain a separate Preview capability.
+
+Source-build workspace placement is also additive alpha syntax within that
+Preview capability. The four-branch case proves the legacy default, an instance
+root winning over profile/host candidates, constrained-`/var/tmp` operation,
+cached root-only no-op, next-rebuild placement, and cleanup without weakening
+Bubblewrap or `/run` protected-input isolation. Compiler contracts cover the
+profile-only and host-default branches. Workspace roots are runtime-only and do
+not change resource/build identity or serialized plan/state contracts. Prebuilt
+archive staging remains destination-adjacent and is not part of this workspace
+selector.
 
 Resource-level `depends_on` syntax is an additive alpha interface. The portable
 package -> file -> service runtime behavior is in the Beta four-branch gate:

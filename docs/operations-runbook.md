@@ -164,6 +164,52 @@ evaluation, AlpineForm carries the resolved URL and checksum only in controller
 memory and redacted provider stdin; serialized surfaces contain only safe
 structural, status, and lifecycle metadata.
 
+## Configure A Source-Build Workspace
+
+Use a profile or host `staging.root` for a fleet or host default and a mounted
+source component's `staging_root` only for an exceptional build. Precedence is
+instance, effective host/profile, then `/var/tmp/alpineform/builds`. The path is
+runtime-only placement and is intentionally absent from plan, graph, state,
+HTML, and routine debug events, so review the selected configuration source
+directly. The bounded failure diagnostic described below is the deliberate
+exception.
+
+Before rollout, verify that every existing path boundary is root-owned and is
+not a symlink. The selected root must not be group- or world-writable. A
+root-owned sticky writable ancestor such as `/var/tmp` is supported. AlpineForm
+creates a missing root privately; an operator may instead pre-create a shared
+read-only/traversable root without changing a safe existing mode:
+
+```sh
+install -d -o root -g root -m 0755 /srv/alpineform-builds
+```
+
+Run `apf validate`, then online plan/check before apply. If the verified output
+cache is valid, changing only the root is a no-op: it does not rebuild,
+reinstall, or trigger `on_change`. Do not invalidate the cache merely to test
+placement. The next rebuild required by a real build-identity change uses
+`<root>/<64-hex-build-identity>` and cleans it after the output is verified.
+
+On a failure, retain the complete bounded diagnostic:
+
+```text
+staging_root=<selected-root> work_path=<identity-workspace> available_kib=<number|unknown>
+```
+
+The capacity value comes from `df -Pk` on the selected root or nearest existing
+ancestor. Correct ownership, mode, capacity, or compiler/input failures and
+retry normal apply. Cleanup failure is itself an apply failure. Do not delete
+an old-root workspace by path alone: AlpineForm removes only the root/path pair
+recorded by its marker after checking root ownership, non-symlink boundaries,
+private workspace mode, and exact owner/build identity. A mismatch deliberately
+leaves the path intact for investigation.
+
+Protected input files remain below `/run/alpineform/build-inputs`; changing the
+disk workspace never relocates them. Verified output caches and dependency
+markers also keep their fixed locations. Prebuilt archive extraction is not
+affected and continues to stage beside the install destination so its final
+replacement stays on one filesystem.
+
 ## Source-Build Failure Recovery
 
 Preview source builds keep the prior installation until input staging,
@@ -180,9 +226,17 @@ virtual package and marker belong together before manual intervention:
 virtual=.alpineform-build-0123456789abcdef01234567
 marker=/var/lib/alpineform/builds/0123456789abcdef0123456789abcdef.dependencies
 test -f "$marker"
+test "$(stat -c '%u:%a' "$marker")" = 0:600
 test "$(sed -n '1p' "$marker")" = "$virtual"
 apk info --exists "$virtual"
 ```
+
+Current dependency markers have five lines: virtual package, owner ID, build
+identity, selected root, and exact workspace. Legacy three-line markers contain
+only the first three fields and authorize only
+`/var/tmp/alpineform/builds/<build-identity>`. Any other line count, owner/mode,
+root/path tuple, or symbolic-link boundary is a collision; do not edit the
+marker to make it pass.
 
 Prefer a normal `apf apply`, which removes only that virtual package and lets
 APK retain packages still present in world or required elsewhere. If the

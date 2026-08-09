@@ -213,9 +213,12 @@ extract {
 
 Extraction rejects absolute and parent-traversal paths, links, special files,
 unsafe names, and destinations that collide after stripping. It extracts into
-an empty staging directory and swaps the destination only after validation;
-failures leave the previous installation intact. The installed tree carries a
-content manifest used by `check` to detect missing, added, or modified files.
+an empty staging directory beside the destination and swaps the destination
+only after validation; failures leave the previous installation intact. The
+source-build workspace settings below do not relocate this destination-adjacent
+staging, because archive replacement must remain on the destination filesystem.
+The installed tree carries a content manifest used by `check` to detect
+missing, added, or modified files.
 
 CA certificates must install as `.crt` files below
 `/usr/local/share/ca-certificates/`. `update-ca-certificates` and its success
@@ -269,6 +272,29 @@ component "musl_hello" {
 }
 ```
 
+### Workspace placement
+
+Target-side builds use `/var/tmp/alpineform/builds` by default. A merged
+profile/host `staging.root` supplies a host default, and a mounted source
+component's `staging_root` has highest precedence. See the complete syntax,
+validation, and replacement behavior in [the DSL reference](dsl-reference.md#source-build-workspace-roots).
+
+The root is runtime-only placement. It is not serialized and does not enter the
+component's build identity, graph identity, state, installation decision, or
+change-script trigger. Consequently, changing only the root does not rebuild or
+reinstall when the verified output cache remains valid. The next rebuild caused
+by an actual input, command, output-policy, platform, dependency, or install
+change uses the newly selected root.
+
+Each build gets a root-owned private `<root>/<64-hex-build-identity>` directory
+and `build` child, both mode `0700`, plus a mode-`0600` ownership marker.
+Persistent dependency ownership remains below `/var/lib/alpineform/builds`,
+verified output caches remain below `/var/cache/alpineform/builds`, and
+protected ephemeral inputs remain below `/run/alpineform/build-inputs` rather
+than moving onto the configurable disk root. Workspace roots and recorded old
+paths are accepted or removed only after the provider's ownership, mode,
+symbolic-link, and marker checks. See [the security contract](source-build-security.md#workspace-placement-and-ownership).
+
 An input selects exactly one of `source`, `url`, or `content`, always with an
 exact `sha256` and a clean workspace-relative `destination`. `source` is a
 controller-local regular file below the declaring module directory. `url` is
@@ -299,6 +325,15 @@ Removal defaults to state-only forget. `on_remove = "destroy"` records the
 verified installation/cache identity for guarded deletion, and component
 `lifecycle.prevent_destroy` blocks it. See the complete runnable
 [source-build example](../examples/source-build.apf.hcl).
+
+The dedicated `source-build` VM case runs on Alpine 3.21, 3.22, 3.23, and 3.24
+x86_64 with 48 explicit assertions per version. It proves the legacy default,
+an instance root winning over profile/host candidates, operation with
+constrained `/var/tmp`, cached root-only no-op, next-rebuild placement, guarded
+cleanup, failure preservation, and the existing Bubblewrap and protected-input
+guarantees. Compiler tests cover the profile-only and host-default branches of
+the precedence rule. This blocking gate does not promote target-side source
+builds beyond Preview.
 
 ## Change scripts
 

@@ -34,10 +34,21 @@ All notable user-visible changes to AlpineForm are recorded here.
   environments and stdin; network/filesystem isolation; APK virtual-package
   ownership; verified atomic installation; rebuild/repair plans; safe
   forget/destroy behavior; and protected state.
+- Add profile/host `staging.root` defaults and a source-component instance
+  `staging_root` override for placing target-side build workspaces outside the
+  default `/var/tmp/alpineform/builds`. Placement is runtime-only and
+  identity-neutral; private owned workspaces, protected `/run` inputs, guarded
+  old-root cleanup, capacity diagnostics, and destination-adjacent prebuilt
+  archive staging retain their existing security and transaction boundaries.
 - Add an eleventh Alpine 3.24.1 x86_64 VM case and dedicated Preview gate for
   musl compilation, no-op, source/build/output drift, reboot, checksum,
   compiler, missing/symlink output, cancellation, ENOSPC, secret redaction,
   shared dependency retention, and interrupted-build recovery.
+- Expand the four-branch source-build Preview gate to 48 explicit assertions
+  per Alpine version, including the legacy default plus profile/host precedence
+  candidates and an executed instance override; constrained-`/var/tmp`
+  operation; root-only cached no-op; next-rebuild placement; and
+  workspace/protected-input cleanup.
 - Add static top-level component-root `moved` blocks with deterministic chain
   and collision validation, host-scoped atomic state migration, retained
   source-build physical ownership, separate text/JSON/HTML move rendering, and
@@ -111,6 +122,12 @@ All notable user-visible changes to AlpineForm are recorded here.
   addresses are additive alpha interfaces. Target-side builds remain Preview,
   require root plus Bubblewrap on persistent Alpine, and do not support build
   command networking or unchecked inputs.
+- `staging.root` and source-component `staging_root` are additive alpha DSL
+  interfaces. They do not change build identity, resource addresses, state
+  schema v3, or `alpineform.plan.alpha1`; the resolved paths are excluded from
+  serialized IR, graph, plan, state, HTML, and routine debug events. Bounded
+  workspace-failure diagnostics identify the selected root and derived work
+  path. Source builds remain Preview.
 - The `moved` DSL and the `moves`/`summary.move` fields in
   `alpineform.plan.alpha1` are additive alpha interfaces. Moves are state
   migrations and do not change resource action counts. State schema v2
@@ -148,6 +165,10 @@ All notable user-visible changes to AlpineForm are recorded here.
   prewrites scrubbed state under the backend lease. Keep the component mounted,
   preserve its physical identity (using `moved` if renamed), and retain the
   normalized source label during adoption.
+- No state migration is required when adding or changing a source-build
+  workspace root. A valid verified output cache keeps a root-only change at
+  no-op; the next required rebuild uses the new root and removes a recorded old
+  workspace only after ownership and path validation.
 
 ## [v0.1.0-alpha.5] - 2026-07-13
 

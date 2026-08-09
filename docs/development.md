@@ -35,9 +35,11 @@ validation. No Debian resource schema is exposed.
 ## Implemented language subset
 
 - `variable`, `locals`, root and nested `assert`
-- `profile` imports with deterministic component-instance override order
+- `profile` imports with deterministic component-instance and `staging.root`
+  override order
 - typed `component` inputs, per-instance prebuilt source expressions, composed
-  native domains, and local instance dependency validation
+  native domains, source-build `staging_root`, and local instance dependency
+  validation
 - top-level and component-local scripts with reference-identity `on_change`
   aggregation and output observation
 - `host` imports and optional offline `platform.architecture` / `version`
@@ -60,6 +62,17 @@ transiently in controller memory; graph compilation keeps them out of serialized
 desired data and carries them in an in-memory provider payload. This boundary
 does not extend to component `type`, `version`, `extract`, `build`, or `install`,
 and it does not change the existing source-build input model.
+
+For source builds, the parser also retains profile/host `staging.root` and
+instance `staging_root` values, protection marks, and source locations. Merge
+resolves instance, effective host/profile, then product-default precedence and
+stores the selected path only in runtime IR fields excluded from JSON. The
+build identity document deliberately omits placement. Graph compilation keeps
+its stable desired/resource identity and carries the root only in an in-memory
+provider payload plus a nonserialized runtime-intent digest. Engine plan-safe
+copies clear the host/build placement fields, while graph JSON omits the
+runtime payload and digest. Together those boundaries keep the root out of
+graph, plan, HTML, debug, and state serialization.
 
 Resource `depends_on` is parsed as typed syntax rather than an ordinary HCL
 value. Merge resolves references after profile precedence and separately inside
@@ -87,6 +100,12 @@ public authored-only plan field; state v3 owns that narrow metadata contract.
 Protected desired values are replaced before graph, plan, JSON, or HTML
 serialization. `--color auto` honors `NO_COLOR` and non-terminal output;
 `--color always` affects text only.
+
+Source-build workspace placement follows the same public-output boundary even
+though the root itself is not protected configuration. A root-only change does
+not alter desired digests or actions when the verified output cache satisfies
+the build; runtime provider nodes still receive the current root when a later
+independent change requires execution.
 
 ## Online workflow
 
@@ -168,7 +187,12 @@ blocking `components` case covers binary, file, archive, and CA-certificate
 artifacts; this is the runtime evidence boundary for their Beta status, while
 the per-instance source-expression syntax remains additive alpha. The existing
 four-branch `openrc` case also proves the package -> managed configuration ->
-service dependency lifecycle without increasing matrix cardinality. Run
+service dependency lifecycle without increasing matrix cardinality. The
+dedicated four-branch `source-build` Preview case carries 48 explicit assertions
+per Alpine version for the legacy default, instance precedence over profile/host
+candidates, constrained `/var/tmp`, cached no-op, next-rebuild selection,
+cleanup, failure preservation, and sandbox/protected-input boundaries. Compiler
+tests cover the remaining precedence branches. Source builds remain Preview. Run
 `make ALPINE_BRANCH=v3.21 test-integration` for all real-VM cases on one branch
 or `make ALPINE_BRANCH=v3.21 test-integration-case CASE=<name>` for one. The
 pinned images, lifecycle, case contract, remote-libvirt settings, diagnostics,

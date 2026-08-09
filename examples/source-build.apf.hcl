@@ -26,7 +26,15 @@ component "musl_hello" {
   }
 }
 
+profile "source_build_defaults" {
+  staging {
+    root = "/srv/alpineform-builds"
+  }
+}
+
 host "alpine" {
+  imports = [profile.source_build_defaults]
+
   ssh {
     host = "alpine"
   }
@@ -36,7 +44,12 @@ host "alpine" {
     version      = "3.24.1"
   }
 
+  staging {
+    root = "/mnt/alpineform-host-builds"
+  }
+
   component "hello" {
-    source = component.musl_hello
+    source       = component.musl_hello
+    staging_root = "/mnt/alpineform-hello-builds"
   }
 }

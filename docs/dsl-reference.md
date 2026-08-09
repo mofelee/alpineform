@@ -46,6 +46,54 @@ semantically validate configuration.
 Online branch, libc, native APK architecture, and kernel architecture are
 read-only detected facts.
 
+## Source-Build Workspace Roots
+
+Profiles and hosts may set a default target-side source-build workspace root;
+one mounted source component may override it:
+
+```hcl
+profile "source_build_defaults" {
+  staging {
+    root = "/srv/alpineform-builds"
+  }
+}
+
+host "builder" {
+  imports = [profile.source_build_defaults]
+
+  staging {
+    root = "/mnt/alpineform-host-builds"
+  }
+
+  component "tool" {
+    source       = component.tool
+    staging_root = "/mnt/alpineform-tool-builds"
+  }
+}
+```
+
+Precedence is the component instance's `staging_root`, then the effective host
+`staging.root` after normal profile import and host override composition, then
+`/var/tmp/alpineform/builds`. A later component-instance declaration replaces
+the whole earlier instance: omitting `staging_root` from that replacement falls
+back to the effective host default instead of inheriting the replaced value.
+A profile or host default may be declared even when no mounted source component
+currently uses it. `staging_root` is rejected on non-source components.
+
+Each root must resolve to a non-sensitive, non-ephemeral string. It must be a
+clean absolute POSIX path other than `/`, with no control characters; spaces
+are allowed. Diagnostics retain the declaring source location. Target-side
+ownership, symbolic-link, and mode checks are applied before a build uses the
+path; see [source-build security](source-build-security.md#workspace-placement-and-ownership).
+
+The selected root is execution placement, not build content identity. It is
+excluded from serialized IR, graph, plan, state, HTML, and routine debug events
+and does not change resource addresses, rebuild identity, installation identity,
+or `on_change` behavior. A bounded workspace-failure diagnostic may identify
+the selected root and derived work path. Changing only the root remains a no-op
+while the verified output cache is valid; the next independently required
+rebuild uses the newly selected root.
+
 ## Prebuilt Artifact Source Expressions
 
 For `binary`, `file`, `archive`, and `ca_certificate` components, only
