@@ -66,10 +66,18 @@ type ComponentBuildCommand struct {
 }
 
 type ComponentArtifactSource struct {
-	Architecture string
-	URL          string
-	SHA256       string
-	Source       ir.SourceRef
+	Architecture    string
+	URL             string
+	SHA256          string
+	URLExpr         hcl.Expression
+	SHA256Expr      hcl.Expression
+	URLSource       ir.SourceRef
+	SHA256Source    ir.SourceRef
+	URLSensitive    bool
+	SHA256Sensitive bool
+	URLEphemeral    bool
+	SHA256Ephemeral bool
+	Source          ir.SourceRef
 }
 
 type ComponentArtifactExtract struct {

@@ -196,7 +196,7 @@ func jsonencodeFunction() function.Function {
 			if err := rejectEphemeralCollectionKeys(args[0]); err != nil {
 				return cty.NilVal, err
 			}
-			redacted := args[0].ContainsMarked()
+			redacted := containsMark(args[0], SensitiveMark)
 			value, err := ctyJSONValue(args[0])
 			if err != nil {
 				return cty.NilVal, err
@@ -281,7 +281,7 @@ func ctyToValue(value cty.Value, source ir.SourceRef) (Value, error) {
 	if err := rejectEphemeralCollectionKeys(value); err != nil {
 		return Value{}, fmt.Errorf("%s:%d:%s: %w", source.File, source.Line, source.Path, err)
 	}
-	sensitive := value.ContainsMarked()
+	sensitive := containsMark(value, SensitiveMark)
 	ephemeral := containsMark(value, EphemeralMark)
 	value, _ = value.UnmarkDeep()
 	if !value.IsKnown() {

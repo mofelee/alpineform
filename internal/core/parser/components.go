@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/mofelee/alpineform/internal/core/ir"
 )
@@ -27,18 +28,97 @@ func parseComponentArtifactSource(file, componentPath string, block *hclsyntax.B
 	source := ComponentArtifactSource{Architecture: architecture, Source: ir.SourceRef{File: file, Line: block.TypeRange.Start.Line, Path: path}}
 	var err error
 	if attr, exists := block.Body.Attributes["url"]; exists {
-		source.URL, err = evalStringAttribute(file, path, "url", attr, ctx, true)
-		if err != nil {
-			return ComponentArtifactSource{}, err
+		source.URLExpr = attr.Expr
+		source.URLSource = ir.SourceRef{File: file, Line: attr.NameRange.Start.Line, Path: path + ".url"}
+		if !expressionReferencesRoot(attr.Expr, "input") {
+			source.URL, source.URLSensitive, source.URLEphemeral, err = evaluateComponentArtifactString("url", attr.Expr, ctx, source.URLSource)
+			if err != nil {
+				return ComponentArtifactSource{}, err
+			}
 		}
 	}
 	if attr, exists := block.Body.Attributes["sha256"]; exists {
-		source.SHA256, err = evalStringAttribute(file, path, "sha256", attr, ctx, true)
-		if err != nil {
-			return ComponentArtifactSource{}, err
+		source.SHA256Expr = attr.Expr
+		source.SHA256Source = ir.SourceRef{File: file, Line: attr.NameRange.Start.Line, Path: path + ".sha256"}
+		if !expressionReferencesRoot(attr.Expr, "input") {
+			source.SHA256, source.SHA256Sensitive, source.SHA256Ephemeral, err = evaluateComponentArtifactString("sha256", attr.Expr, ctx, source.SHA256Source)
+			if err != nil {
+				return ComponentArtifactSource{}, err
+			}
 		}
 	}
 	return source, nil
+}
+
+func expressionReferencesRoot(expr hcl.Expression, name string) bool {
+	for _, traversal := range expr.Variables() {
+		root, ok := traversalRoot(traversal)
+		if ok && root == name {
+			return true
+		}
+	}
+	return false
+}
+
+func evaluateComponentArtifactString(name string, expr hcl.Expression, ctx EvalContext, source ir.SourceRef) (string, bool, bool, error) {
+	value, err := evalValue(expr, ctx, source)
+	if err != nil {
+		if expressionReferencesProtectedValue(expr, ctx) {
+			return "", false, false, fmt.Errorf("%s:%d:%s: protected artifact source expression failed to evaluate", source.File, source.Line, source.Path)
+		}
+		return "", false, false, err
+	}
+	if value.Kind == KindNull {
+		return "", false, false, fmt.Errorf("%s:%d:%s: %s must not be null", source.File, source.Line, source.Path, name)
+	}
+	if value.Kind != KindString {
+		return "", false, false, fmt.Errorf("%s:%d:%s: %s must be a string", source.File, source.Line, source.Path, name)
+	}
+	if value.String == "" {
+		return "", false, false, fmt.Errorf("%s:%d:%s: %s must be a non-empty string", source.File, source.Line, source.Path, name)
+	}
+	return value.String, value.ContainsSensitive(), value.ContainsEphemeral(), nil
+}
+
+func expressionReferencesProtectedValue(expr hcl.Expression, ctx EvalContext) bool {
+	for _, traversal := range expr.Variables() {
+		root, ok := traversalRoot(traversal)
+		if !ok {
+			continue
+		}
+		name, hasName := traversalFirstAttr(traversal)
+		if root == "local" {
+			if hasName {
+				if value, exists := ctx.Locals[name]; exists && (value.ContainsSensitive() || value.ContainsEphemeral()) {
+					return true
+				}
+				continue
+			}
+			for _, value := range ctx.Locals {
+				if value.ContainsSensitive() || value.ContainsEphemeral() {
+					return true
+				}
+			}
+			continue
+		}
+		value, exists := ctx.Variables[root]
+		if !exists {
+			continue
+		}
+		if value.HasMark(SensitiveMark) || value.HasMark(EphemeralMark) {
+			return true
+		}
+		unmarked, _ := value.Unmark()
+		if hasName && unmarked.IsKnown() && !unmarked.IsNull() && unmarked.Type().IsObjectType() && unmarked.Type().HasAttribute(name) {
+			value = unmarked.GetAttr(name)
+		} else {
+			value = unmarked
+		}
+		if containsMark(value, SensitiveMark) || containsMark(value, EphemeralMark) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseComponentArtifactExtract(file, componentPath string, block *hclsyntax.Block, ctx EvalContext) (ComponentArtifactExtract, error) {
