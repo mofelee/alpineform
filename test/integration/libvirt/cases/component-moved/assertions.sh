@@ -167,7 +167,7 @@ expected = {worker_root + suffix for suffix in worker_suffixes}
 expected.update(builder_root + suffix for suffix in builder_suffixes)
 with open("/var/lib/alpineform/state.json", encoding="utf-8") as state_file:
     state = json.load(state_file)
-if state.get("product") != "alpineform" or state.get("schema_version") != 2 or state.get("host") != "cihost":
+if state.get("product") != "alpineform" or state.get("schema_version") != 3 or state.get("host") != "cihost":
     raise SystemExit(
         "unexpected state header: "
         f"product={state.get('product')!r}, "

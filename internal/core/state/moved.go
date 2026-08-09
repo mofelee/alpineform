@@ -94,6 +94,7 @@ func ResolveMoves(st State, declarations []ir.MovedSpec, desiredComponents map[s
 			result.State.Resources[to] = resource
 			result.Moves = append(result.Moves, RealizedMove{Host: result.State.Host, From: from, To: to})
 		}
+		rebaseResourceDependencies(result.State.Resources, declaration.From, declaration.To)
 
 		delete(result.State.ComponentIdentities, declaration.From)
 		targetName, _ := componentNameFromRoot(result.State.Host, declaration.To)
@@ -344,6 +345,20 @@ func matchingAddresses(resources map[string]Resource, prefix string) []string {
 
 func replaceAddressPrefix(address, from, to string) string {
 	return to + strings.TrimPrefix(address, from)
+}
+
+func rebaseResourceDependencies(resources map[string]Resource, from, to string) {
+	for address, resource := range resources {
+		dependencies := append([]string(nil), resource.DependsOn...)
+		for index, dependency := range dependencies {
+			if dependency != from && !strings.HasPrefix(dependency, from+".") {
+				continue
+			}
+			dependencies[index] = replaceAddressPrefix(dependency, from, to)
+		}
+		resource.DependsOn = canonicalDependencies(dependencies)
+		resources[address] = resource
+	}
 }
 
 func prefixesOverlap(left, right string) bool {

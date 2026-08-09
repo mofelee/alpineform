@@ -64,7 +64,7 @@ func TestResolveMovesRebasesKeysAndPreservesPhysicalState(t *testing.T) {
 	if string(after) != string(before) {
 		t.Fatalf("ResolveMoves mutated input\ngot:  %s\nwant: %s", after, before)
 	}
-	if result.State.Serial != 9 || result.State.SchemaVersion != 2 {
+	if result.State.Serial != 9 || result.State.SchemaVersion != SchemaVersion {
 		t.Fatalf("state metadata changed during pure move: %#v", result.State)
 	}
 	if len(result.Moves) != 1 || result.Moves[0] != (RealizedMove{Host: "edge", From: oldAddress, To: newAddress}) {
@@ -251,6 +251,71 @@ func TestResolveMovesChainsKeepEarliestPhysicalNameDeterministically(t *testing.
 	}
 	if len(retry.Moves) != 0 || retry.State.ComponentIdentities[currentRoot].PhysicalName != "first_name" || !reflect.DeepEqual(retry.State.Resources, result.State.Resources) {
 		t.Fatalf("idempotent retry = %#v", retry)
+	}
+}
+
+func TestResolveMovesRebasesCanonicalDependencyChainsAndExternalSurvivors(t *testing.T) {
+	oldRoot := "host.edge.component.old"
+	middleRoot := "host.edge.component.middle"
+	currentRoot := "host.edge.component.current"
+	boundaryRoot := "host.edge.component.oldish"
+	fileSuffix := `.files.file["/etc/app"]`
+	packageSuffix := `.packages.package["bird"]`
+	oldFile := oldRoot + fileSuffix
+	currentFile := currentRoot + fileSuffix
+	oldPackage := oldRoot + packageSuffix
+	currentPackage := currentRoot + packageSuffix
+	boundaryDependency := boundaryRoot + packageSuffix
+	externalAddress := `host.edge.files.file["/etc/external"]`
+
+	st := Empty("edge")
+	st.Resources[oldFile] = Resource{
+		Host:      "edge",
+		Kind:      "file",
+		DependsOn: []string{boundaryDependency, oldPackage, oldPackage},
+	}
+	st.Resources[externalAddress] = Resource{
+		Host:      "edge",
+		Kind:      "file",
+		DependsOn: []string{boundaryDependency, oldFile},
+	}
+	before, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ResolveMoves(st, []ir.MovedSpec{
+		movedSpec(middleRoot, currentRoot),
+		movedSpec(oldRoot, middleRoot),
+	}, map[string]bool{currentRoot: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("ResolveMoves mutated dependency input\ngot:  %s\nwant: %s", after, before)
+	}
+	wantMoves := []RealizedMove{
+		{Host: "edge", From: oldFile, To: middleRoot + fileSuffix},
+		{Host: "edge", From: middleRoot + fileSuffix, To: currentFile},
+	}
+	if !reflect.DeepEqual(result.Moves, wantMoves) {
+		t.Fatalf("dependency chain moves = %#v, want %#v", result.Moves, wantMoves)
+	}
+	if got, want := result.State.Resources[currentFile].DependsOn, []string{currentPackage, boundaryDependency}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("moved dependencies = %#v, want %#v", got, want)
+	}
+	if got, want := result.State.Resources[externalAddress].DependsOn, []string{currentFile, boundaryDependency}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("external survivor dependencies = %#v, want %#v", got, want)
+	}
+
+	moved := result.State.Resources[currentFile]
+	moved.DependsOn[0] = "changed"
+	if got := st.Resources[oldFile].DependsOn[0]; got != boundaryDependency {
+		t.Fatalf("moved dependencies share input storage: %#v", st.Resources[oldFile].DependsOn)
 	}
 }
 

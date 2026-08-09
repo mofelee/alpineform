@@ -437,7 +437,7 @@ packages = {
 }
 with open("/var/lib/alpineform/state.json", encoding="utf-8") as state_file:
     state = json.load(state_file)
-if state.get("product") != "alpineform" or state.get("schema_version") != 2 or state.get("host") != "cihost":
+if state.get("product") != "alpineform" or state.get("schema_version") != 3 or state.get("host") != "cihost":
     raise SystemExit(f"unexpected state header: {state!r}")
 resources = state.get("resources", {})
 expected = set(sources) | set(installs) | set(literal_sources) | set(literal_installs) | literal_forgotten | packages

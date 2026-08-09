@@ -124,6 +124,7 @@ func cloneState(input corestate.State) corestate.State {
 	}
 	out.Resources = make(map[string]corestate.Resource, len(input.Resources))
 	for address, resource := range input.Resources {
+		resource.DependsOn = append([]string(nil), resource.DependsOn...)
 		out.Resources[address] = resource
 	}
 	if input.Facts != nil {
@@ -724,7 +725,7 @@ func TestProtectedApplyStateDoesNotRetainObservedContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	decodedResource := decoded.Resources[node.Address]
-	if decoded.SchemaVersion != 2 || !decodedResource.Protected || decodedResource.DesiredDigest != resource.DesiredDigest || decodedResource.Observed != nil || !reflect.DeepEqual(decodedResource.Delete, resource.Delete) {
+	if decoded.SchemaVersion != corestate.SchemaVersion || !decodedResource.Protected || decodedResource.DesiredDigest != resource.DesiredDigest || decodedResource.Observed != nil || !reflect.DeepEqual(decodedResource.Delete, resource.Delete) {
 		t.Fatalf("decoded protected state = %#v", decoded)
 	}
 }

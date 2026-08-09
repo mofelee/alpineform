@@ -440,6 +440,11 @@ func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []gra
 		copyResource := resource
 		hostPlan.Steps = append(hostPlan.Steps, Step{Host: host.Name, Address: address, Action: action, Summary: action + " orphaned state resource", Prior: &copyResource})
 	}
+	orderedSteps, err := orderStepsForExecution(hostPlan.Steps)
+	if err != nil {
+		return HostPlan{}, err
+	}
+	hostPlan.Steps = orderedSteps
 	hostPlan.Fingerprint = planFingerprint(hostPlan)
 	return hostPlan, nil
 }
@@ -648,9 +653,17 @@ func planFingerprint(plan HostPlan) string {
 			canonicalRelationshipFingerprint(step.Node.ExplicitDependsOn),
 			canonicalRelationshipFingerprint(step.Node.TriggeredBy),
 			canonicalRelationshipFingerprint(step.TriggeredBy),
+			priorDependencyFingerprint(step.Prior),
 		}, "\x00"))
 	}
 	return corestate.Digest(parts)
+}
+
+func priorDependencyFingerprint(resource *corestate.Resource) string {
+	if resource == nil {
+		return canonicalRelationshipFingerprint(nil)
+	}
+	return canonicalRelationshipFingerprint(resource.DependsOn)
 }
 
 func canonicalRelationshipFingerprint(addresses []string) string {
@@ -714,6 +727,7 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 			state.Resources[step.Address] = resource
 		}
 	}
+	reconcileStateDependencies(state.Resources, plan.Steps)
 	if plan.StatePrewrite {
 		migrator, ok := engine.Provider.(ProtectedPriorMigrator)
 		for _, step := range plan.Steps {
@@ -751,6 +765,7 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 			continue
 		case ActionForget:
 			delete(state.Resources, step.Address)
+			removeStateDependencyReferences(state.Resources, step.Address)
 		case ActionDelete, ActionDestroy:
 			if err := engine.Provider.Delete(ctx, step); err != nil {
 				if stepIsProtected(step) {
@@ -762,6 +777,7 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 				return fmt.Errorf("%s %s: %w", step.Action, step.Address, err)
 			}
 			delete(state.Resources, step.Address)
+			removeStateDependencyReferences(state.Resources, step.Address)
 		case ActionAdopt:
 			state.Resources[step.Address] = resourceForStep(step, step.Observed, order)
 		case ActionCreate, ActionUpdate:
@@ -780,6 +796,7 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 			return fmt.Errorf("unsupported action %q for %s", step.Action, step.Address)
 		}
 	}
+	reconcileStateDependencies(state.Resources, plan.Steps)
 	_, err := engine.Backend.Write(ctx, plan.Host, state)
 	return err
 }
@@ -839,6 +856,7 @@ func resourceForStep(step Step, observed ObservedResource, order int) corestate.
 		Sensitive:     step.Node.Sensitive,
 		Ephemeral:     step.Node.Ephemeral,
 		DigestSafe:    step.Node.DigestSafe,
+		DependsOn:     canonicalAddresses(step.Node.ExplicitDependsOn),
 	}
 	if step.Node.Lifecycle != nil {
 		resource.PreventDestroy = step.Node.Lifecycle.PreventDestroy
@@ -884,6 +902,7 @@ func copyState(input corestate.State) corestate.State {
 	}
 	out.Resources = make(map[string]corestate.Resource, len(input.Resources))
 	for address, resource := range input.Resources {
+		resource.DependsOn = append([]string(nil), resource.DependsOn...)
 		out.Resources[address] = resource
 	}
 	if input.Facts != nil {

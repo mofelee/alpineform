@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"time"
 
 	"github.com/mofelee/alpineform/internal/core/ir"
@@ -14,7 +15,7 @@ import (
 
 const (
 	Product                      = "alpineform"
-	SchemaVersion                = 2
+	SchemaVersion                = 3
 	minimumReadableSchemaVersion = 1
 )
 
@@ -41,6 +42,7 @@ type Resource struct {
 	DesiredDigest  string         `json:"desired_digest,omitempty"`
 	Observed       map[string]any `json:"observed,omitempty"`
 	Order          int            `json:"order"`
+	DependsOn      []string       `json:"depends_on,omitempty"`
 	Protected      bool           `json:"protected,omitempty"`
 	Sensitive      bool           `json:"-"`
 	Ephemeral      bool           `json:"-"`
@@ -204,7 +206,23 @@ func cloneResource(resource Resource) Resource {
 	out.Desired = cloneMap(resource.Desired)
 	out.Observed = cloneMap(resource.Observed)
 	out.Delete = cloneMap(resource.Delete)
+	out.DependsOn = canonicalDependencies(resource.DependsOn)
 	return out
+}
+
+func canonicalDependencies(input []string) []string {
+	if len(input) == 0 {
+		return nil
+	}
+	out := append([]string(nil), input...)
+	sort.Strings(out)
+	unique := out[:0]
+	for _, dependency := range out {
+		if len(unique) == 0 || unique[len(unique)-1] != dependency {
+			unique = append(unique, dependency)
+		}
+	}
+	return unique
 }
 
 func cloneMap(input map[string]any) map[string]any {
