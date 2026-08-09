@@ -11,7 +11,7 @@ validation, observation, and deletion behavior.
 | `apf plan [--offline]` | Render text or JSON changes; optionally write HTML. |
 | `apf apply` | Review, lock, replan, approve, converge, and persist state. |
 | `apf check` | Exit nonzero when the observed online plan is not a no-op. |
-| `apf fmt` | Validate selected files, then format them atomically. |
+| `apf fmt` | Check selected files for HCL syntax, then format them. |
 | `apf component inspect` | Emit resolved component information. |
 | `apf variable inspect` | Emit stable JSON with protected defaults redacted. |
 | `apf version` | Print version, commit, build time, Go version, and platform. |
@@ -22,6 +22,11 @@ Configuration inputs use repeatable `-f`; variable inputs use `-var-file` and
 The network option is a separate required authorization for live nftables
 activation/deletion and is never implied by `--auto-approve`. Use command help
 for the exact flag spelling shipped by the installed binary.
+
+`apf fmt` reads and syntax-checks every selected configuration file before it
+writes formatted content. It does not load variable inputs or evaluate the
+AlpineForm model. Use `apf validate` to parse, resolve, type-check, and
+semantically validate configuration.
 
 ## Reusable Model
 

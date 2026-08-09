@@ -147,7 +147,109 @@ variable "token" {
 	}
 }
 
-func TestFmtValidatesBeforeWritingAndIsIdempotent(t *testing.T) {
+func TestFmtIsSyntaxOnlyAndIgnoresVariableSources(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "main.apf.hcl")
+	config := []byte(`variable "target" {
+  type=string
+  sensitive=true
+}
+host "node" {
+  ssh {
+    host=var.target
+  }
+}
+`)
+	if err := os.WriteFile(configPath, config, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "10.auto.apfvars"), []byte("target = [\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("APF_VAR_target", "not valid HCL [")
+
+	var output bytes.Buffer
+	if err := runFmt([]string{"-f", configPath}, &output, dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "formatted 1 file(s)\n" {
+		t.Fatalf("fmt output = %q", got)
+	}
+	formatted, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(formatted, []byte("sensitive = true")) || !bytes.Contains(formatted, []byte("host = var.target")) {
+		t.Fatalf("formatted file = %q", formatted)
+	}
+	if bytes.Contains(formatted, []byte("not valid HCL")) {
+		t.Fatalf("formatted file contains ignored environment value: %q", formatted)
+	}
+}
+
+func TestFmtAcceptsSemanticallyInvalidConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	tests := []struct {
+		name        string
+		content     string
+		validateErr string
+	}{
+		{
+			name:        "unknown component",
+			content:     "host \"node\" {\n  component \"app\" {\n    source = component.missing\n  }\n}\n",
+			validateErr: "unknown component.missing",
+		},
+		{
+			name:        "future block",
+			content:     "future_resource \"example\" {\n  enabled = true\n}\n",
+			validateErr: "unknown top-level block",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(dir, strings.ReplaceAll(test.name, " ", "-")+".apf.hcl")
+			if err := os.WriteFile(path, []byte(test.content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := runFmt([]string{"-f", path}, &bytes.Buffer{}, dir); err != nil {
+				t.Fatalf("fmt rejected syntax-valid configuration: %v", err)
+			}
+			if err := runValidate([]string{"-f", path}, &bytes.Buffer{}, dir, nil); err == nil || !strings.Contains(err.Error(), test.validateErr) {
+				t.Fatalf("validate error = %v, want %q", err, test.validateErr)
+			}
+		})
+	}
+}
+
+func TestFmtSyntaxChecksEveryFileBeforeWriting(t *testing.T) {
+	dir := t.TempDir()
+	validPath := filepath.Join(dir, "10-valid.apf.hcl")
+	invalidPath := filepath.Join(dir, "20-invalid.apf.hcl")
+	valid := []byte("host \"valid\"{}\n")
+	invalid := []byte("future_resource { value = }\n")
+	if err := os.WriteFile(validPath, valid, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(invalidPath, invalid, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runFmt(nil, &bytes.Buffer{}, dir)
+	if err == nil || !strings.Contains(err.Error(), invalidPath+":1,") {
+		t.Fatalf("fmt error = %v, want source location in %s", err, invalidPath)
+	}
+	for path, want := range map[string][]byte{validPath: valid, invalidPath: invalid} {
+		got, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("fmt changed %s before syntax preflight completed: %q", path, got)
+		}
+	}
+}
+
+func TestFmtPreservesModeCountAndIdempotence(t *testing.T) {
 	dir := t.TempDir()
 	validPath := filepath.Join(dir, "valid.apf.hcl")
 	valid := "variable \"region\"{type=string}\nlocals{selected=var.region}\n"
@@ -182,37 +284,38 @@ func TestFmtValidatesBeforeWritingAndIsIdempotent(t *testing.T) {
 	if got := second.String(); got != "formatted 0 file(s)\n" {
 		t.Fatalf("second fmt output = %q", got)
 	}
+}
 
-	invalidPath := filepath.Join(dir, "invalid.apf.hcl")
-	invalid := []byte("apt {}\n")
-	if err := os.WriteFile(invalidPath, invalid, 0600); err != nil {
+func TestFmtExplicitSelectionDeduplicatesOverlappingInputs(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "configs")
+	if err := os.Mkdir(configDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := runFmt([]string{"-f", invalidPath}, &bytes.Buffer{}, dir); err == nil || !strings.Contains(err.Error(), "unknown top-level block") {
-		t.Fatalf("invalid fmt error = %v", err)
+	selectedPath := filepath.Join(dir, "selected.apf.hcl")
+	aPath := filepath.Join(configDir, "a.apf.hcl")
+	bPath := filepath.Join(configDir, "b.apf.hcl")
+	unselectedPath := filepath.Join(dir, "unselected.apf.hcl")
+	for _, path := range []string{selectedPath, aPath, bPath, unselectedPath} {
+		if err := os.WriteFile(path, []byte("host \"node\"{}\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	after, err := os.ReadFile(invalidPath)
+
+	var output bytes.Buffer
+	args := []string{"-f", selectedPath, "-f", configDir, "-f", selectedPath, "-f", aPath}
+	if err := runFmt(args, &output, dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "formatted 3 file(s)\n" {
+		t.Fatalf("fmt output = %q, want each selected file counted once", got)
+	}
+	unchanged, err := os.ReadFile(unselectedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(after, invalid) {
-		t.Fatalf("fmt changed semantically invalid input: %q", after)
-	}
-
-	compileInvalidPath := filepath.Join(dir, "compile-invalid.apf.hcl")
-	compileInvalid := []byte("host \"node\" {\n  component \"app\" { source = component.missing }\n}\n")
-	if err := os.WriteFile(compileInvalidPath, compileInvalid, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := runFmt([]string{"-f", compileInvalidPath}, &bytes.Buffer{}, dir); err == nil || !strings.Contains(err.Error(), "unknown component.missing") {
-		t.Fatalf("compile-invalid fmt error = %v", err)
-	}
-	after, err = os.ReadFile(compileInvalidPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(after, compileInvalid) {
-		t.Fatalf("fmt changed compiler-invalid input: %q", after)
+	if got := string(unchanged); got != "host \"node\"{}\n" {
+		t.Fatalf("fmt changed unselected file: %q", got)
 	}
 }
 

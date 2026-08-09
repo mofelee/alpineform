@@ -27,8 +27,10 @@ APK package world intent. Static resource dependencies are resolved after
 composition, compiled into the graph, enforced by the engine, and retained in
 state as authored-only metadata for potential orphan teardown.
 `apf variable inspect` emits stable JSON and redacts sensitive and ephemeral
-defaults. `apf fmt` validates every selected file before writing any formatted
-content and is idempotent. No Debian resource schema is exposed.
+defaults. `apf fmt` syntax-checks every selected file before writing any
+formatted content, reads no variable or runtime inputs, and is idempotent.
+`apf validate` owns AlpineForm parsing, resolution, type checking, and semantic
+validation. No Debian resource schema is exposed.
 
 ## Implemented language subset
 

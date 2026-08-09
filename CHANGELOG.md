@@ -72,6 +72,12 @@ All notable user-visible changes to AlpineForm are recorded here.
   repair, reverse explicit cleanup, and default forget. It remains one of the
   existing 12 cases, so the blocking matrix remains 48 jobs.
 
+### Changed
+
+- Make `apf fmt` check HCL syntax only before formatting selected files. It no
+  longer loads variable inputs or requires a complete, semantically valid
+  AlpineForm model; use `apf validate` for semantic validation.
+
 ### Fixed
 
 - Use the portable `apk info -e` package-existence query so Alpine 3.21's

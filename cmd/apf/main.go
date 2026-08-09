@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	coregraph "github.com/mofelee/alpineform/internal/core/graph"
 	coremerge "github.com/mofelee/alpineform/internal/core/merge"
@@ -287,28 +288,43 @@ func runFmt(args []string, stdout io.Writer, workingDir string) error {
 	if err != nil {
 		return err
 	}
-	config, err := coreparser.ParseFilesWithOptions(files, coreparser.ParseOptions{AllowMissingVariables: true})
-	if err != nil {
-		return err
+	type stagedFile struct {
+		path string
+		data []byte
+		mode os.FileMode
 	}
-	if _, err := coremerge.Compile(config); err != nil {
-		return err
-	}
-	changed := 0
+	staged := make([]stagedFile, 0, len(files))
+	seen := make(map[string]struct{}, len(files))
 	for _, path := range files {
+		identity, err := filepath.Abs(filepath.Clean(path))
+		if err != nil {
+			return err
+		}
+		if _, ok := seen[identity]; ok {
+			continue
+		}
+		seen[identity] = struct{}{}
+
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		formatted := hclwrite.Format(data)
-		if bytes.Equal(data, formatted) {
-			continue
+		if _, diagnostics := hclwrite.ParseConfig(data, path, hcl.InitialPos); diagnostics.HasErrors() {
+			return diagnostics
 		}
 		info, err := os.Stat(path)
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(path, formatted, info.Mode().Perm()); err != nil {
+		staged = append(staged, stagedFile{path: path, data: data, mode: info.Mode().Perm()})
+	}
+	changed := 0
+	for _, file := range staged {
+		formatted := hclwrite.Format(file.data)
+		if bytes.Equal(file.data, formatted) {
+			continue
+		}
+		if err := os.WriteFile(file.path, formatted, file.mode); err != nil {
 			return err
 		}
 		changed++
@@ -627,5 +643,6 @@ Usage:
 Validate, plan, apply, check, and variable inspect load top-level *.apf.hcl
 files and support repeated -f, -var-file, and -var inputs. Online commands use
 root SSH, validate Alpine 3.21 through 3.24 facts before backend access, and re-plan apply
-under a renewable per-host lease. Fmt validates before writing.`)
+under a renewable per-host lease. Fmt checks only HCL syntax for every selected
+file before writing; validate performs AlpineForm semantic validation.`)
 }
