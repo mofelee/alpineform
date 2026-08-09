@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -16,7 +17,7 @@ import (
 func testDocument() Document {
 	resourceGraph := &graph.ResourceGraph{Nodes: []graph.Node{
 		{Host: "node", Address: "host.node", Kind: "host", Source: ir.SourceRef{File: "model.apf.hcl", Line: 1, Path: `host["node"]`}},
-		{Host: "node", Address: "host.node.file.example", Kind: "file", Managed: true, Summary: "manage example file", Source: ir.SourceRef{File: "model.apf.hcl", Line: 8, Path: `host["node"].file["example"]`}, DependsOn: []string{"host.node"}, Desired: map[string]any{"content": "not-a-real-plan-secret"}, Sensitive: true},
+		{Host: "node", Address: "host.node.file.example", Kind: "file", Managed: true, Summary: "manage example file", Source: ir.SourceRef{File: "model.apf.hcl", Line: 8, Path: `host["node"].file["example"]`}, DependsOn: []string{"host.node", "host.node"}, TriggeredBy: []string{"host.node", "host.node"}, Desired: map[string]any{"content": "not-a-real-plan-secret"}, Sensitive: true},
 	}}
 	return New(resourceGraph, Options{Files: []string{"model.apf.hcl"}, Hosts: []string{"node"}})
 }
@@ -55,6 +56,49 @@ func TestTextColorIsExplicit(t *testing.T) {
 	PrintText(&output, testDocument(), TextOptions{Color: false})
 	if strings.Contains(output.String(), "\x1b[") {
 		t.Fatalf("plain output contains ANSI sequence: %q", output.String())
+	}
+}
+
+func TestPlanNormalizesRelationshipsWithoutMutatingGraph(t *testing.T) {
+	dependsOn := []string{"host.node.z", "host.node.a", "host.node.z"}
+	triggeredBy := []string{"host.node.z", "host.node.a", "host.node.a"}
+	node := graph.Node{
+		Address:     "host.node.service.example",
+		Kind:        "service",
+		Managed:     true,
+		DependsOn:   dependsOn,
+		TriggeredBy: triggeredBy,
+	}
+	wantDependsOn := []string{"host.node.a", "host.node.z"}
+	wantTriggeredBy := []string{"host.node.a", "host.node.z"}
+
+	offline := New(&graph.ResourceGraph{Nodes: []graph.Node{node}}, Options{})
+	assertRelationships := func(name string, graphNode GraphNode, change Change) {
+		t.Helper()
+		if !reflect.DeepEqual(graphNode.DependsOn, wantDependsOn) || !reflect.DeepEqual(change.DependsOn, wantDependsOn) {
+			t.Fatalf("%s depends_on = %#v / %#v", name, graphNode.DependsOn, change.DependsOn)
+		}
+		if !reflect.DeepEqual(graphNode.TriggeredBy, wantTriggeredBy) || !reflect.DeepEqual(change.TriggeredBy, wantTriggeredBy) {
+			t.Fatalf("%s triggered_by = %#v / %#v", name, graphNode.TriggeredBy, change.TriggeredBy)
+		}
+	}
+	assertRelationships("offline", offline.Graph[0], offline.Changes[0])
+
+	online := NewOnline(engine.Plan{Hosts: []engine.HostPlan{{
+		Host: ir.HostSpec{Name: "node"},
+		Steps: []engine.Step{{
+			Address: node.Address,
+			Action:  engine.ActionUpdate,
+			Node:    node,
+		}},
+	}}}, Options{})
+	assertRelationships("online", online.Graph[0], online.Changes[0])
+
+	if !reflect.DeepEqual(dependsOn, []string{"host.node.z", "host.node.a", "host.node.z"}) || !reflect.DeepEqual(triggeredBy, []string{"host.node.z", "host.node.a", "host.node.a"}) {
+		t.Fatalf("plan construction mutated graph relationships: depends_on=%#v triggered_by=%#v", dependsOn, triggeredBy)
+	}
+	if offline.FormatVersion != FormatVersion || online.FormatVersion != FormatVersion || FormatVersion != "alpineform.plan.alpha1" {
+		t.Fatalf("format version changed: offline=%q online=%q", offline.FormatVersion, online.FormatVersion)
 	}
 }
 

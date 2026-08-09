@@ -21,8 +21,8 @@
   <h1>AlpineForm offline plan</h1>
   <div class="summary">2 graph nodes; 1 managed resources; 1 to create; 0 to delete.</div>
   <table>
-    <thead><tr><th>Address</th><th>Kind</th><th>Managed</th><th>Source</th></tr></thead>
-    <tbody><tr><td><code>host.node</code></td><td>host</td><td>false</td><td><code>model.apf.hcl:1</code></td></tr><tr><td><code>host.node.file.example</code></td><td>file</td><td>true</td><td><code>model.apf.hcl:8</code></td></tr></tbody>
+    <thead><tr><th>Address</th><th>Kind</th><th>Managed</th><th>Relationships</th><th>Source</th></tr></thead>
+    <tbody><tr><td><code>host.node</code></td><td>host</td><td>false</td><td></td><td><code>model.apf.hcl:1</code></td></tr><tr><td><code>host.node.file.example</code></td><td>file</td><td>true</td><td><div>depends_on: <code>host.node</code></div><div>triggered_by: <code>host.node</code></div></td><td><code>model.apf.hcl:8</code></td></tr></tbody>
   </table>
 </main>
 </body>

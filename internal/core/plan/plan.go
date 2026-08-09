@@ -54,12 +54,14 @@ type GraphNode struct {
 }
 
 type Change struct {
-	Address string         `json:"address"`
-	Action  string         `json:"action"`
-	Summary string         `json:"summary"`
-	Source  ir.SourceRef   `json:"source"`
-	Desired map[string]any `json:"desired,omitempty"`
-	Risks   []string       `json:"risks,omitempty"`
+	Address     string         `json:"address"`
+	Action      string         `json:"action"`
+	Summary     string         `json:"summary"`
+	Source      ir.SourceRef   `json:"source"`
+	DependsOn   []string       `json:"depends_on,omitempty"`
+	TriggeredBy []string       `json:"triggered_by,omitempty"`
+	Desired     map[string]any `json:"desired,omitempty"`
+	Risks       []string       `json:"risks,omitempty"`
 }
 
 type Options struct {
@@ -84,8 +86,8 @@ func New(resourceGraph *graph.ResourceGraph, options Options) Document {
 			Address:     node.Address,
 			Kind:        node.Kind,
 			Managed:     node.Managed,
-			DependsOn:   append([]string(nil), node.DependsOn...),
-			TriggeredBy: append([]string(nil), node.TriggeredBy...),
+			DependsOn:   sortedUniqueAddresses(node.DependsOn),
+			TriggeredBy: sortedUniqueAddresses(node.TriggeredBy),
 			Source:      node.Source,
 		})
 		if !node.Managed {
@@ -99,7 +101,15 @@ func New(resourceGraph *graph.ResourceGraph, options Options) Document {
 		if node.Sensitive || node.Ephemeral {
 			desired = map[string]any{"protected": true}
 		}
-		change := Change{Address: node.Address, Action: action, Summary: node.Summary, Source: node.Source, Desired: desired}
+		change := Change{
+			Address:     node.Address,
+			Action:      action,
+			Summary:     node.Summary,
+			Source:      node.Source,
+			DependsOn:   sortedUniqueAddresses(node.DependsOn),
+			TriggeredBy: sortedUniqueAddresses(node.TriggeredBy),
+			Desired:     desired,
+		}
 		if engine.IsNetworkDisrupting(node.Kind, action) {
 			change.Risks = []string{engine.RiskNetworkDisruption}
 			document.Summary.NetworkDisruption++
@@ -134,11 +144,13 @@ func NewOnline(actionPlan engine.Plan, options Options) Document {
 				summary = authoritativeRepositoriesDiff(summary, stringSliceMapValue(step.Observed.Values, "lines"), stringSliceMapValue(step.Node.Desired, "lines"))
 			}
 			change := Change{
-				Address: step.Address,
-				Action:  step.Action,
-				Summary: summary,
-				Source:  step.Node.Source,
-				Desired: desired,
+				Address:     step.Address,
+				Action:      step.Action,
+				Summary:     summary,
+				Source:      step.Node.Source,
+				DependsOn:   sortedUniqueAddresses(step.Node.DependsOn),
+				TriggeredBy: sortedUniqueAddresses(step.Node.TriggeredBy),
+				Desired:     desired,
 			}
 			if step.IsNetworkDisrupting() {
 				change.Risks = []string{engine.RiskNetworkDisruption}
@@ -153,8 +165,8 @@ func NewOnline(actionPlan engine.Plan, options Options) Document {
 				Address:     step.Address,
 				Kind:        kind,
 				Managed:     true,
-				DependsOn:   append([]string(nil), step.Node.DependsOn...),
-				TriggeredBy: append([]string(nil), step.Node.TriggeredBy...),
+				DependsOn:   sortedUniqueAddresses(step.Node.DependsOn),
+				TriggeredBy: sortedUniqueAddresses(step.Node.TriggeredBy),
 				Source:      step.Node.Source,
 			})
 			document.addAction(step.Action)
@@ -220,6 +232,7 @@ func PrintText(w io.Writer, document Document, options TextOptions) {
 			if change.Summary != "" {
 				fmt.Fprintf(w, "    %s\n", strings.ReplaceAll(change.Summary, "\n", "\n    "))
 			}
+			printRelationships(w, change)
 			printRisks(w, change)
 		}
 	}
@@ -248,6 +261,7 @@ func printOnlineText(w io.Writer, document Document, options TextOptions) {
 			if change.Summary != "" {
 				fmt.Fprintf(w, "    %s\n", strings.ReplaceAll(change.Summary, "\n", "\n    "))
 			}
+			printRelationships(w, change)
 			printRisks(w, change)
 		}
 	}
@@ -261,6 +275,15 @@ func printOnlineText(w io.Writer, document Document, options TextOptions) {
 		document.Summary.Forget,
 		document.Summary.NoOp,
 	)
+}
+
+func printRelationships(w io.Writer, change Change) {
+	if len(change.DependsOn) > 0 {
+		fmt.Fprintf(w, "    depends_on: %s\n", strings.Join(change.DependsOn, ", "))
+	}
+	if len(change.TriggeredBy) > 0 {
+		fmt.Fprintf(w, "    triggered_by: %s\n", strings.Join(change.TriggeredBy, ", "))
+	}
 }
 
 func printRisks(w io.Writer, change Change) {
@@ -308,6 +331,21 @@ func cloneMap(input map[string]any) map[string]any {
 		out[key] = cloneValue(value)
 	}
 	return out
+}
+
+func sortedUniqueAddresses(addresses []string) []string {
+	if len(addresses) == 0 {
+		return nil
+	}
+	result := append([]string(nil), addresses...)
+	sort.Strings(result)
+	unique := result[:0]
+	for _, address := range result {
+		if len(unique) == 0 || unique[len(unique)-1] != address {
+			unique = append(unique, address)
+		}
+	}
+	return unique
 }
 
 func cloneValue(value any) any {
@@ -404,11 +442,11 @@ const planHTML = `<!doctype html>
   <h1>AlpineForm {{if eq .Mode "online"}}online{{else}}offline{{end}} plan</h1>
   <div class="summary">{{if eq .Mode "online"}}{{.Summary.Create}} create; {{.Summary.Update}} update; {{.Summary.Adopt}} adopt; {{.Summary.Delete}} delete; {{.Summary.Destroy}} destroy; {{.Summary.Forget}} forget; {{.Summary.NoOp}} no-op.{{else}}{{.Summary.GraphNodes}} graph nodes; {{.Summary.ManagedResources}} managed resources; {{.Summary.Create}} to create; {{.Summary.Delete}} to delete.{{end}}{{if .Summary.NetworkDisruption}} Network disruption: {{.Summary.NetworkDisruption}}.{{end}}</div>
 {{if eq .Mode "online"}}  <table>
-    <thead><tr><th>Address</th><th>Action</th>{{if .Summary.NetworkDisruption}}<th>Risk</th>{{end}}<th>Summary</th><th>Source</th></tr></thead>
-    <tbody>{{range .Changes}}<tr><td><code>{{.Address}}</code></td><td>{{.Action}}</td>{{if $.Summary.NetworkDisruption}}<td>{{range .Risks}}{{.}} {{end}}</td>{{end}}<td>{{.Summary}}</td><td><code>{{.Source.File}}:{{.Source.Line}}</code></td></tr>{{end}}</tbody>
+    <thead><tr><th>Address</th><th>Action</th>{{if .Summary.NetworkDisruption}}<th>Risk</th>{{end}}<th>Summary</th><th>Relationships</th><th>Source</th></tr></thead>
+    <tbody>{{range .Changes}}<tr><td><code>{{.Address}}</code></td><td>{{.Action}}</td>{{if $.Summary.NetworkDisruption}}<td>{{range .Risks}}{{.}} {{end}}</td>{{end}}<td>{{.Summary}}</td><td>{{if .DependsOn}}<div>depends_on: {{range $index, $address := .DependsOn}}{{if $index}}, {{end}}<code>{{$address}}</code>{{end}}</div>{{end}}{{if .TriggeredBy}}<div>triggered_by: {{range $index, $address := .TriggeredBy}}{{if $index}}, {{end}}<code>{{$address}}</code>{{end}}</div>{{end}}</td><td><code>{{.Source.File}}:{{.Source.Line}}</code></td></tr>{{end}}</tbody>
   </table>{{else}}  <table>
-    <thead><tr><th>Address</th><th>Kind</th><th>Managed</th><th>Source</th></tr></thead>
-    <tbody>{{range .Graph}}<tr><td><code>{{.Address}}</code></td><td>{{.Kind}}</td><td>{{.Managed}}</td><td><code>{{.Source.File}}:{{.Source.Line}}</code></td></tr>{{end}}</tbody>
+    <thead><tr><th>Address</th><th>Kind</th><th>Managed</th><th>Relationships</th><th>Source</th></tr></thead>
+    <tbody>{{range .Graph}}<tr><td><code>{{.Address}}</code></td><td>{{.Kind}}</td><td>{{.Managed}}</td><td>{{if .DependsOn}}<div>depends_on: {{range $index, $address := .DependsOn}}{{if $index}}, {{end}}<code>{{$address}}</code>{{end}}</div>{{end}}{{if .TriggeredBy}}<div>triggered_by: {{range $index, $address := .TriggeredBy}}{{if $index}}, {{end}}<code>{{$address}}</code>{{end}}</div>{{end}}</td><td><code>{{.Source.File}}:{{.Source.Line}}</code></td></tr>{{end}}</tbody>
   </table>{{end}}
 </main>
 </body>

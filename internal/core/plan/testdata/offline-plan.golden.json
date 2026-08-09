@@ -35,6 +35,9 @@
       "depends_on": [
         "host.node"
       ],
+      "triggered_by": [
+        "host.node"
+      ],
       "source": {
         "file": "model.apf.hcl",
         "line": 8,
@@ -52,6 +55,12 @@
         "line": 8,
         "path": "host[\"node\"].file[\"example\"]"
       },
+      "depends_on": [
+        "host.node"
+      ],
+      "triggered_by": [
+        "host.node"
+      ],
       "desired": {
         "protected": true
       }

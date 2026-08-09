@@ -2,5 +2,7 @@ Offline plan:
   Configuration graph: 2 node(s), 1 managed resource(s).
   + host.node.file.example
     manage example file
+    depends_on: host.node
+    triggered_by: host.node
 
 Summary: 1 to create, 0 to update, 0 to delete.
