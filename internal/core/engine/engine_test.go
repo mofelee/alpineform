@@ -349,6 +349,118 @@ func TestPlanAggregatesChangedTriggersIntoOneDependentStep(t *testing.T) {
 	}
 }
 
+func TestSourceBuildCleanupOnlyDoesNotTriggerInstallOrOnChange(t *testing.T) {
+	prefix := "host.node.component.tool.build"
+	dependencies := graph.Node{
+		Host: "node", Address: prefix + ".dependencies", Kind: "component_build_dependencies", Managed: true,
+		Desired: map[string]any{"build_identity": "stable", "ensure": "present"},
+	}
+	workspace := graph.Node{
+		Host: "node", Address: prefix + ".workspace", Kind: "component_build_workspace", Managed: true,
+		Desired:   map[string]any{"build_identity": "stable", "ensure": "present"},
+		DependsOn: []string{dependencies.Address}, TriggeredBy: []string{dependencies.Address},
+	}
+	output := graph.Node{
+		Host: "node", Address: prefix + `.output["tool"]`, Kind: "component_build_output", Managed: true,
+		Desired:   map[string]any{"build_identity": "stable", "ensure": "present"},
+		DependsOn: []string{workspace.Address}, TriggeredBy: []string{workspace.Address},
+	}
+	cleanup := graph.Node{
+		Host: "node", Address: prefix + ".cleanup", Kind: "component_build_cleanup", Managed: true,
+		Desired:   map[string]any{"build_identity": "stable", "ensure": "present"},
+		DependsOn: []string{output.Address}, TriggeredBy: []string{output.Address},
+	}
+	install := graph.Node{
+		Host: "node", Address: prefix + `.install["/usr/local/bin/tool"]`, Kind: "component_build_install", Managed: true,
+		Desired:   map[string]any{"build_identity": "stable", "ensure": "present"},
+		DependsOn: []string{output.Address, cleanup.Address}, TriggeredBy: []string{output.Address},
+	}
+	onChange := graph.Node{
+		Host: "node", Address: "host.node.component.tool.script[\"refresh\"]", Kind: "component_script", Managed: true,
+		Desired:   map[string]any{"script_digest": "stable", "ensure": "present"},
+		DependsOn: []string{install.Address}, TriggeredBy: []string{install.Address},
+	}
+	nodes := []graph.Node{dependencies, workspace, output, cleanup, install, onChange}
+
+	plan := func(t *testing.T, drifted, missing string) HostPlan {
+		t.Helper()
+		backend := newMemoryBackend()
+		backend.states["node"] = corestate.State{
+			Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node", Resources: map[string]corestate.Resource{},
+		}
+		provider := newMemoryProvider()
+		for _, node := range nodes {
+			digest := corestate.Digest(node.Desired)
+			backend.states["node"].Resources[node.Address] = corestate.Resource{Kind: node.Kind, DesiredDigest: digest}
+			observedDigest := digest
+			if node.Address == drifted {
+				observedDigest = "drifted"
+			}
+			provider.set(node.Address, ObservedResource{Exists: node.Address != missing, Digest: observedDigest})
+		}
+		planned, err := (Engine{Backend: backend, Provider: provider}).Plan(context.Background(), staticBuild(testHost(), nodes...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return planned.Hosts[0]
+	}
+
+	t.Run("cleanup only", func(t *testing.T) {
+		planned := plan(t, cleanup.Address, "")
+		for _, step := range planned.Steps {
+			want := ActionNoOp
+			if step.Address == cleanup.Address {
+				want = ActionUpdate
+			}
+			if step.Action != want || len(step.TriggeredBy) != 0 {
+				t.Fatalf("cleanup-only step = %#v, want action %q without active triggers", step, want)
+			}
+		}
+	})
+
+	t.Run("output change", func(t *testing.T) {
+		planned := plan(t, output.Address, "")
+		wantOrder := []string{dependencies.Address, workspace.Address, output.Address, cleanup.Address, install.Address, onChange.Address}
+		wantActions := map[string]string{
+			dependencies.Address: ActionNoOp, workspace.Address: ActionNoOp,
+			output.Address: ActionUpdate, cleanup.Address: ActionUpdate, install.Address: ActionUpdate, onChange.Address: ActionUpdate,
+		}
+		wantTriggers := map[string][]string{
+			dependencies.Address: {}, workspace.Address: {}, output.Address: {},
+			cleanup.Address: {output.Address}, install.Address: {output.Address}, onChange.Address: {install.Address},
+		}
+		if len(planned.Steps) != len(wantOrder) {
+			t.Fatalf("output-change steps = %#v", planned.Steps)
+		}
+		for index, step := range planned.Steps {
+			if step.Address != wantOrder[index] || step.Action != wantActions[step.Address] || !reflect.DeepEqual(step.TriggeredBy, wantTriggers[step.Address]) {
+				t.Fatalf("output-change step %d = %#v, want address %q triggers %#v", index, step, wantOrder[index], wantTriggers[step.Address])
+			}
+		}
+	})
+
+	t.Run("invalid cache with active dependencies", func(t *testing.T) {
+		planned := plan(t, "", workspace.Address)
+		wantOrder := []string{dependencies.Address, workspace.Address, output.Address, cleanup.Address, install.Address, onChange.Address}
+		wantActions := map[string]string{
+			dependencies.Address: ActionNoOp, workspace.Address: ActionCreate,
+			output.Address: ActionUpdate, cleanup.Address: ActionUpdate, install.Address: ActionUpdate, onChange.Address: ActionUpdate,
+		}
+		wantTriggers := map[string][]string{
+			dependencies.Address: {}, workspace.Address: {}, output.Address: {workspace.Address},
+			cleanup.Address: {output.Address}, install.Address: {output.Address}, onChange.Address: {install.Address},
+		}
+		if len(planned.Steps) != len(wantOrder) {
+			t.Fatalf("invalid-cache steps = %#v", planned.Steps)
+		}
+		for index, step := range planned.Steps {
+			if step.Address != wantOrder[index] || step.Action != wantActions[step.Address] || !reflect.DeepEqual(step.TriggeredBy, wantTriggers[step.Address]) {
+				t.Fatalf("invalid-cache step %d = %#v, want address %q action %q triggers %#v", index, step, wantOrder[index], wantActions[step.Address], wantTriggers[step.Address])
+			}
+		}
+	})
+}
+
 func TestPlanOrphanActionsAndPreventDestroy(t *testing.T) {
 	backend := newMemoryBackend()
 	backend.states["node"] = corestate.State{Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node", Resources: map[string]corestate.Resource{
@@ -785,6 +897,75 @@ func TestProtectedArtifactValuesExistOnlyInNodePayloadAfterPlanning(t *testing.T
 	}
 }
 
+func TestWorkspaceRootExistsOnlyInRuntimeNodeAfterPlanning(t *testing.T) {
+	workspaceRoot := "/srv/not-a-serialized-workspace-root"
+	outputCache := "/var/cache/not-a-serialized-output-cache"
+	host := testHost()
+	host.Staging = &ir.StagingSpec{Root: workspaceRoot, Source: ir.SourceRef{File: "main.apf.hcl", Line: 2}}
+	host.Components = []ir.ComponentInstanceSpec{{
+		Name: "tool",
+		Build: &ir.ComponentBuildSpec{
+			Identity: "stable-build-identity", WorkspaceRoot: workspaceRoot, WorkingDirectory: ".", Output: "tool", Network: "none",
+		},
+	}}
+	node := testNode(map[string]any{"build_identity": "stable-build-identity", "ensure": "present"})
+	node.Kind = "component_build_workspace"
+	node.Payload = map[string]any{"workspace_root": workspaceRoot, "output_cache": outputCache}
+	node.RuntimeIntentDigest = "not-a-serialized-runtime-intent"
+	provider := newMemoryProvider()
+	provider.set(node.Address, ObservedResource{Exists: true, Digest: corestate.Digest(node.Desired)})
+	backend := newMemoryBackend()
+	backend.states["node"] = corestate.State{
+		Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node",
+		Resources: map[string]corestate.Resource{node.Address: {Kind: node.Kind, DesiredDigest: corestate.Digest(node.Desired)}},
+	}
+	plan, err := (Engine{Backend: backend, Provider: provider}).Plan(context.Background(), staticBuild(host, node))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.Staging == nil || host.Staging.Root != workspaceRoot || host.Components[0].Build.WorkspaceRoot != workspaceRoot {
+		t.Fatalf("planning mutated runtime host: %#v", host)
+	}
+	plannedHost := plan.Hosts[0].Host
+	if plannedHost.Staging != nil || plannedHost.Components[0].Build == nil || plannedHost.Components[0].Build.WorkspaceRoot != "" || plannedHost.Components[0].Build.Identity != "stable-build-identity" {
+		t.Fatalf("plan-safe host retained placement or lost build metadata: %#v", plannedHost)
+	}
+	if got := plan.Hosts[0].Steps[0].Node.Payload["workspace_root"]; got != workspaceRoot {
+		t.Fatalf("runtime node workspace root = %#v", got)
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{workspaceRoot, node.RuntimeIntentDigest, outputCache, `"output_cache"`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("online plan JSON leaked runtime placement %q: %s", forbidden, encoded)
+		}
+	}
+
+	applyBackend := newMemoryBackend()
+	_, err = (Engine{Backend: applyBackend, Provider: newMemoryProvider()}).Apply(context.Background(), staticBuild(host, node), ApplyOptions{
+		ReviewPreview: func(context.Context, Plan) error { return nil },
+		ReviewLocked:  func(context.Context, Plan, Plan, bool) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, writes := applyBackend.snapshot("node")
+	if writes != 1 {
+		t.Fatalf("runtime-only apply state writes = %d, want 1", writes)
+	}
+	encoded, err = json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{workspaceRoot, node.RuntimeIntentDigest, outputCache, `"output_cache"`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("state JSON leaked runtime placement %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestPublicArtifactPriorIsScrubbedWhenSourceBecomesProtected(t *testing.T) {
 	secretURL := "https://example.invalid/tool?token=not-a-real-prior-secret"
 	secretSHA := strings.Repeat("c", 64)
@@ -989,6 +1170,79 @@ func TestProtectedIntentChangeIsDurableNoOpButRequiresLockedReview(t *testing.T)
 	_, writes := backend.snapshot("node")
 	if writes != 0 {
 		t.Fatalf("protected mirror review rejection wrote state %d time(s)", writes)
+	}
+}
+
+func TestRuntimeIntentChangeIsAllNoOpButRequiresLockedReview(t *testing.T) {
+	addresses := []string{
+		"host.node.component.cli.build.dependencies",
+		"host.node.component.cli.build.workspace",
+		`host.node.component.cli.build.output["tool"]`,
+		"host.node.component.cli.build.cleanup",
+	}
+	backend := newMemoryBackend()
+	backend.states["node"] = corestate.State{
+		Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node", Resources: map[string]corestate.Resource{},
+	}
+	provider := newMemoryProvider()
+	for _, address := range addresses {
+		desired := map[string]any{"build_identity": "stable", "ensure": "present"}
+		digest := corestate.Digest(desired)
+		backend.states["node"].Resources[address] = corestate.Resource{Kind: "component_build_runtime", DesiredDigest: digest}
+		provider.set(address, ObservedResource{Exists: true, Digest: digest})
+	}
+	buildCalls := 0
+	build := func(context.Context) (*ir.Program, *graph.ResourceGraph, error) {
+		buildCalls++
+		root := "/srv/first-root"
+		intent := "runtime-intent-first"
+		if buildCalls > 1 {
+			root = "/srv/second-root"
+			intent = "runtime-intent-second"
+		}
+		nodes := make([]graph.Node, 0, len(addresses))
+		for _, address := range addresses {
+			nodes = append(nodes, graph.Node{
+				Host: "node", Address: address, Kind: "component_build_runtime", Managed: true,
+				Desired: map[string]any{"build_identity": "stable", "ensure": "present"},
+				Payload: map[string]any{"workspace_root": root}, RuntimeIntentDigest: intent,
+				Source: ir.SourceRef{File: "main.apf.hcl", Line: 1},
+			})
+		}
+		return &ir.Program{Hosts: []ir.HostSpec{testHost()}}, &graph.ResourceGraph{Nodes: nodes}, nil
+	}
+	rejected := errors.New("review runtime placement again")
+	_, err := (Engine{Backend: backend, Provider: provider}).Apply(context.Background(), build, ApplyOptions{
+		ReviewPreview: func(_ context.Context, preview Plan) error {
+			if preview.HasChanges() || len(preview.Hosts[0].Steps) != len(addresses) {
+				t.Fatalf("runtime preview = %#v", preview)
+			}
+			for _, step := range preview.Hosts[0].Steps {
+				if step.Action != ActionNoOp {
+					t.Fatalf("runtime preview step = %#v", step)
+				}
+			}
+			return nil
+		},
+		ReviewLocked: func(_ context.Context, preview, locked Plan, changed bool) error {
+			if !changed || preview.HasChanges() || locked.HasChanges() {
+				t.Fatalf("runtime locked review: changed=%v preview=%#v locked=%#v", changed, preview, locked)
+			}
+			for _, step := range locked.Hosts[0].Steps {
+				if step.Action != ActionNoOp || step.Node.Payload["workspace_root"] != "/srv/second-root" {
+					t.Fatalf("runtime locked step = %#v", step)
+				}
+			}
+			return rejected
+		},
+	})
+	if !errors.Is(err, rejected) || buildCalls != 2 {
+		t.Fatalf("runtime placement apply = %v, builds=%d", err, buildCalls)
+	}
+	_, writes := backend.snapshot("node")
+	applied, deleted := provider.counts()
+	if writes != 0 || applied != 0 || deleted != 0 {
+		t.Fatalf("runtime placement review rejection mutated state/provider: writes=%d applied=%d deleted=%d", writes, applied, deleted)
 	}
 }
 
@@ -1279,6 +1533,17 @@ func TestPlanFingerprintIncludesProtectedIntentDigest(t *testing.T) {
 	second := planFingerprint(HostPlan{Host: testHost(), Steps: []Step{step}})
 	if first == second {
 		t.Fatalf("protected intent did not change fingerprint: %q", first)
+	}
+}
+
+func TestPlanFingerprintIncludesRuntimeIntentDigest(t *testing.T) {
+	node := testNode(map[string]any{"verified": true})
+	step := Step{Address: node.Address, Action: ActionNoOp, Node: node, Observed: ObservedResource{Exists: true, Digest: corestate.Digest(node.Desired)}}
+	first := planFingerprint(HostPlan{Host: testHost(), Steps: []Step{step}})
+	step.Node.RuntimeIntentDigest = "different-runtime-intent"
+	second := planFingerprint(HostPlan{Host: testHost(), Steps: []Step{step}})
+	if first == second {
+		t.Fatalf("runtime intent did not change fingerprint: %q", first)
 	}
 }
 

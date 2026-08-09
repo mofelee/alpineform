@@ -38,6 +38,7 @@ type ComponentTemplateSpec struct {
 type ComponentBuildSpec struct {
 	Identity           string                          `json:"identity"`
 	IdentityDocument   *ComponentBuildIdentityDocument `json:"-"`
+	WorkspaceRoot      string                          `json:"-"`
 	Inputs             []ComponentBuildInputSpec       `json:"inputs"`
 	Commands           []ComponentBuildCommandSpec     `json:"commands"`
 	WorkingDirectory   string                          `json:"working_directory"`
@@ -176,6 +177,7 @@ type HostSpec struct {
 	Name                 string                   `json:"name"`
 	SSH                  SSHSpec                  `json:"ssh"`
 	State                StateSpec                `json:"state"`
+	Staging              *StagingSpec             `json:"-"`
 	Moves                []MovedSpec              `json:"moves,omitempty"`
 	Platform             *PlatformSpec            `json:"platform,omitempty"`
 	Facts                *HostFacts               `json:"facts,omitempty"`
@@ -195,6 +197,11 @@ type HostSpec struct {
 	Services             []ServiceSpec            `json:"services,omitempty"`
 	ExplicitDependencies []ResourceDependencySpec `json:"explicit_dependencies,omitempty"`
 	Source               SourceRef                `json:"source"`
+}
+
+type StagingSpec struct {
+	Root   string    `json:"root"`
+	Source SourceRef `json:"source,omitempty"`
 }
 
 type MovedSpec struct {

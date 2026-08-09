@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/mofelee/alpineform/internal/core/ir"
+	"github.com/mofelee/alpineform/internal/product"
 )
 
 func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, component ir.ComponentInstanceSpec, componentAddress string) {
@@ -18,7 +19,12 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 	physicalComponentAddress := "host." + host.Name + ".component." + component.PhysicalComponentName()
 	addressDigest := sha256.Sum256([]byte(physicalComponentAddress))
 	ownerID := fmt.Sprintf("%x", addressDigest[:16])
-	workspace := "/var/tmp/alpineform/builds/" + build.Identity
+	workspaceRoot := build.WorkspaceRoot
+	if workspaceRoot == "" {
+		workspaceRoot = product.DefaultComponentBuildWorkspaceRoot
+	}
+	workspace := product.DefaultComponentBuildWorkspaceRoot + "/" + build.Identity
+	runtimeIntentDigest := componentBuildRuntimeIntentDigest(workspaceRoot)
 	outputCache := "/var/cache/alpineform/builds/outputs/" + build.Identity + "/artifact"
 	outputMarker := outputCache + ".sha256"
 	dependencyMarker := "/var/lib/alpineform/builds/" + ownerID + ".dependencies"
@@ -81,7 +87,8 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 			},
 			"prevent_destroy": component.Lifecycle.PreventDestroy,
 		},
-		DependsOn: inputAddresses, DigestSafe: true,
+		Payload:   map[string]any{"workspace_root": workspaceRoot, "output_cache": outputCache},
+		DependsOn: inputAddresses, DigestSafe: true, RuntimeIntentDigest: runtimeIntentDigest,
 	})
 
 	workspaceAddress := componentAddress + ".build.workspace"
@@ -109,9 +116,10 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 		Payload: map[string]any{
 			"environment": cloneStringMap(build.Environment), "commands": commandPayload,
 			"input_sha256": inputSHA256, "input_extract": inputExtract,
+			"workspace_root": workspaceRoot, "output_cache": outputCache,
 		},
 		DependsOn: append(append([]string(nil), inputAddresses...), dependenciesAddress), TriggeredBy: append(append([]string(nil), inputAddresses...), dependenciesAddress),
-		Sensitive: build.Sensitive, Ephemeral: build.Ephemeral, DigestSafe: true,
+		Sensitive: build.Sensitive, Ephemeral: build.Ephemeral, DigestSafe: true, RuntimeIntentDigest: runtimeIntentDigest,
 	})
 
 	outputAddress := componentAddress + ".build.output[" + strconv.Quote(build.Output) + "]"
@@ -128,8 +136,9 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 			"delete":                map[string]any{"cache_path": outputCache, "marker_path": outputMarker},
 			"prevent_destroy":       component.Lifecycle.PreventDestroy,
 		},
+		Payload:   map[string]any{"workspace_root": workspaceRoot},
 		DependsOn: []string{workspaceAddress}, TriggeredBy: []string{workspaceAddress},
-		Sensitive: build.Sensitive, Ephemeral: build.Ephemeral, DigestSafe: true,
+		Sensitive: build.Sensitive, Ephemeral: build.Ephemeral, DigestSafe: true, RuntimeIntentDigest: runtimeIntentDigest,
 	})
 
 	cleanupAddress := componentAddress + ".build.cleanup"
@@ -142,7 +151,8 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 			"protected_input_paths": append([]string(nil), protectedInputPaths...),
 			"ensure":                "present", "delete_behavior": "", "prevent_destroy": component.Lifecycle.PreventDestroy,
 		},
-		DependsOn: []string{outputAddress}, TriggeredBy: []string{outputAddress}, DigestSafe: true,
+		Payload:   map[string]any{"workspace_root": workspaceRoot},
+		DependsOn: []string{outputAddress}, TriggeredBy: []string{outputAddress}, DigestSafe: true, RuntimeIntentDigest: runtimeIntentDigest,
 	})
 
 	installAddress := componentAddress + ".build.install[" + strconv.Quote(install.Path) + "]"
@@ -159,9 +169,14 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 			},
 			"prevent_destroy": component.Lifecycle.PreventDestroy,
 		},
-		DependsOn: []string{cleanupAddress}, TriggeredBy: []string{cleanupAddress},
+		DependsOn: []string{outputAddress, cleanupAddress}, TriggeredBy: []string{outputAddress},
 		Sensitive: build.Sensitive, Ephemeral: build.Ephemeral, DigestSafe: true,
 	})
+}
+
+func componentBuildRuntimeIntentDigest(workspaceRoot string) string {
+	digest := sha256.Sum256([]byte("alpineform.component-build.runtime-intent.v1\x00" + workspaceRoot))
+	return fmt.Sprintf("%x", digest[:])
 }
 
 func cloneStringMap(input map[string]string) map[string]string {

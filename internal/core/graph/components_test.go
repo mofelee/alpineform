@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mofelee/alpineform/internal/core/ir"
+	"github.com/mofelee/alpineform/internal/product"
 )
 
 const componentArtifactSHA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -449,6 +450,12 @@ func TestCompileSourceBuildStablePhaseGraphAndRedaction(t *testing.T) {
 		}
 	}
 	workspace := byAddress[prefix+".workspace"]
+	outputAddress := prefix + `.output["tool"]`
+	cleanupAddress := prefix + ".cleanup"
+	install := byAddress[prefix+`.install["/usr/local/bin/tool"]`]
+	if !reflect.DeepEqual(install.DependsOn, []string{outputAddress, cleanupAddress}) || !reflect.DeepEqual(install.TriggeredBy, []string{outputAddress}) {
+		t.Fatalf("source-build install relationships = depends %#v triggered %#v", install.DependsOn, install.TriggeredBy)
+	}
 	if got := byAddress[prefix+`.install["/usr/local/bin/tool"]`].Desired["delete_behavior"]; got != "" {
 		t.Fatalf("default source-build removal = %#v, want forget", got)
 	}
@@ -462,6 +469,110 @@ func TestCompileSourceBuildStablePhaseGraphAndRedaction(t *testing.T) {
 	again, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{component}}}})
 	if err != nil || !reflect.DeepEqual(resourceGraph, again) {
 		t.Fatalf("source-build graph is not deterministic: err=%v", err)
+	}
+}
+
+func TestCompileSourceBuildWorkspaceRootIsRuntimeOnly(t *testing.T) {
+	compile := func(workspaceRoot string) *ResourceGraph {
+		t.Helper()
+		declarationID := `component.cli.script["refresh"]`
+		build := &ir.ComponentBuildSpec{
+			Identity: componentArtifactSHA, WorkspaceRoot: workspaceRoot, WorkingDirectory: ".", Output: "tool", MaxOutputBytes: 1024,
+			Network: "none", OnRemove: "destroy", Dependencies: []string{"build-base"},
+			Inputs: []ir.ComponentBuildInputSpec{{
+				Name: "source", Kind: "content", Content: []byte("source"), SHA256: componentArtifactSHA,
+				PayloadSHA256: componentArtifactSHA, Destination: "main.c", Source: source(3),
+			}},
+			Commands: []ir.ComponentBuildCommandSpec{{Argv: []string{"cc", "-o", "tool", "main.c"}, Source: source(4)}}, Source: source(2),
+		}
+		component := ir.ComponentInstanceSpec{
+			Name: "cli", Template: "tool", ArtifactType: "source", Build: build, Source: source(2),
+			Install: &ir.ComponentArtifactInstallSpec{
+				Path: "/usr/local/bin/tool", Owner: "root", Group: "root", Mode: "0755",
+				OnChange: &ir.ScriptReferenceSpec{Name: "refresh", Scope: "component", DeclarationID: declarationID}, Source: source(5),
+			},
+			Scripts: map[string]ir.ScriptSpec{"refresh": {
+				Name: "refresh", DeclarationID: declarationID, Commands: [][]string{{"refresh"}}, ScriptDigest: componentArtifactSHA, Executable: true, Source: source(6),
+			}},
+		}
+		resourceGraph, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{component}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resourceGraph
+	}
+
+	implicitDefault := compile("")
+	explicitDefault := compile(product.DefaultComponentBuildWorkspaceRoot)
+	if !reflect.DeepEqual(implicitDefault, explicitDefault) {
+		t.Fatal("implicit and explicit default workspace roots produced different graphs")
+	}
+
+	firstRoot := "/srv/alpineform-staging"
+	secondRoot := "/mnt/build-work"
+	first := compile(firstRoot)
+	second := compile(secondRoot)
+	firstJSON, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJSON, err := json.Marshal(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(firstJSON, secondJSON) ||
+		strings.Contains(string(firstJSON), firstRoot) ||
+		strings.Contains(string(secondJSON), secondRoot) ||
+		strings.Contains(string(firstJSON), `"output_cache"`) ||
+		strings.Contains(string(secondJSON), `"output_cache"`) {
+		t.Fatalf("workspace placement leaked into serialized graph:\nfirst=%s\nsecond=%s", firstJSON, secondJSON)
+	}
+	if len(first.Nodes) != len(second.Nodes) {
+		t.Fatalf("root-only graph sizes differ: %d != %d", len(first.Nodes), len(second.Nodes))
+	}
+	runtimeKinds := map[string]bool{
+		"component_build_dependencies": true,
+		"component_build_workspace":    true,
+		"component_build_output":       true,
+		"component_build_cleanup":      true,
+	}
+	for index, firstNode := range first.Nodes {
+		secondNode := second.Nodes[index]
+		if firstNode.Address != secondNode.Address || firstNode.Kind != secondNode.Kind ||
+			!reflect.DeepEqual(firstNode.Desired, secondNode.Desired) ||
+			!reflect.DeepEqual(firstNode.DependsOn, secondNode.DependsOn) ||
+			!reflect.DeepEqual(firstNode.TriggeredBy, secondNode.TriggeredBy) {
+			t.Fatalf("root-only change altered graph identity for %s:\nfirst=%#v\nsecond=%#v", firstNode.Address, firstNode, secondNode)
+		}
+		if !strings.HasPrefix(firstNode.Kind, "component_build_") {
+			continue
+		}
+		if runtimeKinds[firstNode.Kind] {
+			if firstNode.Payload["workspace_root"] != firstRoot || secondNode.Payload["workspace_root"] != secondRoot {
+				t.Fatalf("%s workspace payloads = %#v / %#v", firstNode.Kind, firstNode.Payload, secondNode.Payload)
+			}
+			if firstNode.Kind == "component_build_dependencies" || firstNode.Kind == "component_build_workspace" {
+				wantCache := "/var/cache/alpineform/builds/outputs/" + componentArtifactSHA + "/artifact"
+				if firstNode.Payload["output_cache"] != wantCache || secondNode.Payload["output_cache"] != wantCache {
+					t.Fatalf("%s output-cache payloads = %#v / %#v", firstNode.Kind, firstNode.Payload, secondNode.Payload)
+				}
+			} else if _, exists := firstNode.Payload["output_cache"]; exists {
+				t.Fatalf("%s received unexpected output cache payload: %#v", firstNode.Kind, firstNode.Payload)
+			}
+			if firstNode.RuntimeIntentDigest == "" || firstNode.RuntimeIntentDigest == secondNode.RuntimeIntentDigest {
+				t.Fatalf("%s runtime intent digests = %q / %q", firstNode.Kind, firstNode.RuntimeIntentDigest, secondNode.RuntimeIntentDigest)
+			}
+			continue
+		}
+		if _, exists := firstNode.Payload["workspace_root"]; exists || firstNode.RuntimeIntentDigest != "" {
+			t.Fatalf("%s received workspace runtime intent: %#v", firstNode.Kind, firstNode)
+		}
+	}
+	legacyWorkspace := product.DefaultComponentBuildWorkspaceRoot + "/" + componentArtifactSHA
+	for _, node := range first.Nodes {
+		if node.Kind == "component_build_workspace" && node.Desired["workspace"] != legacyWorkspace {
+			t.Fatalf("workspace desired identity = %#v, want %q", node.Desired["workspace"], legacyWorkspace)
+		}
 	}
 }
 

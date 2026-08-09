@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -192,6 +193,24 @@ func TestSSHRunnerPropagatesCancellation(t *testing.T) {
 	_, err = runner.Run(ctx, Command{Name: "canceled", Script: "true"})
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled error = %v", err)
+	}
+}
+
+func TestProcessSSHExecutorPropagatesRunningProcessTimeout(t *testing.T) {
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep executable is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+
+	_, _, err = (processSSHExecutor{}).Execute(ctx, sleep, []string{"30"}, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("timed-out process returned after %s", elapsed)
 	}
 }
 

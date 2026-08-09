@@ -35,6 +35,7 @@ type Node struct {
 	Ephemeral             bool                    `json:"-"`
 	DigestSafe            bool                    `json:"-"`
 	ProtectedIntentDigest string                  `json:"-"`
+	RuntimeIntentDigest   string                  `json:"-"`
 }
 
 func (node Node) MarshalJSON() ([]byte, error) {

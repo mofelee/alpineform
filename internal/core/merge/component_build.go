@@ -32,7 +32,19 @@ var (
 	}
 )
 
-func compileComponentBuild(template parser.Component, instance parser.ComponentInstance, host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext, install *ir.ComponentArtifactInstallSpec) (*ir.ComponentBuildSpec, error) {
+func compileComponentBuild(template parser.Component, instance parser.ComponentInstance, host parser.Host, facts *ir.HostFacts, hostWorkspaceRoot string, ctx parser.EvalContext, install *ir.ComponentArtifactInstallSpec) (*ir.ComponentBuildSpec, error) {
+	workspaceRoot := hostWorkspaceRoot
+	if instance.StagingRoot != nil {
+		if template.Build == nil {
+			source := instance.StagingRoot.Source
+			return nil, fmt.Errorf("%s:%d:%s: staging_root is valid only for source-build components", source.File, source.Line, source.Path)
+		}
+		var err error
+		workspaceRoot, err = compileComponentWorkspaceRoot(*instance.StagingRoot)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if template.Build == nil {
 		return nil, nil
 	}
@@ -153,7 +165,7 @@ func compileComponentBuild(template parser.Component, instance parser.ComponentI
 	}
 	identity := identityDocument.DigestForInstance(instance.Name)
 	return &ir.ComponentBuildSpec{
-		Identity: identity, IdentityDocument: &identityDocument, Inputs: inputs, Commands: commands,
+		Identity: identity, IdentityDocument: &identityDocument, WorkspaceRoot: workspaceRoot, Inputs: inputs, Commands: commands,
 		WorkingDirectory: workingDirectory, Environment: environment, EnvironmentNames: environmentNames,
 		EnvironmentVersion: environmentVersion, Output: output, OutputSHA256: outputSHA,
 		MaxOutputBytes: maxOutputBytes, Dependencies: dependencies, Network: network, OnRemove: onRemove,

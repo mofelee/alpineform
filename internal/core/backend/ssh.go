@@ -128,6 +128,9 @@ func (processSSHExecutor) Execute(ctx context.Context, binary string, args []str
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	err := command.Run()
+	if contextErr := ctx.Err(); contextErr != nil {
+		err = contextErr
+	}
 	return stdout.Bytes(), stderr.Bytes(), err
 }
 

@@ -496,8 +496,14 @@ func planProtectedPrior(resource corestate.Resource, node graph.Node, reclassifi
 
 func planSafeHost(host ir.HostSpec) ir.HostSpec {
 	out := host
+	out.Staging = nil
 	out.Components = append([]ir.ComponentInstanceSpec(nil), host.Components...)
 	for index := range out.Components {
+		if build := out.Components[index].Build; build != nil {
+			safe := *build
+			safe.WorkspaceRoot = ""
+			out.Components[index].Build = &safe
+		}
 		source := out.Components[index].SelectedSource
 		if source == nil {
 			continue
@@ -645,6 +651,7 @@ func planFingerprint(plan HostPlan) string {
 			step.Action,
 			corestate.Digest(step.Node.Desired),
 			step.Node.ProtectedIntentDigest,
+			step.Node.RuntimeIntentDigest,
 			step.Observed.Digest,
 			strconvBool(step.Observed.Exists),
 			strconvBool(step.ReclassifiedProtected),

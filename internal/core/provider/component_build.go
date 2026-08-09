@@ -3,7 +3,9 @@ package provider
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -14,12 +16,18 @@ import (
 	"github.com/mofelee/alpineform/internal/core/engine"
 	"github.com/mofelee/alpineform/internal/core/graph"
 	corestate "github.com/mofelee/alpineform/internal/core/state"
+	"github.com/mofelee/alpineform/internal/product"
 )
 
 var (
 	componentBuildVirtualPackagePattern = regexp.MustCompile(`^\.alpineform-build-[a-f0-9]{24}$`)
 	componentBuildOwnerPattern          = regexp.MustCompile(`^[a-f0-9]{32}$`)
 	buildEnvironmentNamePattern         = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
+const (
+	componentBuildWorkspaceRootPayload = "workspace_root"
+	componentBuildOutputCachePayload   = "output_cache"
 )
 
 const componentBuildInputWriteScript = `set -eu
@@ -46,16 +54,23 @@ trap - EXIT HUP INT TERM
 `
 
 const componentBuildDependenciesInspectScript = `set -eu
+` + componentBuildWorkspaceSafetyScript + `
 virtual=$1
 marker=$2
 owner=$3
 identity=$4
-output_marker=$5
-shift 5
-if [ -f "$output_marker" ] && [ "$(sed -n '1p' "$output_marker")" = "$identity" ] && ! apk info -e "$virtual" >/dev/null 2>&1 && [ ! -e "$marker" ]; then
-  echo satisfied
-  exit 0
+root=$5
+workspace=$6
+output_marker=$7
+output_cache=$8
+default_root=$9
+shift 9
+if ! valid_workspace_tuple "$root" "$workspace" "$identity" || ! valid_build_owner "$owner"; then
+  echo 'invalid source-build dependency workspace metadata' >&2
+  exit 1
 fi
+output_valid=false
+if verified_build_output "$output_cache" "$output_marker" "$identity"; then output_valid=true; fi
 if [ -L /etc/apk/world ] || { [ -e /etc/apk/world ] && [ ! -f /etc/apk/world ]; }; then
   echo 'refusing unsafe APK world path during source-build dependency inspection' >&2
   exit 1
@@ -64,20 +79,30 @@ installed=false
 if apk info -e "$virtual" >/dev/null 2>&1; then installed=true; fi
 owned=false
 marker_identity=
-if [ -f "$marker" ] && [ ! -L "$marker" ] && [ "$(sed -n '1p' "$marker")" = "$virtual" ] && [ "$(sed -n '2p' "$marker")" = "$owner" ]; then
+marker_matches=false
+if [ -e "$marker" ] || [ -L "$marker" ]; then
+  if ! load_dependency_workspace "$marker" "$virtual" "$owner" "$default_root"; then
+    echo 'source-build dependency marker collides with another owner or unsafe workspace' >&2
+    exit 1
+  fi
   owned=true
-  marker_identity=$(sed -n '3p' "$marker")
+  marker_identity=$dependency_identity
+  if [ "$dependency_identity" = "$identity" ] && [ "$dependency_root" = "$root" ] && [ "$dependency_workspace" = "$workspace" ]; then marker_matches=true; fi
 fi
 if [ "$installed" = true ] && [ "$owned" != true ]; then
   echo 'source-build virtual package collides with unowned APK state' >&2
   exit 1
 fi
-if [ -e "$marker" ] && [ "$owned" != true ]; then
+if { [ -e "$marker" ] || [ -L "$marker" ]; } && [ "$owned" != true ]; then
   echo 'source-build dependency marker collides with another owner' >&2
   exit 1
 fi
+if [ "$output_valid" = true ]; then
+  echo satisfied
+  exit 0
+fi
 if [ "$installed" != true ]; then
-  if [ "$#" -eq 0 ] && [ "$owned" = true ] && [ "$marker_identity" = "$identity" ]; then echo active; exit 0; fi
+  if [ "$#" -eq 0 ] && [ "$owned" = true ] && [ "$marker_matches" = true ]; then echo active; exit 0; fi
   echo missing
   exit 0
 fi
@@ -87,7 +112,7 @@ packages_ok=true
 for package in "$@"; do
   if ! apk info -e "$package" >/dev/null 2>&1; then packages_ok=false; fi
 done
-if [ "$marker_identity" = "$identity" ] && [ "$world" = true ] && [ "$packages_ok" = true ]; then
+if [ "$marker_matches" = true ] && [ "$world" = true ] && [ "$packages_ok" = true ]; then
   echo active
 else
   printf 'stale\n%s\n' "$marker_identity"
@@ -95,20 +120,29 @@ fi
 `
 
 const componentBuildDependenciesApplyScript = `set -eu
+` + componentBuildWorkspaceSafetyScript + `
 virtual=$1
 marker=$2
 owner=$3
 identity=$4
-shift 4
+root=$5
+workspace=$6
+default_root=$7
+shift 7
+if ! valid_workspace_tuple "$root" "$workspace" "$identity" || ! valid_build_owner "$owner"; then
+  echo 'invalid source-build dependency workspace metadata' >&2
+  exit 1
+fi
 if [ -L /etc/apk/world ] || { [ -e /etc/apk/world ] && [ ! -f /etc/apk/world ]; }; then
   echo 'refusing unsafe APK world path during source-build dependency apply' >&2
   exit 1
 fi
-if [ -e "$marker" ]; then
-  if [ ! -f "$marker" ] || [ -L "$marker" ] || [ "$(sed -n '1p' "$marker")" != "$virtual" ] || [ "$(sed -n '2p' "$marker")" != "$owner" ]; then
+if [ -e "$marker" ] || [ -L "$marker" ]; then
+  if ! load_dependency_workspace "$marker" "$virtual" "$owner" "$default_root"; then
     echo 'refusing source-build dependency marker owned by another resource' >&2
     exit 1
   fi
+  remove_dependency_workspace "$owner"
 fi
 if [ -f /etc/apk/world ] && awk -v virtual="$virtual" '$0 == virtual || index($0, virtual "=") == 1 { found=1 } END { exit !found }' /etc/apk/world && [ ! -f "$marker" ]; then
   echo 'refusing to adopt unowned source-build virtual package world intent' >&2
@@ -122,18 +156,28 @@ if apk info -e "$virtual" >/dev/null 2>&1; then
   apk --quiet del "$virtual"
 fi
 parent=${marker%/*}
+if ! no_symlink_boundaries "$parent"; then echo 'source-build dependency marker parent contains a symbolic link' >&2; exit 1; fi
 mkdir -p "$parent"
+if ! no_symlink_boundaries "$parent" || [ ! -d "$parent" ]; then echo 'source-build dependency marker parent is unsafe' >&2; exit 1; fi
 tmp=$(mktemp "$parent/.alpineform-build-dependencies.XXXXXX")
 success=0
 cleanup() {
-  rm -f "$tmp"
+  operation_status=$?
+  trap - EXIT HUP INT TERM
+  cleanup_status=0
+  rm -f "$tmp" || cleanup_status=1
   if [ "$success" != 1 ]; then
-    if apk info -e "$virtual" >/dev/null 2>&1; then apk --quiet del "$virtual" >/dev/null 2>&1 || true; fi
-    rm -f "$marker"
+    if apk info -e "$virtual" >/dev/null 2>&1; then
+      if ! apk --quiet del "$virtual" >/dev/null 2>&1; then cleanup_status=1; fi
+    fi
+    if [ "$cleanup_status" = 0 ]; then rm -f "$marker" || cleanup_status=1; fi
   fi
+  if [ "$operation_status" -ne 0 ]; then exit "$operation_status"; fi
+  if [ "$cleanup_status" -ne 0 ]; then exit 1; fi
 }
-trap cleanup EXIT HUP INT TERM
-printf '%s\n%s\n%s\n' "$virtual" "$owner" "$identity" >"$tmp"
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
+printf '%s\n%s\n%s\n%s\n%s\n' "$virtual" "$owner" "$identity" "$root" "$workspace" >"$tmp"
 chmod 0600 "$tmp"
 mv -f "$tmp" "$marker"
 if [ "$#" -gt 0 ]; then apk --quiet add --virtual "$virtual" "$@"; fi
@@ -148,16 +192,223 @@ success=1
 trap - EXIT HUP INT TERM
 `
 
+const componentBuildWorkspaceSafetyScript = `
+workspace_uid=0
+valid_build_identity() {
+  [ "${#1}" -eq 64 ] || return 1
+  case "$1" in *[!a-f0-9]*) return 1;; esac
+}
+valid_build_owner() {
+  [ "${#1}" -eq 32 ] || return 1
+  case "$1" in *[!a-f0-9]*) return 1;; esac
+}
+valid_workspace_root() {
+  case "$1" in /*) ;; *) return 1;; esac
+  case "$1" in /|*/|*//*|*/./*|*/../*|*/.|*/..) return 1;; esac
+}
+valid_workspace_tuple() {
+  valid_workspace_root "$1" && valid_build_identity "$3" && [ "$2" = "$1/$3" ]
+}
+verified_build_output() {
+  apf_output_cache=$1
+  apf_output_marker=$2
+  apf_output_identity=$3
+  [ -f "$apf_output_cache" ] && [ ! -L "$apf_output_cache" ] || return 1
+  [ -f "$apf_output_marker" ] && [ ! -L "$apf_output_marker" ] || return 1
+  [ "$(sed -n '1p' "$apf_output_marker")" = "$apf_output_identity" ] || return 1
+  apf_output_want=$(sed -n '2p' "$apf_output_marker")
+  [ -n "$apf_output_want" ] || return 1
+  apf_output_actual=$(sha256sum "$apf_output_cache" | awk '{print $1}')
+  [ "$apf_output_actual" = "$apf_output_want" ]
+}
+no_symlink_boundaries() {
+  apf_probe=$1
+  while [ "$apf_probe" != / ]; do
+    [ ! -L "$apf_probe" ] || return 1
+    apf_probe=${apf_probe%/*}
+    [ -n "$apf_probe" ] || apf_probe=/
+  done
+  [ "$(stat -c '%u' /)" = 0 ] || return 1
+  apf_permissions=$(stat -c '%A' /)
+  if [ "$(printf '%s' "$apf_permissions" | cut -c6)" = w ] || [ "$(printf '%s' "$apf_permissions" | cut -c9)" = w ]; then
+    case "$apf_permissions" in *t|*T) ;; *) return 1;; esac
+  fi
+}
+safe_workspace_ancestors() {
+  apf_selected_root=$1
+  apf_probe=$apf_selected_root
+  while [ "$apf_probe" != / ]; do
+    if [ -L "$apf_probe" ]; then return 1; fi
+    if [ -e "$apf_probe" ]; then
+      apf_uid=$(stat -c '%u' "$apf_probe")
+      apf_permissions=$(stat -c '%A' "$apf_probe")
+      if [ "$apf_probe" = "$apf_selected_root" ]; then
+        [ "$apf_uid" = "$workspace_uid" ] || return 1
+        [ "$(printf '%s' "$apf_permissions" | cut -c6)" != w ] || return 1
+        [ "$(printf '%s' "$apf_permissions" | cut -c9)" != w ] || return 1
+      else
+        [ "$apf_uid" = 0 ] || [ "$apf_uid" = "$workspace_uid" ] || return 1
+        if [ "$(printf '%s' "$apf_permissions" | cut -c6)" = w ] || [ "$(printf '%s' "$apf_permissions" | cut -c9)" = w ]; then
+          case "$apf_permissions" in *t|*T) ;; *) return 1;; esac
+        fi
+      fi
+    fi
+    apf_probe=${apf_probe%/*}
+    [ -n "$apf_probe" ] || apf_probe=/
+  done
+}
+private_workspace_root() {
+  valid_workspace_root "$1" || return 1
+  safe_workspace_ancestors "$1" || return 1
+  [ -d "$1" ] && [ ! -L "$1" ] || return 1
+  [ "$(stat -c '%u' "$1")" = "$workspace_uid" ] || return 1
+  apf_root_permissions=$(stat -c '%A' "$1")
+  [ "$(printf '%s' "$apf_root_permissions" | cut -c6)" != w ] || return 1
+  [ "$(printf '%s' "$apf_root_permissions" | cut -c9)" != w ]
+}
+owned_workspace_boundary() {
+  apf_root=$1
+  apf_workspace=$2
+  apf_identity=$3
+  apf_owner=$4
+  valid_workspace_tuple "$apf_root" "$apf_workspace" "$apf_identity" || return 1
+  valid_build_owner "$apf_owner" || return 1
+  private_workspace_root "$apf_root" || return 1
+  [ -d "$apf_workspace" ] && [ ! -L "$apf_workspace" ] || return 1
+  [ "$(stat -c '%u' "$apf_workspace")" = "$workspace_uid" ] || return 1
+  [ "$(stat -c '%a' "$apf_workspace")" = 700 ] || return 1
+  apf_workspace_marker=$apf_workspace/.alpineform-build-owner
+  [ -f "$apf_workspace_marker" ] && [ ! -L "$apf_workspace_marker" ] || return 1
+  [ "$(stat -c '%u' "$apf_workspace_marker")" = "$workspace_uid" ] || return 1
+  [ "$(stat -c '%a' "$apf_workspace_marker")" = 600 ] || return 1
+  [ "$(wc -l <"$apf_workspace_marker" | tr -d ' ')" = 5 ] || return 1
+  [ "$(sed -n '1p' "$apf_workspace_marker")" = APFWORKSPACE1 ] || return 1
+  [ "$(sed -n '2p' "$apf_workspace_marker")" = "$apf_owner" ] || return 1
+  [ "$(sed -n '3p' "$apf_workspace_marker")" = "$apf_identity" ] || return 1
+  [ "$(sed -n '4p' "$apf_workspace_marker")" = "$apf_root" ] || return 1
+  [ "$(sed -n '5p' "$apf_workspace_marker")" = "$apf_workspace" ] || return 1
+}
+owned_workspace() {
+  owned_workspace_boundary "$1" "$2" "$3" "$4" || return 1
+  apf_build=$2/build
+  [ -d "$apf_build" ] && [ ! -L "$apf_build" ] || return 1
+  [ "$(stat -c '%u' "$apf_build")" = "$workspace_uid" ] || return 1
+  [ "$(stat -c '%a' "$apf_build")" = 700 ] || return 1
+}
+remove_owned_workspace() {
+  apf_root=$1
+  apf_workspace=$2
+  apf_identity=$3
+  apf_owner=$4
+  if [ ! -e "$apf_workspace" ] && [ ! -L "$apf_workspace" ]; then return 0; fi
+  if ! owned_workspace_boundary "$apf_root" "$apf_workspace" "$apf_identity" "$apf_owner"; then
+    echo 'refusing to remove an unowned or unsafe source-build workspace' >&2
+    return 1
+  fi
+  rm -rf -- "$apf_workspace"
+  if [ -e "$apf_workspace" ] || [ -L "$apf_workspace" ]; then
+    echo 'source-build workspace cleanup did not remove the owned path' >&2
+    return 1
+  fi
+}
+legacy_dependency_workspace() {
+  apf_root=$1
+  apf_workspace=$2
+  apf_identity=$3
+  valid_workspace_tuple "$apf_root" "$apf_workspace" "$apf_identity" || return 1
+  safe_workspace_ancestors "$apf_root" || return 1
+  no_symlink_boundaries "$apf_workspace" || return 1
+  [ -d "$apf_workspace" ] && [ ! -L "$apf_workspace" ] || return 1
+  [ "$(stat -c '%u' "$apf_workspace")" = "$workspace_uid" ] || return 1
+  [ "$(stat -c '%a' "$apf_workspace")" = 700 ]
+}
+remove_legacy_dependency_workspace() {
+  apf_root=$1
+  apf_workspace=$2
+  apf_identity=$3
+  if [ ! -e "$apf_workspace" ] && [ ! -L "$apf_workspace" ]; then return 0; fi
+  legacy_dependency_workspace "$apf_root" "$apf_workspace" "$apf_identity" || return 1
+  rm -rf -- "$apf_workspace"
+  [ ! -e "$apf_workspace" ] && [ ! -L "$apf_workspace" ]
+}
+remove_dependency_workspace() {
+  if [ "$dependency_lines" = 3 ]; then
+    if ! remove_legacy_dependency_workspace "$dependency_root" "$dependency_workspace" "$dependency_identity"; then
+      echo 'refusing to remove an unsafe legacy source-build workspace' >&2
+      return 1
+    fi
+  else
+    apf_dependency_owner_marker=$dependency_workspace/.alpineform-build-owner
+    if { [ -e "$dependency_workspace" ] || [ -L "$dependency_workspace" ]; } && [ ! -e "$apf_dependency_owner_marker" ] && [ ! -L "$apf_dependency_owner_marker" ]; then
+      if ! remove_legacy_dependency_workspace "$dependency_root" "$dependency_workspace" "$dependency_identity"; then
+        echo 'refusing to remove an unsafe interrupted source-build workspace' >&2
+        return 1
+      fi
+    else
+      remove_owned_workspace "$dependency_root" "$dependency_workspace" "$dependency_identity" "$1"
+    fi
+  fi
+}
+load_dependency_workspace() {
+  apf_dependency_marker=$1
+  apf_virtual=$2
+  apf_expected_owner=$3
+  apf_default_root=$4
+  [ -f "$apf_dependency_marker" ] && [ ! -L "$apf_dependency_marker" ] || return 1
+  [ "$(stat -c '%u' "$apf_dependency_marker")" = "$workspace_uid" ] || return 1
+  [ "$(stat -c '%a' "$apf_dependency_marker")" = 600 ] || return 1
+  [ "$(sed -n '1p' "$apf_dependency_marker")" = "$apf_virtual" ] || return 1
+  [ "$(sed -n '2p' "$apf_dependency_marker")" = "$apf_expected_owner" ] || return 1
+  dependency_identity=$(sed -n '3p' "$apf_dependency_marker")
+  valid_build_identity "$dependency_identity" || return 1
+  dependency_lines=$(wc -l <"$apf_dependency_marker" | tr -d ' ')
+  case "$dependency_lines" in
+    3)
+      dependency_root=$apf_default_root
+      dependency_workspace=$dependency_root/$dependency_identity
+      ;;
+    5)
+      dependency_root=$(sed -n '4p' "$apf_dependency_marker")
+      dependency_workspace=$(sed -n '5p' "$apf_dependency_marker")
+      ;;
+    *) return 1;;
+  esac
+  valid_workspace_tuple "$dependency_root" "$dependency_workspace" "$dependency_identity"
+}
+`
+
 const componentBuildWorkspaceInspectScript = `set -eu
-workspace=$1
-identity=$2
-output_marker=$3
-output=$4
-if [ -f "$output_marker" ] && [ "$(sed -n '1p' "$output_marker")" = "$identity" ]; then
+` + componentBuildWorkspaceSafetyScript + `
+root=$1
+workspace=$2
+identity=$3
+owner=$4
+output_marker=$5
+output_cache=$6
+output=$7
+virtual=$8
+dependency_marker=$9
+default_root=${10}
+if verified_build_output "$output_cache" "$output_marker" "$identity"; then
   echo satisfied
   exit 0
 fi
-if [ -d "$workspace" ] && [ ! -L "$workspace" ] && [ -f "$workspace/.alpineform-build-ready" ] && [ "$(cat "$workspace/.alpineform-build-ready")" = "$identity" ] && [ -e "$workspace/$output" ]; then
+if [ ! -e "$workspace" ] && [ ! -L "$workspace" ]; then echo missing; exit 0; fi
+if ! owned_workspace "$root" "$workspace" "$identity" "$owner"; then
+  if owned_workspace_boundary "$root" "$workspace" "$identity" "$owner"; then
+    echo missing
+    exit 0
+  fi
+  workspace_owner_marker=$workspace/.alpineform-build-owner
+  if [ -e "$dependency_marker" ] && load_dependency_workspace "$dependency_marker" "$virtual" "$owner" "$default_root" && [ "$dependency_identity" = "$identity" ] && [ "$dependency_root" = "$root" ] && [ "$dependency_workspace" = "$workspace" ] && [ ! -e "$workspace_owner_marker" ] && [ ! -L "$workspace_owner_marker" ] && legacy_dependency_workspace "$dependency_root" "$dependency_workspace" "$dependency_identity"; then
+    echo missing
+    exit 0
+  fi
+  echo unsafe
+  exit 0
+fi
+build=$workspace/build
+if [ -f "$build/.alpineform-build-ready" ] && [ ! -L "$build/.alpineform-build-ready" ] && [ "$(cat "$build/.alpineform-build-ready")" = "$identity" ] && [ -e "$build/$output" ]; then
   echo active
   exit 0
 fi
@@ -165,14 +416,53 @@ echo missing
 `
 
 const componentBuildWorkspacePrepareScript = `set -eu
-workspace=$1
-working=$2
-shift 2
-case "$workspace" in /var/tmp/alpineform/builds/[a-f0-9]*) ;; *) echo 'invalid source-build workspace' >&2; exit 1;; esac
-if [ -L "$workspace" ]; then echo 'refusing symbolic-link source-build workspace' >&2; exit 1; fi
-rm -rf "$workspace"
-mkdir -p "$workspace"
+` + componentBuildWorkspaceSafetyScript + `
+root=$1
+workspace=$2
+identity=$3
+owner=$4
+virtual=$5
+dependency_marker=$6
+default_root=$7
+working=$8
+shift 8
+if ! valid_workspace_tuple "$root" "$workspace" "$identity" || ! valid_build_owner "$owner"; then
+  echo 'invalid source-build workspace ownership metadata' >&2
+  exit 1
+fi
+if ! load_dependency_workspace "$dependency_marker" "$virtual" "$owner" "$default_root" || [ "$dependency_identity" != "$identity" ] || [ "$dependency_root" != "$root" ] || [ "$dependency_workspace" != "$workspace" ]; then
+  echo 'source-build dependency marker does not own the selected workspace' >&2
+  exit 1
+fi
+if ! safe_workspace_ancestors "$root"; then echo 'source-build workspace root has an unsafe ownership, mode, or symbolic-link boundary' >&2; exit 1; fi
+umask 077
+mkdir -p -- "$root"
+if ! safe_workspace_ancestors "$root" || [ ! -d "$root" ]; then echo 'source-build workspace root is unsafe' >&2; exit 1; fi
+if ! private_workspace_root "$root"; then echo 'source-build workspace root is not private and root-owned' >&2; exit 1; fi
+remove_dependency_workspace "$owner"
+workspace_created=false
+cleanup_partial_workspace() {
+  operation_status=$?
+  trap - EXIT HUP INT TERM
+  cleanup_status=0
+  if [ "$operation_status" -ne 0 ] && [ "$workspace_created" = true ] && private_workspace_root "$root" && [ -d "$workspace" ] && [ ! -L "$workspace" ] && [ "$(stat -c '%u' "$workspace")" = "$workspace_uid" ] && [ "$(stat -c '%a' "$workspace")" = 700 ]; then
+    rm -rf -- "$workspace" || cleanup_status=1
+  fi
+  if [ "$operation_status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then exit 1; fi
+  exit "$operation_status"
+}
+trap cleanup_partial_workspace EXIT
+trap 'exit 130' HUP INT TERM
+mkdir "$workspace"
+workspace_created=true
 chmod 0700 "$workspace"
+marker_tmp=$workspace/.alpineform-build-owner.tmp
+printf 'APFWORKSPACE1\n%s\n%s\n%s\n%s\n' "$owner" "$identity" "$root" "$workspace" >"$marker_tmp"
+chmod 0600 "$marker_tmp"
+mv -f "$marker_tmp" "$workspace/.alpineform-build-owner"
+mkdir "$workspace/build"
+chmod 0700 "$workspace/build"
+build=$workspace/build
 while [ "$#" -gt 0 ]; do
   if [ "$#" -lt 5 ]; then echo 'invalid source-build input manifest' >&2; exit 1; fi
   cache=$1
@@ -184,7 +474,7 @@ while [ "$#" -gt 0 ]; do
   if [ ! -f "$cache" ] || [ -L "$cache" ]; then echo 'verified source-build input is missing or unsafe' >&2; exit 1; fi
   actual=$(sha256sum "$cache" | awk '{print $1}')
   if [ "$actual" != "$want" ]; then echo 'source-build input checksum changed before execution' >&2; exit 1; fi
-  target="$workspace/$destination"
+  target="$build/$destination"
   parent=${target%/*}
   mkdir -p "$parent"
   if [ -z "$format" ]; then
@@ -193,7 +483,7 @@ while [ "$#" -gt 0 ]; do
     continue
   fi
   if [ "$format" != tar.gz ]; then echo 'unsupported source-build input archive format' >&2; exit 1; fi
-  staging=$(mktemp -d "$workspace/.alpineform-build-extract.XXXXXX")
+  staging=$(mktemp -d "$build/.alpineform-build-extract.XXXXXX")
   manifest="$staging.archive.list"
   stripped="$staging.stripped.list"
   tar -tzf "$cache" >"$manifest"
@@ -233,19 +523,24 @@ while [ "$#" -gt 0 ]; do
   if [ "$line_count" != "$nul_count" ] || [ "$nul_count" = 0 ]; then echo 'source-build input extraction produced unsafe or no entries' >&2; exit 1; fi
   mv "$staging" "$target"
 done
-case "$working" in .) ;; *) mkdir -p "$workspace/$working";; esac
+case "$working" in .) ;; *) mkdir -p "$build/$working";; esac
+trap - EXIT HUP INT TERM
 `
 
 const componentBuildCommandScript = `set -eu
-workspace=$1
-working=$2
-shift 2
-case "$workspace" in /var/tmp/alpineform/builds/[a-f0-9]*) ;; *) echo 'invalid source-build workspace' >&2; exit 1;; esac
-if [ ! -d "$workspace" ] || [ -L "$workspace" ]; then echo 'source-build workspace is missing or unsafe' >&2; exit 1; fi
-case "$working" in .) directory=$workspace;; *) directory=$workspace/$working;; esac
+` + componentBuildWorkspaceSafetyScript + `
+root=$1
+workspace=$2
+identity=$3
+owner=$4
+working=$5
+shift 5
+if ! owned_workspace "$root" "$workspace" "$identity" "$owner"; then echo 'source-build workspace is missing, unowned, or unsafe' >&2; exit 1; fi
+build=$workspace/build
+case "$working" in .) directory=$build;; *) directory=$build/$working;; esac
 if [ ! -d "$directory" ] || [ -L "$directory" ]; then echo 'source-build working directory is missing or unsafe' >&2; exit 1; fi
 physical=$(cd -P "$directory" && pwd)
-case "$physical" in "$workspace"|"$workspace"/*) ;; *) echo 'source-build working directory escapes workspace' >&2; exit 1;; esac
+case "$physical" in "$build"|"$build"/*) ;; *) echo 'source-build working directory escapes workspace' >&2; exit 1;; esac
 runtime_root=/run/alpineform/build-runtime
 mkdir -p "$runtime_root"
 chmod 0700 "$runtime_root"
@@ -307,7 +602,7 @@ setsid bwrap \
   --dir /run \
   --dir /var \
   --dir /var/tmp \
-  --bind "$workspace" /workspace \
+  --bind "$build" /workspace \
   --chdir "$sandbox_directory" \
   -- "$@" <"$stdin_file" >/dev/null 2>&1 &
 pid=$!
@@ -322,17 +617,25 @@ trap - EXIT HUP INT TERM
 `
 
 const componentBuildWorkspaceReadyScript = `set -eu
-workspace=$1
-identity=$2
-output=$3
-if [ ! -e "$workspace/$output" ]; then
+` + componentBuildWorkspaceSafetyScript + `
+root=$1
+workspace=$2
+identity=$3
+owner=$4
+output=$5
+if ! owned_workspace "$root" "$workspace" "$identity" "$owner"; then
+  echo 'source-build workspace is missing, unowned, or unsafe' >&2
+  exit 1
+fi
+build=$workspace/build
+if [ ! -e "$build/$output" ]; then
   echo 'source-build command completed without the declared output' >&2
   exit 1
 fi
-tmp=$(mktemp "$workspace/.alpineform-build-ready.XXXXXX")
+tmp=$(mktemp "$build/.alpineform-build-ready.XXXXXX")
 printf '%s' "$identity" >"$tmp"
 chmod 0600 "$tmp"
-mv -f "$tmp" "$workspace/.alpineform-build-ready"
+mv -f "$tmp" "$build/.alpineform-build-ready"
 `
 
 const componentBuildOutputInspectScript = `set -eu
@@ -348,20 +651,25 @@ echo verified
 `
 
 const componentBuildOutputApplyScript = `set -eu
-workspace=$1
-output=$2
-expected=$3
-max_bytes=$4
-cache=$5
-marker=$6
-identity=$7
-executable=$8
-source=$workspace/$output
+` + componentBuildWorkspaceSafetyScript + `
+root=$1
+workspace=$2
+identity=$3
+owner=$4
+output=$5
+expected=$6
+max_bytes=$7
+cache=$8
+marker=$9
+executable=${10}
+if ! owned_workspace "$root" "$workspace" "$identity" "$owner"; then echo 'source-build workspace is missing, unowned, or unsafe' >&2; exit 1; fi
+build=$workspace/build
+source=$build/$output
 old_ifs=$IFS
 IFS=/
 set -- $output
 IFS=$old_ifs
-probe=$workspace
+probe=$build
 for part in "$@"; do
   probe=$probe/$part
   if [ -L "$probe" ]; then echo 'source-build output path contains a symbolic link' >&2; exit 1; fi
@@ -391,43 +699,79 @@ trap - EXIT HUP INT TERM
 `
 
 const componentBuildCleanupInspectScript = `set -eu
-workspace=$1
-virtual=$2
-dependency_marker=$3
-output_marker=$4
-identity=$5
+` + componentBuildWorkspaceSafetyScript + `
+root=$1
+workspace=$2
+virtual=$3
+dependency_marker=$4
+output_marker=$5
+identity=$6
+owner=$7
+default_root=$8
 if [ ! -f "$output_marker" ] || [ "$(sed -n '1p' "$output_marker")" != "$identity" ]; then echo missing; exit 0; fi
-if [ -e "$workspace" ] || [ -e "$dependency_marker" ] || apk info -e "$virtual" >/dev/null 2>&1; then echo pending; exit 0; fi
-shift 5
-for protected_path in "$@"; do if [ -e "$protected_path" ]; then echo pending; exit 0; fi; done
+if ! valid_workspace_tuple "$root" "$workspace" "$identity" || ! valid_build_owner "$owner"; then echo unsafe; exit 0; fi
+if [ -e "$dependency_marker" ] || [ -L "$dependency_marker" ]; then
+  if ! load_dependency_workspace "$dependency_marker" "$virtual" "$owner" "$default_root"; then echo unsafe; exit 0; fi
+  echo pending
+  exit 0
+fi
+if [ -e "$workspace" ] || [ -L "$workspace" ] || apk info -e "$virtual" >/dev/null 2>&1; then echo pending; exit 0; fi
+shift 8
+for protected_path in "$@"; do if [ -e "$protected_path" ] || [ -L "$protected_path" ]; then echo pending; exit 0; fi; done
 echo clean
 `
 
 const componentBuildCleanupScript = `set -eu
-workspace=$1
-virtual=$2
-marker=$3
-owner=$4
-shift 4
-case "$workspace" in /var/tmp/alpineform/builds/[a-f0-9]*) ;; *) echo 'invalid source-build workspace cleanup path' >&2; exit 1;; esac
-if [ -e "$marker" ]; then
-  if [ ! -f "$marker" ] || [ -L "$marker" ] || [ "$(sed -n '1p' "$marker")" != "$virtual" ] || [ "$(sed -n '2p' "$marker")" != "$owner" ]; then
+` + componentBuildWorkspaceSafetyScript + `
+root=$1
+workspace=$2
+virtual=$3
+marker=$4
+owner=$5
+identity=$6
+default_root=$7
+shift 7
+if ! valid_workspace_tuple "$root" "$workspace" "$identity" || ! valid_build_owner "$owner"; then
+  echo 'invalid source-build workspace cleanup metadata' >&2
+  exit 1
+fi
+marker_owned=false
+if [ -e "$marker" ] || [ -L "$marker" ]; then
+  if ! load_dependency_workspace "$marker" "$virtual" "$owner" "$default_root"; then
     echo 'refusing to clean unowned source-build dependency state' >&2
     exit 1
   fi
+  marker_owned=true
+  remove_dependency_workspace "$owner"
   if apk info -e "$virtual" >/dev/null 2>&1; then apk --quiet del "$virtual"; fi
-  rm -f "$marker"
 elif apk info -e "$virtual" >/dev/null 2>&1; then
   echo 'refusing to remove source-build virtual package without its ownership marker' >&2
   exit 1
 fi
-if [ -L "$workspace" ]; then echo 'refusing symbolic-link source-build workspace cleanup' >&2; exit 1; fi
-rm -rf "$workspace"
+if [ "$workspace" != "${dependency_workspace:-}" ]; then
+  remove_owned_workspace "$root" "$workspace" "$identity" "$owner"
+fi
 for protected_path in "$@"; do
   case "$protected_path" in /run/alpineform/build-inputs/[a-f0-9]*) ;; *) echo 'invalid protected source-build input cleanup path' >&2; exit 1;; esac
   if [ -d "$protected_path" ]; then echo 'refusing directory at protected source-build input path' >&2; exit 1; fi
   rm -f "$protected_path"
 done
+if [ "$marker_owned" = true ]; then rm -f "$marker"; fi
+`
+
+const componentBuildWorkspaceCapacityScript = `set -eu
+root=$1
+probe=$root
+while [ ! -e "$probe" ] && [ ! -L "$probe" ] && [ "$probe" != / ]; do
+  probe=${probe%/*}
+  [ -n "$probe" ] || probe=/
+done
+available=unknown
+if [ -d "$probe" ] && [ ! -L "$probe" ]; then
+  candidate=$(df -Pk "$probe" 2>/dev/null | awk 'NR == 2 { print $4; exit }')
+  case "$candidate" in ''|*[!0-9]*) ;; *) available=$candidate;; esac
+fi
+printf '%s\n' "$available"
 `
 
 const componentBuildInstallInspectScript = `set -eu
@@ -603,6 +947,14 @@ func inspectComponentBuildDependencies(ctx context.Context, runner backend.Runne
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
+	outputCache, err := componentBuildOutputCacheSelection(node, outputMarker)
+	if err != nil {
+		return engine.ObservedResource{}, err
+	}
+	root, workspace, workspaceIdentity, err := componentBuildWorkspaceSelection(node)
+	if err != nil || workspaceIdentity != identity {
+		return engine.ObservedResource{}, fmt.Errorf("source-build dependency workspace identity is invalid")
+	}
 	packages, err := desiredStringList(node.Desired, "packages")
 	if err != nil {
 		return engine.ObservedResource{}, err
@@ -612,7 +964,7 @@ func inspectComponentBuildDependencies(ctx context.Context, runner backend.Runne
 			return engine.ObservedResource{}, fmt.Errorf("invalid source-build APK dependency %q", pkg)
 		}
 	}
-	arguments := append([]string{virtual, marker, owner, identity, outputMarker}, packages...)
+	arguments := append([]string{virtual, marker, owner, identity, root, workspace, outputMarker, outputCache, product.DefaultComponentBuildWorkspaceRoot}, packages...)
 	output, err := runner.Run(ctx, backend.Command{Name: "inspect.component_build_dependencies", Script: componentBuildDependenciesInspectScript, Arguments: arguments})
 	if err != nil {
 		return engine.ObservedResource{}, err
@@ -622,9 +974,10 @@ func inspectComponentBuildDependencies(ctx context.Context, runner backend.Runne
 	if status == "missing" || status == "" {
 		return engine.ObservedResource{}, nil
 	}
-	if status == "stale" && len(lines) == 2 {
+	if status == "stale" && len(lines) == 2 && componentProviderSHA256Pattern.MatchString(lines[1]) {
 		observed := cloneDesired(node.Desired)
 		observed["build_identity"] = lines[1]
+		observed["workspace_recovery_pending"] = true
 		return engine.ObservedResource{Exists: true, Values: observed}, nil
 	}
 	if status != "active" && status != "satisfied" {
@@ -638,6 +991,10 @@ func applyComponentBuildDependencies(ctx context.Context, runner backend.Runner,
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
+	root, workspace, workspaceIdentity, err := componentBuildWorkspaceSelection(node)
+	if err != nil || workspaceIdentity != identity {
+		return engine.ObservedResource{}, fmt.Errorf("source-build dependency workspace identity is invalid")
+	}
 	packages, err := desiredStringList(node.Desired, "packages")
 	if err != nil {
 		return engine.ObservedResource{}, err
@@ -647,26 +1004,38 @@ func applyComponentBuildDependencies(ctx context.Context, runner backend.Runner,
 			return engine.ObservedResource{}, fmt.Errorf("invalid source-build APK dependency %q", pkg)
 		}
 	}
-	arguments := append([]string{virtual, marker, owner, identity}, packages...)
+	arguments := append([]string{virtual, marker, owner, identity, root, workspace, product.DefaultComponentBuildWorkspaceRoot}, packages...)
 	if _, err := runner.Run(ctx, backend.Command{Name: "apply.component_build_dependencies", Script: componentBuildDependenciesApplyScript, Arguments: arguments, RedactOutput: true}); err != nil {
-		return engine.ObservedResource{}, err
+		return engine.ObservedResource{}, diagnoseComponentBuildWorkspaceFailure(runner, root, workspace, err)
 	}
 	return inspectComponentBuildDependencies(ctx, runner, node)
 }
 
 func inspectComponentBuildWorkspace(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
-	workspace, identity, outputMarker, err := componentBuildWorkspaceIdentity(node)
+	root, workspace, identity, outputMarker, err := componentBuildWorkspaceIdentity(node)
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
+	outputCache, err := componentBuildOutputCacheSelection(node, outputMarker)
+	if err != nil {
+		return engine.ObservedResource{}, err
+	}
+	owner := stringValue(node.Desired, "owner_id")
+	virtual, dependencyMarker := stringValue(node.Desired, "virtual_package"), stringValue(node.Desired, "dependency_marker")
+	if !componentBuildOwnerPattern.MatchString(owner) || !componentBuildVirtualPackagePattern.MatchString(virtual) || validateRemoteFilePath(dependencyMarker) != nil {
+		return engine.ObservedResource{}, fmt.Errorf("source-build workspace ownership metadata is invalid")
+	}
 	outputPath := stringValue(node.Desired, "output")
-	output, err := runner.Run(ctx, backend.Command{Name: "inspect.component_build_workspace", Script: componentBuildWorkspaceInspectScript, Arguments: []string{workspace, identity, outputMarker, outputPath}, RedactOutput: node.Sensitive || node.Ephemeral})
+	output, err := runner.Run(ctx, backend.Command{Name: "inspect.component_build_workspace", Script: componentBuildWorkspaceInspectScript, Arguments: []string{root, workspace, identity, owner, outputMarker, outputCache, outputPath, virtual, dependencyMarker, product.DefaultComponentBuildWorkspaceRoot}, RedactOutput: node.Sensitive || node.Ephemeral})
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
 	status := strings.TrimSpace(string(output))
 	if status == "missing" || status == "" {
 		return engine.ObservedResource{}, nil
+	}
+	if status == "unsafe" {
+		return engine.ObservedResource{}, fmt.Errorf("source-build workspace is unowned or has an unsafe ownership, mode, or symbolic-link boundary")
 	}
 	if status != "active" && status != "satisfied" {
 		return engine.ObservedResource{}, fmt.Errorf("inspect source-build workspace returned invalid status %q", status)
@@ -675,13 +1044,21 @@ func inspectComponentBuildWorkspace(ctx context.Context, runner backend.Runner, 
 }
 
 func applyComponentBuildWorkspace(ctx context.Context, runner backend.Runner, node graph.Node) (observed engine.ObservedResource, err error) {
-	workspace, identity, _, err := componentBuildWorkspaceIdentity(node)
+	root, workspace, identity, _, err := componentBuildWorkspaceIdentity(node)
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
+	virtual, owner, dependencyMarker := stringValue(node.Desired, "virtual_package"), stringValue(node.Desired, "owner_id"), stringValue(node.Desired, "dependency_marker")
+	if !componentBuildVirtualPackagePattern.MatchString(virtual) || !componentBuildOwnerPattern.MatchString(owner) || validateRemoteFilePath(dependencyMarker) != nil {
+		return engine.ObservedResource{}, fmt.Errorf("source-build workspace ownership metadata is invalid")
+	}
 	defer func() {
 		if err != nil {
-			cleanupComponentBuildFailure(runner, node)
+			primary := err
+			if cleanupErr := cleanupComponentBuildFailure(runner, node); cleanupErr != nil {
+				err = errors.Join(primary, fmt.Errorf("source-build failure cleanup failed: %w", cleanupErr))
+			}
+			err = diagnoseComponentBuildWorkspaceFailure(runner, root, workspace, err)
 		}
 	}()
 	inputPaths, ok := node.Desired["input_paths"].(map[string]string)
@@ -702,7 +1079,7 @@ func applyComponentBuildWorkspace(ctx context.Context, runner backend.Runner, no
 	}
 	sort.Strings(destinations)
 	working := stringValue(node.Desired, "working_directory")
-	arguments := []string{workspace, working}
+	arguments := []string{root, workspace, identity, owner, virtual, dependencyMarker, product.DefaultComponentBuildWorkspaceRoot, working}
 	for _, destination := range destinations {
 		digest := inputSHA[destination]
 		if !componentProviderSHA256Pattern.MatchString(digest) {
@@ -745,12 +1122,12 @@ func applyComponentBuildWorkspace(ctx context.Context, runner backend.Runner, no
 			return engine.ObservedResource{}, fmt.Errorf("source-build command %d has invalid stdin payload", index)
 		}
 		manifest := componentBuildManifest(environment, stdin)
-		commandArguments := append([]string{workspace, working}, argv...)
+		commandArguments := append([]string{root, workspace, identity, owner, working}, argv...)
 		if _, err = runner.Run(ctx, backend.Command{Name: "apply.component_build_workspace.command", Script: componentBuildCommandScript, Arguments: commandArguments, Stdin: manifest, RedactStdin: true, RedactOutput: true}); err != nil {
 			return engine.ObservedResource{}, err
 		}
 	}
-	if _, err = runner.Run(ctx, backend.Command{Name: "apply.component_build_workspace.ready", Script: componentBuildWorkspaceReadyScript, Arguments: []string{workspace, identity, stringValue(node.Desired, "output")}, RedactOutput: true}); err != nil {
+	if _, err = runner.Run(ctx, backend.Command{Name: "apply.component_build_workspace.ready", Script: componentBuildWorkspaceReadyScript, Arguments: []string{root, workspace, identity, owner, stringValue(node.Desired, "output")}, RedactOutput: true}); err != nil {
 		return engine.ObservedResource{}, err
 	}
 	return inspectComponentBuildWorkspace(ctx, runner, node)
@@ -777,17 +1154,28 @@ func applyComponentBuildOutput(ctx context.Context, runner backend.Runner, step 
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
+	root, workspace, workspaceIdentity, err := componentBuildWorkspaceSelection(node)
+	if err != nil {
+		return engine.ObservedResource{}, err
+	}
+	owner := stringValue(node.Desired, "owner_id")
+	if workspaceIdentity != identity || !componentBuildOwnerPattern.MatchString(owner) {
+		return engine.ObservedResource{}, fmt.Errorf("source-build output workspace ownership metadata is invalid")
+	}
 	defer func() {
 		if err != nil {
-			cleanupComponentBuildFailure(runner, node)
+			primary := err
+			if cleanupErr := cleanupComponentBuildFailure(runner, node); cleanupErr != nil {
+				err = errors.Join(primary, fmt.Errorf("source-build failure cleanup failed: %w", cleanupErr))
+			}
+			err = diagnoseComponentBuildWorkspaceFailure(runner, root, workspace, err)
 		}
 	}()
-	workspace := stringValue(node.Desired, "workspace")
 	maxBytes, ok := buildInt64Value(node.Desired, "max_output_bytes")
 	if !ok || maxBytes < 1 {
 		return engine.ObservedResource{}, fmt.Errorf("source-build output has invalid size metadata")
 	}
-	arguments := []string{workspace, stringValue(node.Desired, "output"), stringValue(node.Desired, "output_sha256"), strconv.FormatInt(maxBytes, 10), cache, marker, identity, strconv.FormatBool(boolValue(node.Desired, "executable"))}
+	arguments := []string{root, workspace, identity, owner, stringValue(node.Desired, "output"), stringValue(node.Desired, "output_sha256"), strconv.FormatInt(maxBytes, 10), cache, marker, strconv.FormatBool(boolValue(node.Desired, "executable"))}
 	if _, err = runner.Run(ctx, backend.Command{Name: "apply.component_build_output", Script: componentBuildOutputApplyScript, Arguments: arguments, RedactOutput: true}); err != nil {
 		return engine.ObservedResource{}, err
 	}
@@ -813,39 +1201,47 @@ func applyComponentBuildOutput(ctx context.Context, runner backend.Runner, step 
 }
 
 func inspectComponentBuildCleanup(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
-	workspace, virtual, dependencyMarker, outputMarker, identity, _, err := componentBuildCleanupIdentity(node)
+	root, workspace, virtual, dependencyMarker, outputMarker, identity, owner, err := componentBuildCleanupIdentity(node)
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
-	protectedPaths, err := optionalDesiredStringList(node.Desired, "protected_input_paths")
+	protectedPaths, err := componentBuildProtectedInputPaths(node)
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
-	arguments := append([]string{workspace, virtual, dependencyMarker, outputMarker, identity}, protectedPaths...)
+	arguments := append([]string{root, workspace, virtual, dependencyMarker, outputMarker, identity, owner, product.DefaultComponentBuildWorkspaceRoot}, protectedPaths...)
 	output, err := runner.Run(ctx, backend.Command{Name: "inspect.component_build_cleanup", Script: componentBuildCleanupInspectScript, Arguments: arguments})
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
-	if strings.TrimSpace(string(output)) != "clean" {
+	status := strings.TrimSpace(string(output))
+	if status == "unsafe" {
+		return engine.ObservedResource{}, fmt.Errorf("source-build cleanup found unowned or unsafe workspace metadata")
+	}
+	if status != "clean" {
 		return engine.ObservedResource{}, nil
 	}
 	return buildObserved(node), nil
 }
 
 func applyComponentBuildCleanup(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
-	workspace, virtual, marker, _, _, owner, err := componentBuildCleanupIdentity(node)
+	root, workspace, virtual, marker, _, identity, owner, err := componentBuildCleanupIdentity(node)
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
-	protectedPaths, err := optionalDesiredStringList(node.Desired, "protected_input_paths")
+	protectedPaths, err := componentBuildProtectedInputPaths(node)
 	if err != nil {
 		return engine.ObservedResource{}, err
 	}
-	arguments := append([]string{workspace, virtual, marker, owner}, protectedPaths...)
+	arguments := append([]string{root, workspace, virtual, marker, owner, identity, product.DefaultComponentBuildWorkspaceRoot}, protectedPaths...)
 	if _, err := runner.Run(ctx, backend.Command{Name: "apply.component_build_cleanup", Script: componentBuildCleanupScript, Arguments: arguments, RedactOutput: true}); err != nil {
-		return engine.ObservedResource{}, err
+		return engine.ObservedResource{}, diagnoseComponentBuildWorkspaceFailure(runner, root, workspace, err)
 	}
-	return inspectComponentBuildCleanup(ctx, runner, node)
+	observed, err := inspectComponentBuildCleanup(ctx, runner, node)
+	if err != nil {
+		return engine.ObservedResource{}, diagnoseComponentBuildWorkspaceFailure(runner, root, workspace, err)
+	}
+	return observed, nil
 }
 
 func inspectComponentBuildInstall(ctx context.Context, runner backend.Runner, node graph.Node) (engine.ObservedResource, error) {
@@ -924,12 +1320,20 @@ func deleteComponentBuildResource(ctx context.Context, runner backend.Runner, st
 		if !componentBuildOwnerPattern.MatchString(owner) {
 			return fmt.Errorf("source-build dependency destroy requires current ownership metadata")
 		}
-		workspace := stringValue(deletion, "workspace")
-		if workspace == "" {
-			workspace = "/var/tmp/alpineform/builds/" + identity
+		selectionNode := step.Node
+		selectionNode.Desired = cloneDesired(deletion)
+		if selectionNode.Desired["build_identity"] == nil {
+			selectionNode.Desired["build_identity"] = identity
 		}
-		_, err := runner.Run(ctx, backend.Command{Name: "delete.component_build_dependencies", Script: componentBuildCleanupScript, Arguments: []string{workspace, virtual, marker, owner}, RedactOutput: true})
-		return err
+		root, workspace, workspaceIdentity, selectionErr := componentBuildWorkspaceSelection(selectionNode)
+		if selectionErr != nil || workspaceIdentity != identity {
+			return fmt.Errorf("source-build dependency destroy has invalid workspace metadata")
+		}
+		_, err := runner.Run(ctx, backend.Command{Name: "delete.component_build_dependencies", Script: componentBuildCleanupScript, Arguments: []string{root, workspace, virtual, marker, owner, identity, product.DefaultComponentBuildWorkspaceRoot}, RedactOutput: true})
+		if err != nil {
+			return diagnoseComponentBuildWorkspaceFailure(runner, root, workspace, err)
+		}
+		return nil
 	case "component_build_workspace", "component_build_cleanup":
 		return nil
 	case "component_build_output":
@@ -989,15 +1393,65 @@ func componentBuildDependencyIdentity(node graph.Node) (string, string, string, 
 	return virtual, marker, owner, identity, outputMarker, nil
 }
 
-func componentBuildWorkspaceIdentity(node graph.Node) (string, string, string, error) {
-	workspace, identity, outputMarker := stringValue(node.Desired, "workspace"), stringValue(node.Desired, "build_identity"), stringValue(node.Desired, "output_marker")
-	if !strings.HasPrefix(workspace, "/var/tmp/alpineform/builds/") || !componentProviderSHA256Pattern.MatchString(identity) || workspace != "/var/tmp/alpineform/builds/"+identity {
+func componentBuildOutputCacheSelection(node graph.Node, outputMarker string) (string, error) {
+	if raw, exists := node.Payload[componentBuildOutputCachePayload]; exists {
+		cache, ok := raw.(string)
+		if !ok || validateRemoteFilePath(cache) != nil || outputMarker != cache+".sha256" {
+			return "", fmt.Errorf("source-build output cache payload is invalid")
+		}
+		return cache, nil
+	}
+	const markerSuffix = ".sha256"
+	if !strings.HasSuffix(outputMarker, markerSuffix) {
+		return "", fmt.Errorf("source-build output marker does not identify its cache")
+	}
+	cache := strings.TrimSuffix(outputMarker, markerSuffix)
+	if err := validateRemoteFilePath(cache); err != nil {
+		return "", fmt.Errorf("source-build output cache: %w", err)
+	}
+	return cache, nil
+}
+
+func componentBuildWorkspaceSelection(node graph.Node) (string, string, string, error) {
+	identity := stringValue(node.Desired, "build_identity")
+	if !componentProviderSHA256Pattern.MatchString(identity) {
 		return "", "", "", fmt.Errorf("source-build workspace identity is invalid")
 	}
-	if err := validateRemoteFilePath(outputMarker); err != nil {
-		return "", "", "", err
+	root := ""
+	if raw, exists := node.Payload[componentBuildWorkspaceRootPayload]; exists {
+		var ok bool
+		root, ok = raw.(string)
+		if !ok || root == "" {
+			return "", "", "", fmt.Errorf("source-build workspace root payload is invalid")
+		}
+	} else {
+		legacyWorkspace := stringValue(node.Desired, "workspace")
+		want := product.DefaultComponentBuildWorkspaceRoot + "/" + identity
+		if legacyWorkspace != "" && legacyWorkspace != want {
+			return "", "", "", fmt.Errorf("legacy source-build workspace identity is invalid")
+		}
+		root = product.DefaultComponentBuildWorkspaceRoot
 	}
-	return workspace, identity, outputMarker, nil
+	if err := validateRemoteFilePath(root); err != nil || filepath.Clean(root) != root {
+		return "", "", "", fmt.Errorf("source-build workspace root %q must be a clean absolute non-root path", root)
+	}
+	workspace := root + "/" + identity
+	if filepath.Dir(workspace) != root || filepath.Base(workspace) != identity {
+		return "", "", "", fmt.Errorf("source-build workspace path derivation is invalid")
+	}
+	return root, workspace, identity, nil
+}
+
+func componentBuildWorkspaceIdentity(node graph.Node) (string, string, string, string, error) {
+	root, workspace, identity, err := componentBuildWorkspaceSelection(node)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	outputMarker := stringValue(node.Desired, "output_marker")
+	if err := validateRemoteFilePath(outputMarker); err != nil {
+		return "", "", "", "", err
+	}
+	return root, workspace, identity, outputMarker, nil
 }
 
 func componentBuildOutputIdentity(node graph.Node) (string, string, string, error) {
@@ -1014,19 +1468,19 @@ func componentBuildOutputIdentity(node graph.Node) (string, string, string, erro
 	return cache, marker, identity, nil
 }
 
-func componentBuildCleanupIdentity(node graph.Node) (string, string, string, string, string, string, error) {
-	workspace, identity, outputMarker, err := componentBuildWorkspaceIdentity(node)
+func componentBuildCleanupIdentity(node graph.Node) (string, string, string, string, string, string, string, error) {
+	root, workspace, identity, outputMarker, err := componentBuildWorkspaceIdentity(node)
 	if err != nil {
-		return "", "", "", "", "", "", err
+		return "", "", "", "", "", "", "", err
 	}
 	virtual, owner, dependencyMarker := stringValue(node.Desired, "virtual_package"), stringValue(node.Desired, "owner_id"), stringValue(node.Desired, "dependency_marker")
 	if !componentBuildVirtualPackagePattern.MatchString(virtual) || !componentBuildOwnerPattern.MatchString(owner) {
-		return "", "", "", "", "", "", fmt.Errorf("source-build cleanup ownership is invalid")
+		return "", "", "", "", "", "", "", fmt.Errorf("source-build cleanup ownership is invalid")
 	}
 	if err := validateRemoteFilePath(dependencyMarker); err != nil {
-		return "", "", "", "", "", "", err
+		return "", "", "", "", "", "", "", err
 	}
-	return workspace, virtual, dependencyMarker, outputMarker, identity, owner, nil
+	return root, workspace, virtual, dependencyMarker, outputMarker, identity, owner, nil
 }
 
 func componentBuildInstallIdentity(node graph.Node) (string, string, string, string, error) {
@@ -1043,19 +1497,64 @@ func componentBuildInstallIdentity(node graph.Node) (string, string, string, str
 	return path, installMarker, outputMarker, identity, nil
 }
 
-func cleanupComponentBuildFailure(runner backend.Runner, node graph.Node) {
-	workspace := stringValue(node.Desired, "workspace")
-	virtual := stringValue(node.Desired, "virtual_package")
-	marker := stringValue(node.Desired, "dependency_marker")
-	owner := stringValue(node.Desired, "owner_id")
-	if workspace == "" || virtual == "" || marker == "" || owner == "" {
-		return
+func cleanupComponentBuildFailure(runner backend.Runner, node graph.Node) error {
+	root, workspace, identity, err := componentBuildWorkspaceSelection(node)
+	if err != nil {
+		return err
+	}
+	virtual, marker, owner := stringValue(node.Desired, "virtual_package"), stringValue(node.Desired, "dependency_marker"), stringValue(node.Desired, "owner_id")
+	if !componentBuildVirtualPackagePattern.MatchString(virtual) || !componentBuildOwnerPattern.MatchString(owner) {
+		return fmt.Errorf("source-build failure cleanup ownership metadata is invalid")
+	}
+	if err := validateRemoteFilePath(marker); err != nil {
+		return err
+	}
+	protectedPaths, err := componentBuildProtectedInputPaths(node)
+	if err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	protectedPaths, _ := optionalDesiredStringList(node.Desired, "protected_input_paths")
-	arguments := append([]string{workspace, virtual, marker, owner}, protectedPaths...)
-	_, _ = runner.Run(ctx, backend.Command{Name: "cleanup.component_build_failure", Script: componentBuildCleanupScript, Arguments: arguments, RedactOutput: true})
+	arguments := append([]string{root, workspace, virtual, marker, owner, identity, product.DefaultComponentBuildWorkspaceRoot}, protectedPaths...)
+	_, err = runner.Run(ctx, backend.Command{Name: "cleanup.component_build_failure", Script: componentBuildCleanupScript, Arguments: arguments, RedactOutput: true})
+	return err
+}
+
+type componentBuildWorkspaceFailure struct {
+	root      string
+	workspace string
+	available string
+	cause     error
+}
+
+func (failure componentBuildWorkspaceFailure) Error() string {
+	return failure.SafeMessage() + ": " + failure.cause.Error()
+}
+
+func (failure componentBuildWorkspaceFailure) Unwrap() error { return failure.cause }
+
+func (failure componentBuildWorkspaceFailure) SafeMessage() string {
+	return fmt.Sprintf("source-build workspace failed: staging_root=%s work_path=%s available_kib=%s", failure.root, failure.workspace, failure.available)
+}
+
+func diagnoseComponentBuildWorkspaceFailure(runner backend.Runner, root, workspace string, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	available := "unknown"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	output, err := runner.Run(ctx, backend.Command{
+		Name: "diagnose.component_build_workspace_capacity", Script: componentBuildWorkspaceCapacityScript,
+		Arguments: []string{root}, RedactOutput: true,
+	})
+	if err == nil {
+		candidate := strings.TrimSpace(string(output))
+		if _, parseErr := strconv.ParseUint(candidate, 10, 64); parseErr == nil {
+			available = candidate
+		}
+	}
+	return componentBuildWorkspaceFailure{root: root, workspace: workspace, available: available, cause: cause}
 }
 
 func componentBuildManifest(environment map[string]string, stdin []byte) []byte {
@@ -1097,6 +1596,19 @@ func optionalDesiredStringList(input map[string]any, name string) ([]string, err
 		return nil, nil
 	}
 	return desiredStringList(input, name)
+}
+
+func componentBuildProtectedInputPaths(node graph.Node) ([]string, error) {
+	paths, err := optionalDesiredStringList(node.Desired, "protected_input_paths")
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range paths {
+		if filepath.Dir(path) != product.ComponentBuildProtectedInputRoot || !componentProviderSHA256Pattern.MatchString(filepath.Base(path)) {
+			return nil, fmt.Errorf("source-build protected input path is outside the runtime-owned boundary")
+		}
+	}
+	return paths, nil
 }
 
 func buildInt64Value(input map[string]any, name string) (int64, bool) {

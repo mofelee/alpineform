@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/mofelee/alpineform/internal/core/ir"
@@ -16,6 +17,7 @@ import (
 )
 
 type resolvedProfile struct {
+	Staging       *parser.Staging
 	Components    map[string]parser.ComponentInstance
 	Order         []string
 	Resources     map[string]parser.ResourceDeclaration
@@ -227,6 +229,10 @@ func resolveProfiles(config *parser.Config) (map[string]resolvedProfile, error) 
 		for _, instance := range profile.Components {
 			overlayInstance(&result, instance)
 		}
+		if profile.Staging != nil {
+			staging := *profile.Staging
+			result.Staging = &staging
+		}
 		for _, resource := range profile.Resources {
 			overlayResource(&result, resource)
 		}
@@ -261,10 +267,15 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	for _, instance := range host.Components {
 		overlayInstance(&resolved, instance)
 	}
+	if host.Staging != nil {
+		staging := *host.Staging
+		resolved.Staging = &staging
+	}
 	for _, resource := range host.Resources {
 		overlayResource(&resolved, resource)
 	}
 	host.Resources = resolvedResources(resolved)
+	host.Staging = resolved.Staging
 	if err := validateInstanceDependencies(host, resolved); err != nil {
 		return ir.HostSpec{}, err
 	}
@@ -299,6 +310,15 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 		},
 		State:  ir.StateSpec{Path: product.DefaultStatePath, LockPath: product.DefaultLockPath},
 		Source: host.Source,
+	}
+	effectiveWorkspaceRoot := product.DefaultComponentBuildWorkspaceRoot
+	if host.Staging != nil {
+		root, err := compileComponentWorkspaceRoot(host.Staging.Root)
+		if err != nil {
+			return ir.HostSpec{}, err
+		}
+		effectiveWorkspaceRoot = root
+		out.Staging = &ir.StagingSpec{Root: root, Source: host.Staging.Source}
 	}
 	out.Scripts, err = compileEvaluatedScripts(config.Scripts, hostContext, func(name string) string {
 		return "script[" + strconv.Quote(name) + "]"
@@ -395,7 +415,7 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	}
 	for _, name := range resolved.Order {
 		instance := resolved.Components[name]
-		compiled, err := compileComponentInstance(config, host, facts, instance, hostContext, out.Scripts, out.APK, out.Packages)
+		compiled, err := compileComponentInstance(config, host, facts, instance, effectiveWorkspaceRoot, hostContext, out.Scripts, out.APK, out.Packages)
 		if err != nil {
 			return ir.HostSpec{}, err
 		}
@@ -477,7 +497,7 @@ func compileMovedSpecs(moves []parser.Moved, host string, components map[string]
 	return out, nil
 }
 
-func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir.HostFacts, instance parser.ComponentInstance, hostContext parser.EvalContext, rootScripts map[string]ir.ScriptSpec, rootAPK *ir.APKSpec, rootPackages []ir.PackageSpec) (ir.ComponentInstanceSpec, error) {
+func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir.HostFacts, instance parser.ComponentInstance, hostWorkspaceRoot string, hostContext parser.EvalContext, rootScripts map[string]ir.ScriptSpec, rootAPK *ir.APKSpec, rootPackages []ir.PackageSpec) (ir.ComponentInstanceSpec, error) {
 	template, exists := config.Components[instance.Template]
 	if !exists {
 		return ir.ComponentInstanceSpec{}, fmt.Errorf("%s:%d:%s: unknown component.%s", instance.Source.File, instance.Source.Line, instance.Source.Path, instance.Template)
@@ -568,7 +588,7 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 		}
 		install.OnChange = &resolvedReference
 	}
-	build, err := compileComponentBuild(template, instance, host, facts, inputContext, install)
+	build, err := compileComponentBuild(template, instance, host, facts, hostWorkspaceRoot, inputContext, install)
 	if err != nil {
 		return ir.ComponentInstanceSpec{}, err
 	}
@@ -881,6 +901,10 @@ func validateInstanceDependencies(host parser.Host, profile resolvedProfile) err
 }
 
 func overlayInstances(target *resolvedProfile, source resolvedProfile) {
+	if source.Staging != nil {
+		staging := *source.Staging
+		target.Staging = &staging
+	}
 	for _, name := range source.Order {
 		overlayInstance(target, source.Components[name])
 	}
@@ -888,6 +912,21 @@ func overlayInstances(target *resolvedProfile, source resolvedProfile) {
 		overlayResource(target, source.Resources[key])
 	}
 	target.Asserts = append(target.Asserts, source.Asserts...)
+}
+
+func compileComponentWorkspaceRoot(value parser.Value) (string, error) {
+	source := value.Source
+	if value.ContainsSensitive() || value.ContainsEphemeral() {
+		return "", fmt.Errorf("%s:%d:%s: workspace root must not use sensitive or ephemeral values", source.File, source.Line, source.Path)
+	}
+	if value.Kind != parser.KindString {
+		return "", fmt.Errorf("%s:%d:%s: workspace root must be a string", source.File, source.Line, source.Path)
+	}
+	root := value.String
+	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root || root == "/" || strings.IndexFunc(root, unicode.IsControl) >= 0 {
+		return "", fmt.Errorf("%s:%d:%s: workspace root must be a clean absolute non-root path without control characters", source.File, source.Line, source.Path)
+	}
+	return root, nil
 }
 
 func overlayInstance(target *resolvedProfile, instance parser.ComponentInstance) {

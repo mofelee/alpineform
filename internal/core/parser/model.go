@@ -19,6 +19,7 @@ var declarationLabelPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 type Profile struct {
 	Name       string
 	Imports    []string
+	Staging    *Staging
 	Components []ComponentInstance
 	Resources  []ResourceDeclaration
 	Asserts    []Assert
@@ -120,12 +121,18 @@ type ComponentInputValidation struct {
 }
 
 type ComponentInstance struct {
-	Name      string
-	Template  string
-	Inputs    map[string]Value
-	DependsOn []string
-	Lifecycle Lifecycle
-	Source    ir.SourceRef
+	Name        string
+	Template    string
+	Inputs      map[string]Value
+	StagingRoot *Value
+	DependsOn   []string
+	Lifecycle   Lifecycle
+	Source      ir.SourceRef
+}
+
+type Staging struct {
+	Root   Value
+	Source ir.SourceRef
 }
 
 type Lifecycle struct {
@@ -153,6 +160,7 @@ type Host struct {
 	Kernel     *Kernel
 	Nftables   *Nftables
 	Docker     *Docker
+	Staging    *Staging
 	Components []ComponentInstance
 	Resources  []ResourceDeclaration
 	Asserts    []Assert
@@ -319,6 +327,15 @@ func parseProfile(file string, block *hclsyntax.Block, ctx EvalContext) (Profile
 				return Profile{}, err
 			}
 			profile.Components = append(profile.Components, instance)
+		case "staging":
+			if profile.Staging != nil {
+				return Profile{}, fmt.Errorf("%s:%d: duplicate %s.staging block", file, child.TypeRange.Start.Line, path)
+			}
+			staging, err := parseStaging(file, path+".staging", child, ctx)
+			if err != nil {
+				return Profile{}, err
+			}
+			profile.Staging = &staging
 		case "assert":
 			assertion, err := parseAssert(file, path+".assert", child, ctx)
 			if err != nil {
@@ -622,6 +639,15 @@ func parseHost(file string, block *hclsyntax.Block, ctx EvalContext) (Host, erro
 				return Host{}, err
 			}
 			host.Platform = &platform
+		case "staging":
+			if host.Staging != nil {
+				return Host{}, fmt.Errorf("%s:%d: duplicate %s.staging block", file, child.TypeRange.Start.Line, path)
+			}
+			staging, err := parseStaging(file, path+".staging", child, ctx)
+			if err != nil {
+				return Host{}, err
+			}
+			host.Staging = &staging
 		case "component":
 			instance, err := parseComponentInstance(file, path, child, ctx)
 			if err != nil {
@@ -741,12 +767,31 @@ func parsePlatform(file, path string, block *hclsyntax.Block, ctx EvalContext) (
 	return platform, nil
 }
 
+func parseStaging(file, path string, block *hclsyntax.Block, ctx EvalContext) (Staging, error) {
+	if len(block.Labels) != 0 || len(block.Body.Blocks) != 0 {
+		return Staging{}, fmt.Errorf("%s:%d: %s must be an unlabeled attribute-only block", file, block.TypeRange.Start.Line, path)
+	}
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "root"); err != nil {
+		return Staging{}, err
+	}
+	attr, exists := block.Body.Attributes["root"]
+	if !exists {
+		return Staging{}, fmt.Errorf("%s:%d: %s.root is required", file, block.TypeRange.Start.Line, path)
+	}
+	source := ir.SourceRef{File: file, Line: attr.NameRange.Start.Line, Path: path + ".root"}
+	root, err := evalValue(attr.Expr, ctx, source)
+	if err != nil {
+		return Staging{}, err
+	}
+	return Staging{Root: root, Source: ir.SourceRef{File: file, Line: block.TypeRange.Start.Line, Path: path}}, nil
+}
+
 func parseComponentInstance(file, parentPath string, block *hclsyntax.Block, ctx EvalContext) (ComponentInstance, error) {
 	name, path, source, err := declarationIdentityAt(file, parentPath+".component", "component", block)
 	if err != nil {
 		return ComponentInstance{}, err
 	}
-	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "source", "inputs", "depends_on"); err != nil {
+	if err := rejectAttributesExcept(file, path, block.Body.Attributes, "source", "inputs", "staging_root", "depends_on"); err != nil {
 		return ComponentInstance{}, err
 	}
 	instance := ComponentInstance{Name: name, Inputs: map[string]Value{}, Source: source}
@@ -768,6 +813,14 @@ func parseComponentInstance(file, parentPath string, block *hclsyntax.Block, ctx
 			return ComponentInstance{}, fmt.Errorf("%s:%d: %s.inputs must be an object", file, attr.NameRange.Start.Line, path)
 		}
 		instance.Inputs = value.Map
+	}
+	if attr, exists := block.Body.Attributes["staging_root"]; exists {
+		source := ir.SourceRef{File: file, Line: attr.NameRange.Start.Line, Path: path + ".staging_root"}
+		value, err := evalValue(attr.Expr, ctx, source)
+		if err != nil {
+			return ComponentInstance{}, err
+		}
+		instance.StagingRoot = &value
 	}
 	if attr, exists := block.Body.Attributes["depends_on"]; exists {
 		instance.DependsOn, err = parseReferences(file, path+".depends_on", attr.Expr, "component")
