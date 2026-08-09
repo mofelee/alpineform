@@ -12,7 +12,7 @@ Status meanings:
 
 | Target | Status | Evidence and boundary |
 | --- | --- | --- |
-| Alpine 3.21-3.24 x86_64, persistent install, OpenRC | Beta | Four branches by [eleven-case VM matrix](../test/integration/libvirt/cases), 44 jobs, and aggregate [CI gate](../.github/workflows/ci.yml) |
+| Alpine 3.21-3.24 x86_64, persistent install, OpenRC | Beta | Four branches by [12-case VM matrix](../test/integration/libvirt/cases), 48 jobs, and aggregate [CI gate](../.github/workflows/ci.yml) |
 | Alpine 3.21-3.24 aarch64 | Preview | [Fact normalization tests](../internal/core/engine/facts_test.go) and [Linux arm64 cross-build](../.github/workflows/ci.yml); no real-VM gate |
 | Alpine 3.20 and earlier, or 3.25 and later | Unsupported | [Fact rejection tests](../internal/core/engine/facts_test.go) reject branches outside the explicit allowlist before write-capable execution |
 | Alpine edge | Unsupported | [Fact rejection tests](../internal/core/engine/facts_test.go) reject a rolling version before write-capable execution |
@@ -35,6 +35,7 @@ Status meanings:
 | Hostname, timezone, modules, and sysctls | Beta | [`system-kernel`](../test/integration/libvirt/cases/system-kernel) |
 | Binary and archive components, shared `on_change` scripts | Beta | [`components`](../test/integration/libvirt/cases/components) |
 | File and CA-certificate components | Preview | [Compiler tests](../internal/core/merge/components_test.go), [graph tests](../internal/core/graph/components_test.go), and [provider tests](../internal/core/provider/component_archive_test.go); no blocking VM fixture |
+| Component-root `moved` state migrations | Preview | Four-branch [`component-moved`](../test/integration/libvirt/cases/component-moved), [engine](../internal/core/engine/moved_test.go) and [plan](../internal/core/plan/plan_test.go) contract tests, and the dedicated [component-moved Preview gate](../.github/workflows/ci.yml); the additive alpha DSL, state-v2 identity map, and plan fields remain outside the Beta promise |
 | Target-side component source builds | Preview | Four-branch [`source-build`](../test/integration/libvirt/cases/source-build), [compiler contract tests](../internal/core/merge/component_build_test.go), [provider transaction tests](../internal/core/provider/component_build_test.go), and the dedicated [source-build Preview gate](../.github/workflows/ci.yml); network-enabled builds remain unsupported |
 | `prevent_destroy`, forget, and recorded destroy | Beta | [`lifecycle`](../test/integration/libvirt/cases/lifecycle), [`accounts`](../test/integration/libvirt/cases/accounts), and [`apk`](../test/integration/libvirt/cases/apk) |
 | Docker Engine, OpenRC, daemon configuration, and Compose | Preview | Four-branch [`docker`](../test/integration/libvirt/cases/docker), [compiler/graph tests](../internal/core/merge/docker_test.go), and [provider tests](../internal/core/provider/docker_test.go); Alpine `community` security support is shorter than `main`, and no aarch64 VM gate exists |
@@ -58,5 +59,6 @@ The CLI platform is independent of the managed target platform. A macOS arm64
 control host can manage the Beta Alpine 3.21-3.24 x86_64 targets, but that does not
 promote Alpine aarch64 target support.
 
-Docker/Compose, nftables, and target-side source builds are implemented Preview
-schema and remain outside the v0.1 core/Beta promise.
+Docker/Compose, nftables, target-side source builds, and component-root moves
+are implemented Preview capabilities and remain outside the v0.1 core/Beta
+promise.

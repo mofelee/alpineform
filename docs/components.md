@@ -37,6 +37,25 @@ hosts have migrated and plan/check is clean with the block retained. See the
 [operator procedure](operations-runbook.md#rename-a-component-instance), and
 [runnable offline example](../examples/component-moved.apf.hcl).
 
+The four-branch
+[`component-moved` VM case](../test/integration/libvirt/cases/component-moved)
+starts from old worker and source-builder instances. A separate read-only
+rename-only plan/check must show 18 exact moves, 18 no-op resources, zero
+mutation actions, and byte-identical state and remote identity snapshots. The
+numbered lifecycle then combines the renames with one legitimate file update
+and its change script: `update=2`, `no_op=16`, and no create, delete, service
+restart, or source rebuild. The case also requires retained-block and
+removed-block no-ops, rebuilds a later source-input change through the original
+physical source-build identity, and removes the components and their managed
+artifacts at the end. Assertions reject duplicate artifact caches, script
+markers, source-build owner packages, dependency or install markers,
+workspaces, and output ownership.
+
+This real-VM coverage runs on Alpine 3.21 through 3.24 x86_64 and has a
+dedicated aggregate gate. It makes moved-state regressions blocking, but does
+not promote the additive alpha DSL, state-v2 identity map, or plan fields into
+the v0.1 Beta promise; component-root moves remain Preview.
+
 ## Prebuilt artifacts
 
 An artifact component declares `type`, one or more verified sources, and an

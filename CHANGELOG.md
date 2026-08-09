@@ -8,7 +8,7 @@ All notable user-visible changes to AlpineForm are recorded here.
 
 - Add explicit Alpine 3.21, 3.22, 3.23, and 3.24 managed-target support with
   branch-aware APK and Docker repositories, pinned official cloud images, a
-  44-job blocking x86_64 VM matrix, and four-branch published-release
+  12-case, 48-job blocking x86_64 VM matrix, and four-branch published-release
   quickstart verification.
 - Add a Preview Alpine-native Docker Engine and Compose domain with official or
   explicitly tagged APK sources, OpenRC convergence, group membership,
@@ -43,6 +43,14 @@ All notable user-visible changes to AlpineForm are recorded here.
   source-build physical ownership, separate text/JSON/HTML move rendering, and
   redaction of protected component values across state, plans, debug,
   diagnostics, and errors.
+- Add a twelfth blocking VM case across Alpine 3.21, 3.22, 3.23, and 3.24 plus a
+  dedicated component-moved Preview gate. The case covers a read-only
+  rename-only review with 18 exact moves, 18 no-op resources, zero mutation
+  actions, and unchanged state and physical identities. The numbered lifecycle
+  then applies the moves alongside only one legitimate file update and change
+  trigger, retains and removes the blocks cleanly, rebuilds a later source-input
+  change through the retained physical identity, rejects duplicate ownership,
+  and completes exact cleanup.
 
 ### Fixed
 
@@ -72,7 +80,8 @@ All notable user-visible changes to AlpineForm are recorded here.
   `alpineform.plan.alpha1` are additive alpha interfaces. Moves are state
   migrations and do not change resource action counts. State schema v2 retains
   physical component identities; v2 binaries read v1, but v1 binaries reject
-  state after it is written as v2.
+  state after it is written as v2. Component-root moves remain Preview despite
+  their four-branch blocking VM case and dedicated aggregate gate.
 
 ### Migration Notes
 

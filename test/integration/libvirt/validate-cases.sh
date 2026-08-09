@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SCRIPT_DIR="$ROOT_DIR/test/integration/libvirt"
 CASES_DIR="$SCRIPT_DIR/cases"
-EXPECTED_CASE_COUNT=11
+EXPECTED_CASE_COUNT=12
 APF_BIN="${APF_INTEGRATION_APF_BIN:-}"
 TEMP_APF=""
 TEMP_PLAN=""
@@ -19,7 +19,9 @@ trap cleanup EXIT
 for script in alpine-target.sh network.sh run.sh run-case.sh validate-cases.sh; do
   bash -n "$SCRIPT_DIR/$script"
 done
-python3 -c 'compile(open("test/integration/libvirt/assert-noop-plan.py", encoding="utf-8").read(), "assert-noop-plan.py", "exec")'
+for helper in assert-moved-plan.py assert-noop-plan.py assert-source-rebuild-plan.py; do
+  python3 -c 'import sys; compile(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1], "exec")' "$SCRIPT_DIR/$helper"
+done
 
 while read -r branch version sha512; do
   target="$(APF_INTEGRATION_ALPINE_BRANCH="$branch" bash "$SCRIPT_DIR/alpine-target.sh")"
@@ -50,14 +52,197 @@ if [[ -z "$APF_BIN" ]]; then
   APF_BIN="$TEMP_APF"
 fi
 
-TEMP_PLAN="$(mktemp "${TMPDIR:-/tmp}/apf-noop-plan.XXXXXX.json")"
-printf '%s\n' '{"format_version":"alpineform.plan.alpha1","summary":{"create":0,"update":0,"no_op":1}}' >"$TEMP_PLAN"
+TEMP_PLAN="$(mktemp "${TMPDIR:-/tmp}/apf-plan-assertions.XXXXXX.json")"
+
+expect_rejected() {
+  local description=$1
+  shift
+  if "$@" >/dev/null 2>&1; then
+    printf '%s\n' "$description" >&2
+    exit 1
+  fi
+}
+
+cat >"$TEMP_PLAN" <<'JSON'
+{
+  "format_version": "alpineform.plan.alpha1",
+  "summary": {
+    "move": 0,
+    "create": 0,
+    "update": 0,
+    "delete": 0,
+    "no_op": 1
+  },
+  "moves": [],
+  "changes": [
+    {"address": "host.cihost.file.noop", "action": "no-op"}
+  ]
+}
+JSON
 python3 "$SCRIPT_DIR/assert-noop-plan.py" "$TEMP_PLAN"
-printf '%s\n' '{"format_version":"alpineform.plan.alpha1","summary":{"create":0,"update":1,"no_op":0}}' >"$TEMP_PLAN"
-if python3 "$SCRIPT_DIR/assert-noop-plan.py" "$TEMP_PLAN" >/dev/null 2>&1; then
-  printf 'assert-noop-plan.py accepted an update plan\n' >&2
-  exit 1
-fi
+
+cat >"$TEMP_PLAN" <<'JSON'
+{
+  "format_version": "alpineform.plan.alpha1",
+  "summary": {
+    "move": 1,
+    "create": 0,
+    "update": 0,
+    "delete": 0,
+    "no_op": 1
+  },
+  "moves": [],
+  "changes": [
+    {"address": "host.cihost.file.noop", "action": "no-op"}
+  ]
+}
+JSON
+expect_rejected \
+  'assert-noop-plan.py accepted summary.move=1' \
+  python3 "$SCRIPT_DIR/assert-noop-plan.py" "$TEMP_PLAN"
+
+cat >"$TEMP_PLAN" <<'JSON'
+{
+  "format_version": "alpineform.plan.alpha1",
+  "summary": {
+    "move": 0,
+    "create": 0,
+    "update": 0,
+    "delete": 0,
+    "no_op": 1
+  },
+  "moves": [
+    {"host": "cihost", "from": "host.cihost.component.old.file.noop", "to": "host.cihost.component.current.file.noop"}
+  ],
+  "changes": [
+    {"address": "host.cihost.file.noop", "action": "no-op"}
+  ]
+}
+JSON
+expect_rejected \
+  'assert-noop-plan.py accepted a nonempty moves array' \
+  python3 "$SCRIPT_DIR/assert-noop-plan.py" "$TEMP_PLAN"
+
+cat >"$TEMP_PLAN" <<'JSON'
+{
+  "format_version": "alpineform.plan.alpha1",
+  "summary": {
+    "move": 4,
+    "create": 0,
+    "update": 2,
+    "delete": 0,
+    "no_op": 2,
+    "managed_resources": 4,
+    "graph_nodes": 4
+  },
+  "moves": [
+    {
+      "host": "cihost",
+      "from": "host.cihost.component.legacy_builder.build.input[\"source\"]",
+      "to": "host.cihost.component.builder.build.input[\"source\"]"
+    },
+    {
+      "host": "cihost",
+      "from": "host.cihost.component.legacy_builder.build.install[\"/usr/local/bin/apf-moved-builder\"]",
+      "to": "host.cihost.component.builder.build.install[\"/usr/local/bin/apf-moved-builder\"]"
+    },
+    {
+      "host": "cihost",
+      "from": "host.cihost.component.legacy_worker.file[\"/etc/alpineform-moved/worker.conf\"]",
+      "to": "host.cihost.component.worker.file[\"/etc/alpineform-moved/worker.conf\"]"
+    },
+    {
+      "host": "cihost",
+      "from": "host.cihost.component.legacy_worker.script[\"reload_worker\"]",
+      "to": "host.cihost.component.worker.script[\"reload_worker\"]"
+    }
+  ],
+  "changes": [
+    {"address": "host.cihost.component.builder.build.input[\"source\"]", "action": "no-op"},
+    {"address": "host.cihost.component.builder.build.install[\"/usr/local/bin/apf-moved-builder\"]", "action": "no-op"},
+    {"address": "host.cihost.component.worker.file[\"/etc/alpineform-moved/worker.conf\"]", "action": "update"},
+    {
+      "address": "host.cihost.component.worker.script[\"reload_worker\"]",
+      "action": "update",
+      "triggered_by": ["host.cihost.component.worker.file[\"/etc/alpineform-moved/worker.conf\"]"]
+    }
+  ]
+}
+JSON
+MOVED_PLAN_ARGS=(
+  "$TEMP_PLAN"
+  --host cihost
+  --move 'host.cihost.component.legacy_worker.file["/etc/alpineform-moved/worker.conf"]' 'host.cihost.component.worker.file["/etc/alpineform-moved/worker.conf"]'
+  --move 'host.cihost.component.legacy_worker.script["reload_worker"]' 'host.cihost.component.worker.script["reload_worker"]'
+  --move 'host.cihost.component.legacy_builder.build.input["source"]' 'host.cihost.component.builder.build.input["source"]'
+  --move 'host.cihost.component.legacy_builder.build.install["/usr/local/bin/apf-moved-builder"]' 'host.cihost.component.builder.build.install["/usr/local/bin/apf-moved-builder"]'
+  --update-address 'host.cihost.component.worker.file["/etc/alpineform-moved/worker.conf"]'
+  --update-address 'host.cihost.component.worker.script["reload_worker"]'
+  --trigger 'host.cihost.component.worker.script["reload_worker"]' 'host.cihost.component.worker.file["/etc/alpineform-moved/worker.conf"]'
+)
+python3 "$SCRIPT_DIR/assert-moved-plan.py" "${MOVED_PLAN_ARGS[@]}"
+expect_rejected \
+  'assert-moved-plan.py accepted an incomplete mapping set' \
+  python3 "$SCRIPT_DIR/assert-moved-plan.py" \
+  "$TEMP_PLAN" \
+  --host cihost \
+  --move 'host.cihost.component.legacy_worker.file["/etc/alpineform-moved/worker.conf"]' 'host.cihost.component.worker.file["/etc/alpineform-moved/worker.conf"]' \
+  --move 'host.cihost.component.legacy_worker.script["reload_worker"]' 'host.cihost.component.worker.script["reload_worker"]' \
+  --move 'host.cihost.component.legacy_builder.build.input["source"]' 'host.cihost.component.builder.build.input["source"]' \
+  --update-address 'host.cihost.component.worker.file["/etc/alpineform-moved/worker.conf"]' \
+  --update-address 'host.cihost.component.worker.script["reload_worker"]' \
+  --trigger 'host.cihost.component.worker.script["reload_worker"]' 'host.cihost.component.worker.file["/etc/alpineform-moved/worker.conf"]'
+
+cat >"$TEMP_PLAN" <<'JSON'
+{
+  "format_version": "alpineform.plan.alpha1",
+  "summary": {
+    "move": 0,
+    "create": 5,
+    "update": 1,
+    "delete": 0,
+    "no_op": 2,
+    "managed_resources": 8,
+    "graph_nodes": 8
+  },
+  "moves": [],
+  "changes": [
+    {"address": "host.cihost.component.builder.build.input[\"source\"]", "action": "create", "summary": "rebuild: stage input"},
+    {"address": "host.cihost.component.builder.build.dependencies", "action": "create", "summary": "rebuild: own dependencies"},
+    {"address": "host.cihost.component.builder.build.workspace", "action": "create", "summary": "rebuild: execute build"},
+    {"address": "host.cihost.component.builder.build.output[\"build/builder\"]", "action": "create", "summary": "rebuild: verify output"},
+    {"address": "host.cihost.component.builder.build.cleanup", "action": "create", "summary": "rebuild: clean workspace"},
+    {"address": "host.cihost.component.builder.build.install[\"/usr/local/bin/apf-moved-builder\"]", "action": "update", "summary": "rebuild: install output"},
+    {"address": "host.cihost.component.worker.package[\"jq\"]", "action": "no-op", "summary": "manage package"},
+    {"address": "host.cihost.component.worker.file[\"/etc/alpineform-moved/worker.conf\"]", "action": "no-op", "summary": "manage file"}
+  ]
+}
+JSON
+SOURCE_REBUILD_ARGS=(
+  "$TEMP_PLAN"
+  --create-address 'host.cihost.component.builder.build.input["source"]'
+  --create-address 'host.cihost.component.builder.build.dependencies'
+  --create-address 'host.cihost.component.builder.build.workspace'
+  --create-address 'host.cihost.component.builder.build.output["build/builder"]'
+  --create-address 'host.cihost.component.builder.build.cleanup'
+  --update-address 'host.cihost.component.builder.build.install["/usr/local/bin/apf-moved-builder"]'
+  --no-op-count 2
+)
+python3 "$SCRIPT_DIR/assert-source-rebuild-plan.py" "${SOURCE_REBUILD_ARGS[@]}"
+python3 - "$TEMP_PLAN" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as plan_file:
+    document = json.load(plan_file)
+document["changes"][0]["summary"] = "repair: own dependencies"
+with open(path, "w", encoding="utf-8") as plan_file:
+    json.dump(document, plan_file)
+PY
+expect_rejected \
+  'assert-source-rebuild-plan.py accepted a non-rebuild action summary' \
+  python3 "$SCRIPT_DIR/assert-source-rebuild-plan.py" "${SOURCE_REBUILD_ARGS[@]}"
 
 failed=0
 case_count=0

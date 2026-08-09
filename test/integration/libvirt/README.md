@@ -1,7 +1,7 @@
 # Alpine 3.21-3.24 libvirt integration
 
-The blocking managed-target gate runs eleven cases on each supported branch,
-booting 44 fresh persistent x86_64 VMs. The runner pins these immutable
+The blocking managed-target gate runs 12 cases on each supported branch,
+booting 48 fresh persistent x86_64 VMs. The runner pins these immutable
 official images:
 
 | Branch | Image | SHA-512 prefix |
@@ -55,15 +55,27 @@ build-definition drift, installed drift, repair, cleanup, and reboot, then
 exercises checksum, compiler, missing-output, symlink-output, cancellation,
 ENOSPC, and owned-leftover recovery paths while requiring the prior installation
 and protected state to survive.
+The component-moved case is the twelfth case and has its own Preview gate. It
+starts from old worker and source-builder component instances. Together they
+cover files, accounts, packages, OpenRC, prebuilt artifacts, scripts, and a
+source build. A separate read-only rename-only plan/check requires 18 exact
+mappings, 18 no-op resources, zero mutation actions, and byte-identical state
+and remote identity snapshots. The numbered rename/update plan has `move=18`,
+`update=2`, and `no_op=16`: one file update and its script trigger, with no
+service restart or source rebuild. Later phases require a retained-block no-op,
+a source-input rebuild with `move=0` through the legacy owner, a removed-block
+no-op with normal drift repair, and final component cleanup. The case rejects
+duplicate artifact caches, script markers, owner packages, dependency/install
+markers, workspaces, or output ownership.
 The account and lifecycle cases prove recorded destroy ordering. The layout
 validator requires contiguous configs, a check hook for every step, at least
 one drift hook per case, pinned offline facts, shell syntax, the nftables-only
 risk marker, and no committed keys or state.
 
-CI discovers exactly eleven cases and crosses them with four Alpine branches.
-The aggregate `Alpine 3.21-3.24 core gate` requires the full 44-job matrix, and
-the separate nftables and source-build Preview gates prevent either Preview
-schema from passing without its four-branch destructive coverage.
+CI discovers exactly 12 cases and crosses them with four Alpine branches.
+The aggregate `Alpine 3.21-3.24 core gate` requires the full 48-job matrix. The
+separate nftables, source-build, and component-moved Preview gates prevent those
+Preview schemas from passing without their four-branch runtime coverage.
 
 ## Run locally
 
@@ -79,6 +91,7 @@ Run all cases or one case against local `qemu:///system`:
 make test-integration
 make test-integration-case CASE=files-directories-secrets
 make test-integration-case CASE=nftables
+make test-integration-case CASE=component-moved
 make ALPINE_BRANCH=v3.21 test-integration-case CASE=facts-state-lock
 ```
 
@@ -119,4 +132,7 @@ Exit, failure, interruption, and cancellation all run the same cleanup trap.
 It destroys and undefines only the exact generated domain and network, removes
 the exact overlay, seed, console log, and helper directory, and removes the
 controller work directory unless preservation was requested. The shared
-checksum-verified base image is retained as a cache.
+checksum-verified base image is retained as a cache. The component-moved case
+also removes its managed remote objects, state, locks, build workspaces,
+artifact caches, source-build markers, and script markers before the disposable
+VM itself is torn down.
