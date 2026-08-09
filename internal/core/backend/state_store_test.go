@@ -28,6 +28,19 @@ func (localShellRunner) Run(ctx context.Context, command Command) ([]byte, error
 	return output, nil
 }
 
+type failBeforeStateReplaceRunner struct {
+	path string
+}
+
+func (runner failBeforeStateReplaceRunner) Run(ctx context.Context, command Command) ([]byte, error) {
+	rename := "mv -f \"$tmp\" " + shellQuote(runner.path)
+	script := strings.Replace(command.Script, rename, "exit 23\n"+rename, 1)
+	if script == command.Script {
+		return nil, errors.New("state write script has no atomic replacement step")
+	}
+	return localShellRunner{}.Run(ctx, Command{Script: script, Stdin: command.Stdin})
+}
+
 type recordingRunner struct {
 	output   []byte
 	err      error
@@ -118,6 +131,45 @@ func TestStateStoreWriteFailureDoesNotMutateInput(t *testing.T) {
 	}
 	if input.Serial != 4 || input.UpdatedAt != "" {
 		t.Fatalf("Write() mutated input: %#v", input)
+	}
+}
+
+func TestStateStoreWriteFailureBeforeReplacePreservesExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "state.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	prior := corestate.Empty("node")
+	prior.Serial = 9
+	original, err := corestate.Encode(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original = append(original, '\n')
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := StateStore{
+		Runner: failBeforeStateReplaceRunner{path: path},
+		Path:   path,
+		Now:    func() time.Time { return time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC) },
+	}
+	if _, err := store.Write(context.Background(), "node", corestate.Empty("node")); err == nil || !strings.Contains(err.Error(), "atomically write remote AlpineForm state") {
+		t.Fatalf("Write() error = %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("state after failed replacement = %q, want %q", got, original)
+	}
+	temporary, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".state.json.tmp.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temporary) != 0 {
+		t.Fatalf("temporary state files remain after failed replacement: %#v", temporary)
 	}
 }
 

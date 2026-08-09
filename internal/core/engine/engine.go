@@ -104,6 +104,7 @@ const RiskNetworkDisruption = "network_disruption"
 type HostPlan struct {
 	Host        ir.HostSpec
 	Steps       []Step
+	Moves       []corestate.RealizedMove
 	PriorState  corestate.State
 	Fingerprint string
 }
@@ -130,6 +131,9 @@ func (step Step) MarshalJSON() ([]byte, error) {
 
 func (plan Plan) HasChanges() bool {
 	for _, host := range plan.Hosts {
+		if len(host.Moves) > 0 {
+			return true
+		}
 		for _, step := range host.Steps {
 			if step.Action != ActionNoOp {
 				return true
@@ -250,6 +254,9 @@ func (engine Engine) Apply(ctx context.Context, build BuildFunc, options ApplyOp
 			if err := options.ReviewLocked(leaseContext, previewSingle, locked, changed); err != nil {
 				return err
 			}
+			if err := leaseContext.Err(); err != nil {
+				return err
+			}
 			if err := engine.executeHost(leaseContext, locked.Hosts[0]); err != nil {
 				return err
 			}
@@ -299,11 +306,15 @@ func (engine Engine) planBuilt(ctx context.Context, program *ir.Program, resourc
 	planned := make([]HostPlan, len(hosts))
 	err = runBounded(ctx, len(hosts), parallel, func(workContext context.Context, index int) error {
 		host := hosts[index]
-		state, err := engine.Backend.Read(workContext, host)
+		prior, err := engine.Backend.Read(workContext, host)
 		if err != nil {
 			return err
 		}
-		hostPlan, err := engine.planHost(workContext, host, nodesByHost[host.Name], state)
+		plannedHost, plannedNodes, moveResult, err := prepareHostPlan(host, nodesByHost[host.Name], prior)
+		if err != nil {
+			return err
+		}
+		hostPlan, err := engine.planHost(workContext, plannedHost, plannedNodes, moveResult.State, moveResult.Moves)
 		if err != nil {
 			return err
 		}
@@ -316,8 +327,8 @@ func (engine Engine) planBuilt(ctx context.Context, program *ir.Program, resourc
 	return Plan{Hosts: planned}, nil
 }
 
-func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []graph.Node, prior corestate.State) (HostPlan, error) {
-	hostPlan := HostPlan{Host: host, PriorState: prior}
+func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []graph.Node, prior corestate.State, moves []corestate.RealizedMove) (HostPlan, error) {
+	hostPlan := HostPlan{Host: host, Moves: append([]corestate.RealizedMove(nil), moves...), PriorState: prior}
 	current := map[string]bool{}
 	plannedActions := map[string]string{}
 	for _, node := range nodes {
@@ -479,8 +490,21 @@ func planNode(node graph.Node, prior corestate.Resource, hasPrior bool, observed
 }
 
 func planFingerprint(plan HostPlan) string {
-	parts := make([]string, 0, len(plan.Steps)+1)
+	parts := make([]string, 0, len(plan.Moves)+len(plan.Steps)+1)
 	parts = append(parts, factsFingerprint(plan.Host.Facts))
+	moves := append([]corestate.RealizedMove(nil), plan.Moves...)
+	sort.SliceStable(moves, func(i, j int) bool {
+		if moves[i].Host != moves[j].Host {
+			return moves[i].Host < moves[j].Host
+		}
+		if moves[i].From != moves[j].From {
+			return moves[i].From < moves[j].From
+		}
+		return moves[i].To < moves[j].To
+	})
+	for _, move := range moves {
+		parts = append(parts, strings.Join([]string{"move", move.Host, move.From, move.To}, "\x00"))
+	}
 	for _, step := range plan.Steps {
 		parts = append(parts, strings.Join([]string{step.Address, step.Action, corestate.Digest(step.Node.Desired), step.Observed.Digest, strconvBool(step.Observed.Exists)}, "\x00"))
 	}
@@ -515,13 +539,28 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 		state.Resources = map[string]corestate.Resource{}
 	}
 	for index, step := range plan.Steps {
+		if step.Action != ActionNoOp {
+			continue
+		}
+		if resource, exists := state.Resources[step.Address]; exists {
+			resource.Order = index + 1
+			state.Resources[step.Address] = resource
+		}
+	}
+	if len(plan.Moves) > 0 {
+		written, err := engine.Backend.Write(ctx, plan.Host, state)
+		if err != nil {
+			return err
+		}
+		state = written
+		if !hostPlanHasResourceChanges(plan) {
+			return nil
+		}
+	}
+	for index, step := range plan.Steps {
 		order := index + 1
 		switch step.Action {
 		case ActionNoOp:
-			if resource, exists := state.Resources[step.Address]; exists {
-				resource.Order = order
-				state.Resources[step.Address] = resource
-			}
 			continue
 		case ActionForget:
 			delete(state.Resources, step.Address)
@@ -556,6 +595,15 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 	}
 	_, err := engine.Backend.Write(ctx, plan.Host, state)
 	return err
+}
+
+func hostPlanHasResourceChanges(plan HostPlan) bool {
+	for _, step := range plan.Steps {
+		if step.Action != ActionNoOp {
+			return true
+		}
+	}
+	return false
 }
 
 func resourceForStep(step Step, observed ObservedResource, order int) corestate.Resource {
@@ -617,6 +665,10 @@ func stepIsProtected(step Step) bool {
 
 func copyState(input corestate.State) corestate.State {
 	out := input
+	out.ComponentIdentities = make(map[string]corestate.ComponentIdentity, len(input.ComponentIdentities))
+	for root, identity := range input.ComponentIdentities {
+		out.ComponentIdentities[root] = identity
+	}
 	out.Resources = make(map[string]corestate.Resource, len(input.Resources))
 	for address, resource := range input.Resources {
 		out.Resources[address] = resource

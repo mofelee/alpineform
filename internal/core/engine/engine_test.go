@@ -117,6 +117,10 @@ func (backend *memoryBackend) snapshot(host string) (corestate.State, int) {
 
 func cloneState(input corestate.State) corestate.State {
 	out := input
+	out.ComponentIdentities = make(map[string]corestate.ComponentIdentity, len(input.ComponentIdentities))
+	for root, identity := range input.ComponentIdentities {
+		out.ComponentIdentities[root] = identity
+	}
 	out.Resources = make(map[string]corestate.Resource, len(input.Resources))
 	for address, resource := range input.Resources {
 		out.Resources[address] = resource
