@@ -28,8 +28,19 @@ and atomically renames that file over the state path. Traps remove incomplete
 temporary files on failure or cancellation.
 
 State command stdin and remote error output are marked for redaction. Sensitive
-resources persist only a protected marker; ephemeral resources persist neither
-values nor their desired digest.
+and ephemeral resources omit their desired and observed values and persist a
+protected marker. Ephemeral resources normally omit their desired digest; a
+`DigestSafe` resource contract may retain one computed only from safe desired
+metadata. Safe cleanup and status metadata can remain available.
+
+Per-instance prebuilt artifact source evaluation does not change schema v2.
+Resolved protected URLs and checksums remain in memory and are never written to
+state, nor is a cache key or persisted digest derived from either value. State
+may retain safe verification status, protection metadata, owner and mode,
+deletion policy, a desired digest of safe metadata, and stable cache and delete
+paths formed from the retained physical component identity and normalized
+source label. Existing literal sources keep their checksum-keyed desired and
+state representation, and resource addresses are unchanged.
 
 ## Declarative Component Moves
 

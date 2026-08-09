@@ -32,7 +32,8 @@ content and is idempotent. No Debian resource schema is exposed.
 
 - `variable`, `locals`, root and nested `assert`
 - `profile` imports with deterministic component-instance override order
-- typed `component` inputs, prebuilt artifacts, composed native domains, and local instance dependency validation
+- typed `component` inputs, per-instance prebuilt source expressions, composed
+  native domains, and local instance dependency validation
 - top-level and component-local scripts with reference-identity `on_change` aggregation and output observation
 - `host` imports and optional offline `platform.architecture` / `version`
 - `lifecycle.prevent_destroy` metadata on component instances
@@ -42,6 +43,15 @@ Platform architecture is normalized to `amd64` or `arm64`. Alpine branch,
 `libc=musl`, and native APK architecture are derived read-only facts. Offline
 compilation requires architecture or version only when an expression actually
 references the corresponding platform fact.
+
+The parser retains prebuilt `source.url` and `source.sha256` expressions and
+their source locations. Merge normalizes and validates each mounted instance's
+inputs before evaluating those expressions and selecting the unlabelled or
+architecture-specific source. The mounted IR holds protected resolved values
+transiently in controller memory; graph compilation keeps them out of serialized
+desired data and carries them in an in-memory provider payload. This boundary
+does not extend to component `type`, `version`, `extract`, `build`, or `install`,
+and it does not change the existing source-build input model.
 
 ## Offline plan
 
@@ -126,8 +136,12 @@ git diff --check
 ```
 
 `make check` includes the static layout gate for the Alpine 3.21-3.24 libvirt
-matrix. Run `make ALPINE_BRANCH=v3.21 test-integration` for all real-VM cases
-on one branch or `make ALPINE_BRANCH=v3.21 test-integration-case CASE=<name>`
-for one. The pinned images, lifecycle,
-case contract, remote-libvirt settings, diagnostics, and cleanup behavior are
-documented in [the integration runbook](../test/integration/libvirt/README.md).
+matrix. The matrix remains 12 cases crossed with four branches (48 jobs). Its
+blocking `components` case covers binary, file, archive, and CA-certificate
+artifacts; this is the runtime evidence boundary for their Beta status, while
+the per-instance source-expression syntax remains additive alpha. Run
+`make ALPINE_BRANCH=v3.21 test-integration` for all real-VM cases on one branch
+or `make ALPINE_BRANCH=v3.21 test-integration-case CASE=<name>` for one. The
+pinned images, lifecycle, case contract, remote-libvirt settings, diagnostics,
+and cleanup behavior are documented in
+[the integration runbook](../test/integration/libvirt/README.md).

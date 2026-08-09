@@ -41,6 +41,29 @@ for the exact flag spelling shipped by the installed binary.
 Online branch, libc, native APK architecture, and kernel architecture are
 read-only detected facts.
 
+## Prebuilt Artifact Source Expressions
+
+For `binary`, `file`, `archive`, and `ca_certificate` components, only
+`source.url` and `source.sha256` within a prebuilt `source` block may use the
+mounted component's `input.*` context. This does not restrict existing input
+uses elsewhere in a component. AlpineForm normalizes and validates one mount's
+typed inputs, evaluates all of that template's source URL and checksum
+expressions, then selects the unlabelled or architecture-labelled source before
+graph compilation. Offline selection uses declared `platform.architecture`;
+online selection uses observed facts.
+
+An input-dependent component that is not mounted still validates its static
+source shape without inventing values for required inputs. Resolved URL and
+checksum validation is deferred until a mount supplies normalized values.
+Diagnostics identify both the template field and mounted instance.
+
+This is an additive alpha boundary. `type`, `version`, source labels, `extract`,
+`build`, `install`, resource addresses, state schema v2, and
+`alpineform.plan.alpha1` do not change. Existing literal sources retain their
+current behavior and identities. Target-side source builds retain their
+separate Preview input model. See [components](components.md#per-instance-source-expressions)
+for the complete cache and protected-value contract.
+
 ## Component Address Moves
 
 A top-level, unlabeled `moved` block declares that a mounted component instance

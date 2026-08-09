@@ -11,14 +11,24 @@ component "example_worker" {
     default = 9000
   }
 
+  input "artifact_base_url" {
+    type      = string
+    sensitive = true
+  }
+
+  input "artifact_sha256" {
+    type      = map(string)
+    ephemeral = true
+  }
+
   source "amd64" {
-    url    = "https://downloads.example.invalid/example-worker-1.0.0-linux-amd64"
-    sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    url    = "${input.artifact_base_url}/example-worker-1.0.0-linux-amd64"
+    sha256 = input.artifact_sha256["amd64"]
   }
 
   source "arm64" {
-    url    = "https://downloads.example.invalid/example-worker-1.0.0-linux-arm64"
-    sha256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    url    = "${input.artifact_base_url}/example-worker-1.0.0-linux-arm64"
+    sha256 = input.artifact_sha256["arm64"]
   }
 
   install {
@@ -60,6 +70,32 @@ host "component_example" {
 
   component "worker" {
     source = component.example_worker
-    inputs = { port = 9100 }
+    inputs = {
+      port              = 9100
+      artifact_base_url = "https://mirror-a.example.invalid"
+      artifact_sha256 = {
+        amd64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        arm64 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+      }
+    }
+  }
+}
+
+host "component_example_mirror" {
+  platform {
+    architecture = "arm64"
+    version      = "3.24.1"
+  }
+
+  component "worker" {
+    source = component.example_worker
+    inputs = {
+      port              = 9200
+      artifact_base_url = "https://mirror-b.example.invalid"
+      artifact_sha256 = {
+        amd64 = "1111111111111111111111111111111111111111111111111111111111111111"
+        arm64 = "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    }
   }
 }

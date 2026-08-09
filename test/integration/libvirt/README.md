@@ -41,6 +41,16 @@ values, invalid-daemon isolation, daemon crash recovery, partial/degraded drift
 repair, fresh running/stopped reboot persistence, project forget/adopt, scoped
 destroy with retained volumes, explicit absence, and service/package removal
 ordering.
+The components case uses three numbered configurations while remaining one of
+the 12 blocking cases. It retains literal-source compatibility and supplies
+protected binary, file, archive, and CA-certificate source expressions through
+mounted inputs. The single-host sequence uses mirror A and then byte-equivalent
+mirror B across configurations. Simultaneous two-host resolution remains
+covered by [compiler](../../../internal/core/merge/components_test.go) and
+[graph](../../../internal/core/graph/artifact_source_workflow_test.go) contract
+tests. Across all four branches the VM case proves wrong-checksum preservation
+with redacted debug output, no-op, four-install drift and repair, conservative
+cache-loss repair, reboot persistence, exact teardown, and absence after reboot.
 The nftables case is the tenth blocking case. Its
 `.allow-network-disruption` marker lets only that case add the separate apply
 authorization; the layout validator rejects the marker anywhere else. The case

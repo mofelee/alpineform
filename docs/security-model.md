@@ -59,6 +59,22 @@ special files, unsafe names, and post-strip collisions. APK repositories accept
 HTTPS URLs without embedded credentials, queries, or fragments. AlpineForm does
 not invoke distribution upgrades.
 
+Prebuilt component `source.url` and `source.sha256` expressions inherit
+sensitive and ephemeral marks from mounted inputs. Resolved protected values
+remain transient controller-memory values in the mounted IR and in-memory
+provider payloads. Provider commands send them only through stdin marked for
+redaction. They are never serialized into compiled host or graph JSON,
+text/JSON/HTML plans, state, debug events, diagnostics, provider errors, remote
+command arguments, scripts, environment, output, or logs.
+
+Protected artifact caches use the retained physical component identity and the
+normalized source label, not a URL, checksum, or digest derived from either.
+Serialized state may retain safe metadata such as cache and delete paths,
+protection flags, verification status, ownership, mode, deletion policy, and a
+desired digest computed only from safe metadata. It never retains a raw or
+derived protected URL or checksum. Public literal sources keep their existing
+checksum-keyed cache identity and state representation.
+
 Preview target-side builds have a separate
 [threat model and ownership contract](source-build-security.md). They require
 checksummed inputs and argv commands, disable build-command networking, omit

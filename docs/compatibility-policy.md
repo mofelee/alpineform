@@ -24,6 +24,27 @@ Automation should prefer plan JSON over parsing text output.
 AlpineForm is independently versioned. It does not accept `.dbf.hcl`,
 DebianForm variables, DebianForm state, or DebianForm resource addresses.
 
+## Component Artifact Sources
+
+Allowing mounted component inputs in prebuilt `source.url` and `source.sha256`
+is an additive alpha DSL change. Inputs are normalized and validated per mounted
+instance before source evaluation and architecture selection. An unmounted
+input-dependent template still validates static shape without fabricated input
+values.
+
+The expression boundary does not include component `type`, `version`, source
+labels, `extract`, `build`, or `install`; target-side source builds keep their
+existing separate semantics. Existing literal source behavior, checksum-keyed
+caches, resource addresses, desired/state representation, state schema v2, and
+`alpineform.plan.alpha1` remain compatible.
+
+Protected resolved URLs and checksums are in-memory payloads, not serialized
+compatibility-visible content. Their stable cache identity is based on retained
+physical component identity plus normalized source label, never raw or derived
+protected material. Changing that identity rule or exposing a protected value
+through graph, plan, state, diagnostics, debug, errors, or remote command
+logging is a breaking security change.
+
 ## Resource Addresses And State
 
 Resource addresses are persisted identities. A change that would reinterpret

@@ -86,10 +86,97 @@ component "tool" {
 ```
 
 Supported types are `binary`, `file`, `archive`, and `ca_certificate`.
+Binary and archive components remain Beta. File and CA-certificate components
+are also Beta after passing the blocking Alpine 3.21-3.24 `components` matrix on
+x86_64. The per-instance source-expression extension described below is an
+additive alpha DSL interface; it does not change those runtime support levels.
+
 Architecture labels use normalized `amd64` or `arm64` facts. A single
 unlabelled `source` is architecture-independent; labelled and unlabelled
 sources cannot be mixed. Offline planning needs `platform.architecture` only
 when labelled sources must be selected.
+
+### Per-instance source expressions
+
+`source.url` and `source.sha256` may refer to component inputs. AlpineForm first
+normalizes, type-checks, and validates the inputs for one mounted instance,
+then evaluates every source expression for that instance, and only then selects
+the architecture source and builds its artifact graph:
+
+```hcl
+component "tool" {
+  input "mirror" {
+    type      = string
+    sensitive = true
+  }
+
+  input "checksum" {
+    type      = string
+    ephemeral = true
+  }
+
+  type    = "binary"
+  version = "1.2.3"
+
+  source "amd64" {
+    url    = "${input.mirror}/tool-1.2.3-linux-amd64"
+    sha256 = input.checksum
+  }
+
+  install {
+    path = "/usr/local/bin/tool"
+    mode = "0755"
+  }
+}
+
+host "edge_a" {
+  platform { architecture = "amd64" }
+  component "tool" {
+    source = component.tool
+    inputs = {
+      mirror   = "https://mirror-a.example.invalid"
+      checksum = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  }
+}
+
+host "edge_b" {
+  platform { architecture = "amd64" }
+  component "tool" {
+    source = component.tool
+    inputs = {
+      mirror   = "https://mirror-b.example.invalid"
+      checksum = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    }
+  }
+}
+```
+
+An unmounted input-dependent template remains valid when its static shape is
+complete. AlpineForm retains the expressions and their source locations without
+fabricating required input values; resolved URL and checksum validation occurs
+for each mount. Offline compilation selects labelled sources from declared
+platform facts, while online compilation selects from observed target facts.
+
+This evaluation boundary is limited to `source.url` and `source.sha256`.
+`type`, `version`, source labels, `extract`, `build`, and `install` remain
+template-time metadata. Target-side source-build inputs keep their existing
+independent Preview semantics.
+
+Literal source declarations retain their existing checksum-keyed caches,
+resource addresses, desired/state representation, and provider behavior.
+Protected resolved URLs and checksums remain transient controller-memory values:
+first in the mounted IR during compilation, then in in-memory provider payloads.
+Protection does not introduce a new resource-address scheme: the artifact source
+address continues to use the logical mounted component name and normalized
+source label. The protected cache path instead uses the retained physical
+component identity and normalized source label (`any`, `amd64`, or `arm64`),
+never raw or derived protected material. This stable cache identity does not
+make every source change an action no-op: changing only the URL or mirror with
+the same already verified checksum is a durable no-op, while rotating the
+checksum can plan an update or repair. Hidden protected intent participates in
+preview-versus-locked comparison, so changing the resolved URL or checksum
+requires locked-plan re-review even though the raw values are not serialized.
 
 Every source must be an absolute HTTP(S) URL without embedded credentials or
 a fragment and must include an exact 64-character SHA-256. Downloads enter a
@@ -117,6 +204,10 @@ CA certificates must install as `.crt` files below
 `/usr/local/share/ca-certificates/`. `update-ca-certificates` and its success
 marker are part of the apply transaction. A failed trust refresh is retried
 and is never recorded as a successful resource state.
+
+The existing `components` VM case exercises binary, file, archive, and
+CA-certificate sources on each supported x86_64 branch. It remains one of the
+12 blocking integration cases, so the managed-target matrix remains 48 jobs.
 
 Removing a component destroys its installed artifact and removes its verified
 cache. Archive destinations are removed recursively. Use

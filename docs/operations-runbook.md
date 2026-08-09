@@ -105,6 +105,33 @@ Use `apf apply --debug` for structural fact, state, lock, inspect, operation,
 apply, and cleanup events. Debug does not include command stdin/output or
 protected values.
 
+## Rotate A Per-Instance Artifact Source
+
+Prebuilt component mounts can supply `source.url` and `source.sha256` through
+typed inputs. Preserve the retained physical component identity (using `moved`
+if the logical mount label changes) and normalized source label across a
+rotation. Protected caches are keyed by that stable identity, not by a protected
+URL or checksum.
+
+1. Change the mounted input values in the protected configuration source. Do
+   not place tokens, checksums, or their digests in component labels, source
+   labels, paths, or other public identity fields.
+2. Run `apf validate`. An unmounted template validates only static shape;
+   mounted inputs are normalized and validated before source expressions are
+   evaluated.
+3. Run an offline plan with declared platform facts to review source selection,
+   then an online plan to review selection from observed facts. Protected
+   changes remain redacted, so review the affected stable addresses and actions.
+4. Apply the locked plan. Download or checksum failure preserves the previous
+   verified cache and installation; correct the source and retry normally.
+5. Require a JSON no-op plan and clean `apf check` after the rotation.
+
+Do not publish configuration copies, plans, state, debug logs, remote cache
+metadata, or failure artifacts merely to diagnose a protected source. After
+evaluation, AlpineForm carries the resolved URL and checksum only in controller
+memory and redacted provider stdin; serialized surfaces contain only safe
+structural, status, and lifecycle metadata.
+
 ## Source-Build Failure Recovery
 
 Preview source builds keep the prior installation until input staging,

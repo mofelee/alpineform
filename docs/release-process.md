@@ -40,7 +40,10 @@ until install, test, and upgrade have blocking evidence.
    git diff --check
    ```
 
-4. Run the full Alpine 3.21-3.24 VM matrix and verify exact cleanup.
+4. Run the full Alpine 3.21-3.24 VM matrix and verify exact cleanup. A file or
+   CA-certificate component Beta claim requires the blocking `components` case
+   on all four branches; expanding that case must not change the expected
+   12-case, 48-job matrix cardinality.
 5. Confirm GitHub artifact attestations are available. Public repositories pass
    directly; a private Enterprise Cloud repository must explicitly set the
    repository variable `APF_PRIVATE_ATTESTATIONS_ENABLED=true` after confirming
@@ -48,6 +51,14 @@ until install, test, and upgrade have blocking evidence.
 6. Push the release commit and require its exact-SHA core CI and release dry-run.
 7. Test the installer against the snapshot artifacts in an isolated prefix.
 8. Create an SSH- or GPG-signed annotated tag and push only that tag.
+
+For per-instance prebuilt artifact source expressions, release review must call
+out the additive alpha `source.url`/`source.sha256` boundary and confirm that
+literal behavior, resource addresses, state schema v2,
+`alpineform.plan.alpha1`, and source-build semantics remain unchanged. Release
+notes must also state that protected resolved values remain in-memory-only and
+that protected cache identity is based on retained physical component identity
+plus the normalized source label rather than protected material.
 
 ## Publish And Verify
 

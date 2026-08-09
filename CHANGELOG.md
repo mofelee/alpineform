@@ -51,6 +51,16 @@ All notable user-visible changes to AlpineForm are recorded here.
   trigger, retains and removes the blocks cleanly, rebuilds a later source-input
   change through the retained physical identity, rejects duplicate ownership,
   and completes exact cleanup.
+- Add per-mounted-instance evaluation for prebuilt component `source.url` and
+  `source.sha256` after typed inputs are normalized and validated, including
+  unmounted static-shape validation, offline declared-architecture selection,
+  online observed-architecture selection, and protected in-memory provider
+  payloads with stable cache identity based on retained physical component
+  identity and the normalized source label.
+- Expand the existing blocking `components` case across Alpine 3.21-3.24 to
+  cover binary, file, archive, and CA-certificate literal and protected sources,
+  checksum failure, no-op, drift repair, cleanup, and reboot. This remains part
+  of the existing 12-case, 48-job matrix rather than adding a thirteenth case.
 
 ### Fixed
 
@@ -82,6 +92,16 @@ All notable user-visible changes to AlpineForm are recorded here.
   physical component identities; v2 binaries read v1, but v1 binaries reject
   state after it is written as v2. Component-root moves remain Preview despite
   their four-branch blocking VM case and dedicated aggregate gate.
+- Per-instance prebuilt `source.url` and `source.sha256` expressions are an
+  additive alpha interface. Existing literal behavior, resource addresses,
+  checksum-keyed public caches, state schema v2, and
+  `alpineform.plan.alpha1` remain compatible; target-side source-build semantics
+  are unchanged.
+- Binary and archive components remain Beta. Promote file and CA-certificate
+  components from Preview to Beta through the blocking four-branch `components`
+  case. Protected URL/checksum values remain in memory only and use stable
+  cache identity based on retained physical component identity and the
+  normalized source label rather than serialized protected material.
 
 ### Migration Notes
 
@@ -93,6 +113,13 @@ All notable user-visible changes to AlpineForm are recorded here.
   retain it until every host is migrated and plan/check is clean. Removing the
   block after only one host or rollout batch prevents remaining source states
   from migrating. After all hosts are complete, removing the block is a no-op.
+- No manual, schema, or resource-address migration is required for per-instance
+  artifact sources. Existing literal declarations remain compatible. When a
+  literal source becomes protected, AlpineForm automatically migrates its
+  legacy checksum cache and CA marker to the stable protected identity and
+  prewrites scrubbed state under the backend lease. Keep the component mounted,
+  preserve its physical identity (using `moved` if renamed), and retain the
+  normalized source label during adoption.
 
 ## [v0.1.0-alpha.5] - 2026-07-13
 

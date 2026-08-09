@@ -22,6 +22,13 @@ timezone, kernel modules, sysctls, and verified prebuilt components. Every
 Beta domain runs in a fresh VM for every supported branch through apply, no-op
 plan, drift and repair where applicable, and reboot.
 
+Binary, file, archive, and CA-certificate components are Beta under the
+four-branch blocking `components` case. Their `source.url` and `source.sha256`
+fields may be evaluated from normalized inputs separately for each mounted
+instance; that expression syntax is additive alpha. Literal behavior, resource
+addresses, state schema v2, and `alpineform.plan.alpha1` remain compatible, and
+target-side source-build semantics are unchanged.
+
 Alpine 3.21 through 3.24 aarch64 remains Preview because it has cross-build and
 selector coverage but no blocking real-VM gate. Docker Engine and Compose are
 an implemented Preview domain covered by the four-branch x86_64 VM gate; they

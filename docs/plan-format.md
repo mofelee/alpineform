@@ -31,6 +31,25 @@ The format intentionally omits wall-clock timestamps. Repeated offline plans
 are byte-stable when inputs and argument order are unchanged; online plan
 identity ignores fact detection time while retaining all semantic facts.
 
+## Component Artifact Inputs
+
+Per-mounted-instance `source.url` and `source.sha256` expressions do not add a
+plan field or change `alpineform.plan.alpha1`. Inputs are normalized and the
+expressions are evaluated before source selection and artifact graph
+compilation. Offline plans select from declared platform facts; online plans
+select from observed facts.
+
+Public literal sources retain their existing addresses and desired rendering.
+For a protected resolved URL or checksum, `graph` omits the raw payload while
+retaining the address, kind, managed status, source location, and relationships.
+`changes` retains the safe summary and relationships and uses the existing
+`{ "protected": true }` desired representation. Raw values, protected-derived
+cache keys, internal provider payloads, and observed protected material are
+never serialized to text, JSON, or HTML. Hidden protected intent is not
+serialized, but it contributes to the in-memory plan fingerprint used for
+preview-versus-locked comparison; changing it therefore requires locked-plan
+re-review.
+
 ## Moves
 
 Each online move has three required strings:
