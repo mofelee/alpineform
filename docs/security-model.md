@@ -29,14 +29,27 @@ mode `0700` and file mode `0600`. The runtime lease lives below `/run/lock` and
 does not survive reboot. State is not a secret vault: protect target root access
 and do not put plaintext secrets in non-sensitive resource fields.
 
+Schema v2 can retain a logical component root and its legacy physical component
+name so address-derived provider ownership remains stable after a declared
+move. These names and resource addresses are metadata, not a secret channel.
+Do not put credentials or other protected material in declaration labels,
+resource identity fields, file paths, or service names.
+
 ## Protected Values
 
-Sensitive values are replaced before graph, plan text, plan JSON, HTML, debug,
-state, and error serialization. Ephemeral values persist neither their value
-nor a content-derived digest. Protected SSH stdin and remote stderr are omitted
-from errors. Integration failure artifacts scrub public key material, key blobs,
-and the sensitive sentinel; private keys, seed images, state, and scenario
-copies are never uploaded.
+Sensitive values are replaced before graph, plan text, plan JSON, HTML, state,
+debug, diagnostic, and error serialization. Ephemeral values persist neither
+their value nor a content-derived digest. Protected SSH stdin and remote stderr
+are omitted from errors. Integration failure artifacts scrub public key
+material, key blobs, and the sensitive sentinel; private keys, seed images,
+state, and scenario copies are never uploaded.
+
+A realized move exposes only `host`, `from`, and `to` addresses. Move summaries,
+validation failures, state collision diagnostics, locked-plan comparisons, and
+retry errors must not expand those addresses into desired or observed payloads,
+component inputs, provider output, or stored protected data. Moving a protected
+resource preserves its protected marker and ephemeral digest rules; the state
+rewrite never materializes a redacted value.
 
 ## Downloads And Components
 

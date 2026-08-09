@@ -30,11 +30,24 @@ Resource addresses are persisted identities. A change that would reinterpret
 an existing address must either provide an explicit migration or reject the
 old state. Silent reassignment is forbidden.
 
+Top-level `moved` blocks are the explicit migration for a mounted component
+instance rename. They are an additive alpha DSL feature, and their endpoints
+remain limited to static component roots on the same host. A compatible move
+preserves ownership and remote-object identity, is atomic per host and
+idempotent on retry, and never turns a move-only rename into a remote resource
+action. Weakening endpoint/collision validation, changing payload rebasing, or
+changing apply ordering in a way that violates those properties is a breaking
+safety change.
+
 State has an AlpineForm product marker, host identity, schema version, serial,
 facts, and managed resources. The decoder rejects foreign products, unknown
-newer schemas, and wrong-host state. `v0.1.0-alpha.5` has no state migration
-command; back up state before upgrading and use the prior binary for rollback.
-Never hand-edit state while an apply may be running.
+newer schemas, and wrong-host state. State schema v2 adds bounded retained
+component physical identities. A schema-v2 binary reads v1 and writes v2 on its
+next state write; a schema-v1 binary rejects v2. Back up every host's v1 state
+before the first v2 apply and retain the matching prior configuration and
+binary. Downgrade requires restoring that backup. There is no imperative state
+migration command or supported hand conversion, and state must never be edited
+while an apply may be running.
 
 ## Plan JSON
 
@@ -42,6 +55,11 @@ The current format is `alpineform.plan.alpha1`. Within a release, identical
 offline inputs produce deterministic JSON. A breaking shape or semantic change
 must use a new `format_version`; additive fields may be introduced during the
 alpha series and consumers must ignore unknown fields.
+
+The top-level `moves` array and `summary.move` are additive alpha1 fields.
+Consumers must treat them as state-address migrations, separate from
+create/update/adopt/delete/destroy/forget actions, and continue to ignore
+unknown fields.
 
 Sensitive and ephemeral values are never compatibility-visible content. Their
 redacted representation may gain metadata but must never reveal a value.
@@ -60,3 +78,6 @@ Before release, classify changes across DSL, CLI, address identity, state,
 plan JSON, provider behavior, installer, and artifacts. Breaking alpha changes
 must appear under `Breaking Changes` and `Migration Notes`. If rollback cannot
 reuse the prior state safely, the release must say so before the tag is made.
+The schema-v2 release notes must require a pre-apply v1 backup, explain that
+schema-v1 binaries reject v2, and document backup restoration as the downgrade
+boundary.

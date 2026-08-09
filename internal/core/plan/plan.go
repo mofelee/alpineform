@@ -23,6 +23,7 @@ type Document struct {
 	Command       Command     `json:"command"`
 	Hosts         []string    `json:"hosts"`
 	Summary       Summary     `json:"summary"`
+	Moves         []Move      `json:"moves"`
 	Graph         []GraphNode `json:"graph"`
 	Changes       []Change    `json:"changes"`
 }
@@ -32,6 +33,7 @@ type Command struct {
 }
 
 type Summary struct {
+	Move              int `json:"move"`
 	Create            int `json:"create"`
 	Update            int `json:"update"`
 	Adopt             int `json:"adopt,omitempty"`
@@ -42,6 +44,12 @@ type Summary struct {
 	ManagedResources  int `json:"managed_resources"`
 	GraphNodes        int `json:"graph_nodes"`
 	NetworkDisruption int `json:"network_disruption,omitempty"`
+}
+
+type Move struct {
+	Host string `json:"host"`
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 type GraphNode struct {
@@ -77,6 +85,7 @@ func New(resourceGraph *graph.ResourceGraph, options Options) Document {
 		Mode:          "offline",
 		Command:       Command{Files: append([]string(nil), options.Files...)},
 		Hosts:         append([]string(nil), options.Hosts...),
+		Moves:         []Move{},
 		Graph:         make([]GraphNode, 0, len(nodes)),
 		Changes:       []Change{},
 	}
@@ -127,6 +136,7 @@ func NewOnline(actionPlan engine.Plan, options Options) Document {
 		FormatVersion: FormatVersion,
 		Mode:          "online",
 		Command:       Command{Files: append([]string(nil), options.Files...)},
+		Moves:         []Move{},
 		Graph:         []GraphNode{},
 		Changes:       []Change{},
 	}
@@ -134,6 +144,13 @@ func NewOnline(actionPlan engine.Plan, options Options) Document {
 	sort.SliceStable(hosts, func(i, j int) bool { return hosts[i].Host.Name < hosts[j].Host.Name })
 	for _, host := range hosts {
 		document.Hosts = append(document.Hosts, host.Host.Name)
+		for _, move := range host.Moves {
+			document.Moves = append(document.Moves, Move{
+				Host: move.Host,
+				From: move.From,
+				To:   move.To,
+			})
+		}
 		for _, step := range host.Steps {
 			desired := cloneMap(step.Node.Desired)
 			if step.Node.Sensitive || step.Node.Ephemeral || resourceProtected(step.Prior) {
@@ -172,6 +189,16 @@ func NewOnline(actionPlan engine.Plan, options Options) Document {
 			document.addAction(step.Action)
 		}
 	}
+	sort.SliceStable(document.Moves, func(i, j int) bool {
+		if document.Moves[i].Host != document.Moves[j].Host {
+			return document.Moves[i].Host < document.Moves[j].Host
+		}
+		if document.Moves[i].From != document.Moves[j].From {
+			return document.Moves[i].From < document.Moves[j].From
+		}
+		return document.Moves[i].To < document.Moves[j].To
+	})
+	document.Summary.Move = len(document.Moves)
 	document.Summary.ManagedResources = len(document.Changes)
 	document.Summary.GraphNodes = len(document.Graph)
 	return document
@@ -246,9 +273,17 @@ func printOnlineText(w io.Writer, document Document, options TextOptions) {
 		heading = "\x1b[1;36m" + heading + "\x1b[0m"
 	}
 	fmt.Fprintln(w, heading)
-	if document.Summary.Create+document.Summary.Update+document.Summary.Adopt+document.Summary.Delete+document.Summary.Destroy+document.Summary.Forget == 0 {
+	if len(document.Moves) == 0 && document.Summary.Create+document.Summary.Update+document.Summary.Adopt+document.Summary.Delete+document.Summary.Destroy+document.Summary.Forget == 0 {
 		fmt.Fprintln(w, "  No remote resource changes.")
 	} else {
+		for _, move := range document.Moves {
+			symbol := "->"
+			if options.Color {
+				symbol = "\x1b[36m" + symbol + "\x1b[0m"
+			}
+			fmt.Fprintf(w, "  %s %s\n", symbol, move.From)
+			fmt.Fprintf(w, "    to: %s\n", move.To)
+		}
 		for _, change := range document.Changes {
 			if change.Action == engine.ActionNoOp {
 				continue
@@ -266,7 +301,8 @@ func printOnlineText(w io.Writer, document Document, options TextOptions) {
 		}
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "Summary: %d create, %d update, %d adopt, %d delete, %d destroy, %d forget, %d no-op.\n",
+	fmt.Fprintf(w, "Summary: %d move, %d create, %d update, %d adopt, %d delete, %d destroy, %d forget, %d no-op.\n",
+		document.Summary.Move,
 		document.Summary.Create,
 		document.Summary.Update,
 		document.Summary.Adopt,
@@ -440,8 +476,13 @@ const planHTML = `<!doctype html>
 <body>
 <main>
   <h1>AlpineForm {{if eq .Mode "online"}}online{{else}}offline{{end}} plan</h1>
-  <div class="summary">{{if eq .Mode "online"}}{{.Summary.Create}} create; {{.Summary.Update}} update; {{.Summary.Adopt}} adopt; {{.Summary.Delete}} delete; {{.Summary.Destroy}} destroy; {{.Summary.Forget}} forget; {{.Summary.NoOp}} no-op.{{else}}{{.Summary.GraphNodes}} graph nodes; {{.Summary.ManagedResources}} managed resources; {{.Summary.Create}} to create; {{.Summary.Delete}} to delete.{{end}}{{if .Summary.NetworkDisruption}} Network disruption: {{.Summary.NetworkDisruption}}.{{end}}</div>
-{{if eq .Mode "online"}}  <table>
+  <div class="summary">{{if eq .Mode "online"}}{{.Summary.Move}} move; {{.Summary.Create}} create; {{.Summary.Update}} update; {{.Summary.Adopt}} adopt; {{.Summary.Delete}} delete; {{.Summary.Destroy}} destroy; {{.Summary.Forget}} forget; {{.Summary.NoOp}} no-op.{{else}}{{.Summary.GraphNodes}} graph nodes; {{.Summary.ManagedResources}} managed resources; {{.Summary.Create}} to create; {{.Summary.Delete}} to delete.{{end}}{{if .Summary.NetworkDisruption}} Network disruption: {{.Summary.NetworkDisruption}}.{{end}}</div>
+{{if eq .Mode "online"}}{{if .Moves}}  <h2>Moves</h2>
+  <table>
+    <thead><tr><th>Host</th><th>From</th><th>To</th></tr></thead>
+    <tbody>{{range .Moves}}<tr><td><code>{{.Host}}</code></td><td><code>{{.From}}</code></td><td><code>{{.To}}</code></td></tr>{{end}}</tbody>
+  </table>
+{{end}}  <table>
     <thead><tr><th>Address</th><th>Action</th>{{if .Summary.NetworkDisruption}}<th>Risk</th>{{end}}<th>Summary</th><th>Relationships</th><th>Source</th></tr></thead>
     <tbody>{{range .Changes}}<tr><td><code>{{.Address}}</code></td><td>{{.Action}}</td>{{if $.Summary.NetworkDisruption}}<td>{{range .Risks}}{{.}} {{end}}</td>{{end}}<td>{{.Summary}}</td><td>{{if .DependsOn}}<div>depends_on: {{range $index, $address := .DependsOn}}{{if $index}}, {{end}}<code>{{$address}}</code>{{end}}</div>{{end}}{{if .TriggeredBy}}<div>triggered_by: {{range $index, $address := .TriggeredBy}}{{if $index}}, {{end}}<code>{{$address}}</code>{{end}}</div>{{end}}</td><td><code>{{.Source.File}}:{{.Source.Line}}</code></td></tr>{{end}}</tbody>
   </table>{{else}}  <table>

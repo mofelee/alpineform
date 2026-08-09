@@ -23,6 +23,64 @@ understands. Stop concurrent automation first, preserve mode `0600`, and use an
 atomic replacement. State restoration does not undo target-side mutations; run
 `apf plan` immediately afterward.
 
+The moved-block release introduces state schema v2. Its binary reads schema v1,
+but any later state write persists v2, which schema-v1 binaries reject. Before
+the first apply with a schema-v2 binary, back up every selected host's v1 state
+and retain the matching prior configuration and binary. An online plan/check is
+read-only and does not cross this boundary.
+
+To downgrade after v2 has been written, stop apply automation, restore the
+host's v1 backup atomically, and use the matching old configuration and binary.
+Restoring state does not reverse remote actions performed after the backup, so
+review an online plan before approving reconciliation. If no compatible v1
+backup exists, remain on a schema-v2-capable binary; hand-editing
+`schema_version`, resource addresses, or `component_identities` is unsupported.
+
+## Rename A Component Instance
+
+Use a declarative move when a mounted component instance label changes but its
+remote objects do not:
+
+```hcl
+moved {
+  from = component.legacy_worker
+  to   = component.worker
+}
+```
+
+Use this rollout sequence:
+
+1. Rename the mounted component and add the `moved` block in the same
+   configuration change. Run `apf validate` and an offline plan to catch static
+   endpoint, duplicate, chain, and mount errors without reading remote state.
+2. Back up state on every rollout target before its first schema-v2 apply.
+3. Run an online plan for the selected host. Confirm the complete old and new
+   addresses under `moves`, verify `summary.move`, and review any real resource
+   action or trigger separately.
+4. Apply the reviewed locked plan. AlpineForm atomically commits the move for
+   that host before any provider mutation.
+5. With the block retained, run online plan and `apf check` again. Require no
+   pending moves or unintended resource actions.
+6. Repeat for every relevant host. Hosts can be migrated in separate batches,
+   and a host that still mounts only the source remains unchanged.
+7. Remove the block only after all host states have the source prefix absent
+   and destination prefix present. A final online plan and check must remain
+   clean after removal.
+
+Do not remove the block because the first host or batch is clean. Hosts still
+carrying source state would lose their migration instruction and could instead
+plan destination creation plus source forget/destroy behavior. This is
+especially important when host selection or separate configuration branches
+stage the rollout.
+
+If the move prewrite fails, the previous atomic state file remains valid and no
+provider mutation starts; keep the block and retry after correcting the state
+backend problem. If a later provider action fails, the move may already be
+committed. Re-run the online plan and normal apply with the block retained; an
+already-migrated host realizes no move. A multi-host failure can leave a safe
+mixture of migrated and pending hosts because writes are atomic per host. Do not
+hand-edit state or add a reverse move as failure recovery.
+
 ## Lock Recovery
 
 The lease is `/run/lock/alpineform/lock`. A normal exit, error, or cancellation

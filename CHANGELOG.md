@@ -38,6 +38,11 @@ All notable user-visible changes to AlpineForm are recorded here.
   musl compilation, no-op, source/build/output drift, reboot, checksum,
   compiler, missing/symlink output, cancellation, ENOSPC, secret redaction,
   shared dependency retention, and interrupted-build recovery.
+- Add static top-level component-root `moved` blocks with deterministic chain
+  and collision validation, host-scoped atomic state migration, retained
+  source-build physical ownership, separate text/JSON/HTML move rendering, and
+  redaction of protected component values across state, plans, debug,
+  diagnostics, and errors.
 
 ### Fixed
 
@@ -63,6 +68,22 @@ All notable user-visible changes to AlpineForm are recorded here.
   addresses are additive alpha interfaces. Target-side builds remain Preview,
   require root plus Bubblewrap on persistent Alpine, and do not support build
   command networking or unchecked inputs.
+- The `moved` DSL and the `moves`/`summary.move` fields in
+  `alpineform.plan.alpha1` are additive alpha interfaces. Moves are state
+  migrations and do not change resource action counts. State schema v2 retains
+  physical component identities; v2 binaries read v1, but v1 binaries reject
+  state after it is written as v2.
+
+### Migration Notes
+
+- Before the first apply with schema-v2 moved support, back up each host's
+  schema-v1 `/var/lib/alpineform/state.json` and retain the matching prior
+  configuration and binary. Downgrade requires restoring that backup; editing
+  the schema marker or retained identity map is unsupported.
+- For a component instance rename, add the `moved` block with the rename and
+  retain it until every host is migrated and plan/check is clean. Removing the
+  block after only one host or rollout batch prevents remaining source states
+  from migrating. After all hosts are complete, removing the block is a no-op.
 
 ## [v0.1.0-alpha.5] - 2026-07-13
 

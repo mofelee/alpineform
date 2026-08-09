@@ -31,6 +31,7 @@ for the exact flag spelling shipped by the installed binary.
 - `profile` groups host configuration for deterministic imports.
 - `component` defines typed reusable native resources, one prebuilt artifact,
   or an independently Preview checksummed source build.
+- `moved` preserves component-instance state identity across a reviewed rename.
 - `script` defines argv-safe commands or redacted interpreter content and
   optional observed outputs.
 - `host` selects SSH, optional offline platform facts, imports, components, and
@@ -39,6 +40,64 @@ for the exact flag spelling shipped by the installed binary.
 `platform.architecture` and `platform.version` are optional offline assertions.
 Online branch, libc, native APK architecture, and kernel architecture are
 read-only detected facts.
+
+## Component Address Moves
+
+A top-level, unlabeled `moved` block declares that a mounted component instance
+was renamed:
+
+```hcl
+component "worker_template" {}
+
+moved {
+  from = component.legacy_worker
+  to   = component.worker
+}
+
+host "edge" {
+  component "worker" {
+    source = component.worker_template
+  }
+}
+```
+
+Both endpoints must be static `component.<instance>` traversals. Strings,
+variables, locals, interpolation, function calls, host-qualified addresses,
+resource leaves, labels, nested blocks, and attributes other than `from` and
+`to` are rejected. Both attributes are required. Validation also rejects
+self-moves, duplicate or divergent sources, many-to-one destinations, cycles,
+overlapping mappings, and ambiguous chains with more than one mounted instance.
+Acyclic historical chains such as `old -> middle -> current` are supported.
+
+The declaration is projected independently onto each host. A host that mounts
+the destination can migrate every tracked address below the source root while
+preserving its suffix:
+
+```text
+host.edge.component.legacy_worker.*
+  -> host.edge.component.worker.*
+```
+
+A host that still mounts only the source remains unchanged, which supports a
+staged rollout. For an applicable host, tracked source state requires the final
+destination in that host's desired graph; tracked source and destination roots
+cannot be merged. Moves never cross hosts, state backends, or products and do
+not rename remote files, packages, accounts, services, interfaces, or other
+provider objects.
+
+Online `plan` and `check` resolve moves in memory and remain read-only. `apply`
+recomputes the move while holding the host lease, includes it in locked-plan
+review, and atomically persists it before provider mutation. A move alone is
+not a create, update, adopt, delete, destroy, forget, or change-script trigger.
+
+Treat the block as a temporary migration instruction, not an alias. Keep it in
+configuration until every relevant host has been applied and a retained-block
+online plan/check is clean. Removing it after only some hosts migrated leaves
+the remaining source state without a migration instruction. After every source
+prefix is absent and destination prefix is present, remove the block and verify
+another online plan/check; completed removal is a no-op. See the
+[component-move example](../examples/component-moved.apf.hcl) and
+[operations runbook](operations-runbook.md#rename-a-component-instance).
 
 ## Native Domains
 

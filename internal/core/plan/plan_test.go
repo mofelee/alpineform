@@ -2,6 +2,7 @@ package plan
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -44,6 +45,136 @@ func TestPlanRenderersMatchGoldenAndDoNotLeak(t *testing.T) {
 		}
 		assertGolden(t, name, output)
 	}
+}
+
+func TestMovedPlanRenderersAreSortedStableAndDoNotLeak(t *testing.T) {
+	secret := "not-a-real-moved-state-secret"
+	first := NewOnline(movedEnginePlan(false, secret), Options{Files: []string{"moved.apf.hcl"}})
+	second := NewOnline(movedEnginePlan(true, secret), Options{Files: []string{"moved.apf.hcl"}})
+	wantMoves := []Move{
+		{Host: "alpha", From: "host.alpha.component.old.files.file.app", To: "host.alpha.component.current.files.file.app"},
+		{Host: "alpha", From: "host.alpha.component.old.services.service.api", To: "host.alpha.component.current.services.service.api"},
+		{Host: "zeta", From: "host.zeta.component.legacy.packages.package.tool", To: "host.zeta.component.current.packages.package.tool"},
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("moved document depends on input order:\nfirst=%#v\nsecond=%#v", first, second)
+	}
+	if !reflect.DeepEqual(first.Moves, wantMoves) || !reflect.DeepEqual(first.Hosts, []string{"alpha", "zeta"}) {
+		t.Fatalf("sorted moved document = %#v", first)
+	}
+	if first.FormatVersion != "alpineform.plan.alpha1" || first.Summary != (Summary{Move: len(wantMoves)}) || len(first.Changes) != 0 || len(first.Graph) != 0 {
+		t.Fatalf("move-only plan changed format or resource counts: format=%q summary=%#v changes=%d graph=%d", first.FormatVersion, first.Summary, len(first.Changes), len(first.Graph))
+	}
+
+	firstText, firstJSON, firstHTML := renderPlanFormats(t, first)
+	secondText, secondJSON, secondHTML := renderPlanFormats(t, second)
+	for name, pair := range map[string][2][]byte{
+		"text": {firstText, secondText},
+		"json": {firstJSON, secondJSON},
+		"html": {firstHTML, secondHTML},
+	} {
+		if !bytes.Equal(pair[0], pair[1]) {
+			t.Fatalf("%s moved plan is not byte-stable:\n%s\n%s", name, pair[0], pair[1])
+		}
+		if strings.Contains(string(pair[0]), secret) {
+			t.Fatalf("%s moved plan leaked protected prior state", name)
+		}
+		position := -1
+		for _, move := range wantMoves {
+			next := strings.Index(string(pair[0]), move.From)
+			if next <= position {
+				t.Fatalf("%s moves are not sorted: %#v\n%s", name, wantMoves, pair[0])
+			}
+			position = next
+		}
+	}
+	if strings.Contains(string(firstText), "No remote resource changes.") || !strings.Contains(string(firstText), "Summary: 3 move, 0 create") {
+		t.Fatalf("move-only text plan reads as clean:\n%s", firstText)
+	}
+	if !strings.Contains(string(firstHTML), "<h2>Moves</h2>") || !strings.Contains(string(firstHTML), "3 move;") {
+		t.Fatalf("HTML moved plan lacks independent move rendering:\n%s", firstHTML)
+	}
+	var decoded struct {
+		FormatVersion string   `json:"format_version"`
+		Summary       Summary  `json:"summary"`
+		Moves         []Move   `json:"moves"`
+		Changes       []Change `json:"changes"`
+	}
+	if err := json.Unmarshal(firstJSON, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.FormatVersion != FormatVersion || decoded.Summary != first.Summary || !reflect.DeepEqual(decoded.Moves, wantMoves) || len(decoded.Changes) != 0 {
+		t.Fatalf("JSON moved plan = %#v", decoded)
+	}
+
+	assertGolden(t, "moved-plan.golden.txt", firstText)
+	assertGolden(t, "moved-plan.golden.json", firstJSON)
+	assertGolden(t, "moved-plan.golden.html", firstHTML)
+}
+
+func TestMovedPlanHTMLEscapesAddresses(t *testing.T) {
+	document := NewOnline(engine.Plan{Hosts: []engine.HostPlan{{
+		Host: ir.HostSpec{Name: "edge"},
+		Moves: []corestate.RealizedMove{{
+			Host: "edge<&",
+			From: `host.edge.component.old.files.file["<script>"]`,
+			To:   `host.edge.component.current.files.file["a&b"]`,
+		}},
+	}}}, Options{})
+	var output bytes.Buffer
+	if err := PrintHTML(&output, document); err != nil {
+		t.Fatal(err)
+	}
+	html := output.String()
+	if strings.Contains(html, "<script>") || !strings.Contains(html, "&lt;script&gt;") || !strings.Contains(html, "a&amp;b") || !strings.Contains(html, "edge&lt;&amp;") {
+		t.Fatalf("HTML moved plan did not escape structural fields:\n%s", html)
+	}
+}
+
+func movedEnginePlan(reverse bool, secret string) engine.Plan {
+	alphaMoves := []corestate.RealizedMove{
+		{Host: "alpha", From: "host.alpha.component.old.services.service.api", To: "host.alpha.component.current.services.service.api"},
+		{Host: "alpha", From: "host.alpha.component.old.files.file.app", To: "host.alpha.component.current.files.file.app"},
+	}
+	if reverse {
+		alphaMoves[0], alphaMoves[1] = alphaMoves[1], alphaMoves[0]
+	}
+	prior := corestate.Empty("alpha")
+	prior.ComponentIdentities["old"] = corestate.ComponentIdentity{PhysicalName: secret}
+	prior.Resources["host.alpha.component.old.files.file.app"] = corestate.Resource{
+		Protected: true,
+		Desired:   map[string]any{"content": secret},
+		Observed:  map[string]any{"content": secret},
+		Delete:    map[string]any{"content": secret},
+	}
+	alpha := engine.HostPlan{Host: ir.HostSpec{Name: "alpha"}, Moves: alphaMoves, PriorState: prior}
+	zeta := engine.HostPlan{
+		Host: ir.HostSpec{Name: "zeta"},
+		Moves: []corestate.RealizedMove{{
+			Host: "zeta",
+			From: "host.zeta.component.legacy.packages.package.tool",
+			To:   "host.zeta.component.current.packages.package.tool",
+		}},
+	}
+	if reverse {
+		return engine.Plan{Hosts: []engine.HostPlan{alpha, zeta}}
+	}
+	return engine.Plan{Hosts: []engine.HostPlan{zeta, alpha}}
+}
+
+func renderPlanFormats(t *testing.T, document Document) ([]byte, []byte, []byte) {
+	t.Helper()
+	var textOutput bytes.Buffer
+	PrintText(&textOutput, document, TextOptions{})
+	var jsonOutput bytes.Buffer
+	if err := PrintJSON(&jsonOutput, document); err != nil {
+		t.Fatal(err)
+	}
+	var htmlOutput bytes.Buffer
+	if err := PrintHTML(&htmlOutput, document); err != nil {
+		t.Fatal(err)
+	}
+	return textOutput.Bytes(), jsonOutput.Bytes(), htmlOutput.Bytes()
 }
 
 func TestTextColorIsExplicit(t *testing.T) {
@@ -163,8 +294,16 @@ func TestOnlinePlanRendersEveryActionWithoutProtectedValues(t *testing.T) {
 		}
 		steps = append(steps, step)
 	}
-	document := NewOnline(engine.Plan{Hosts: []engine.HostPlan{{Host: host, Steps: steps}}}, Options{Files: []string{"model.apf.hcl"}})
-	if document.Mode != "online" || document.Summary.Create != 1 || document.Summary.Update != 1 || document.Summary.Adopt != 1 || document.Summary.Delete != 1 || document.Summary.Destroy != 1 || document.Summary.Forget != 1 || document.Summary.NoOp != 1 {
+	document := NewOnline(engine.Plan{Hosts: []engine.HostPlan{{
+		Host:  host,
+		Steps: steps,
+		Moves: []corestate.RealizedMove{{
+			Host: "node",
+			From: "host.node.component.old.test.resource",
+			To:   "host.node.component.current.test.resource",
+		}},
+	}}}, Options{Files: []string{"model.apf.hcl"}})
+	if document.Mode != "online" || document.Summary.Move != 1 || document.Summary.Create != 1 || document.Summary.Update != 1 || document.Summary.Adopt != 1 || document.Summary.Delete != 1 || document.Summary.Destroy != 1 || document.Summary.Forget != 1 || document.Summary.NoOp != 1 {
 		t.Fatalf("online document summary = %#v", document.Summary)
 	}
 	var textOutput bytes.Buffer

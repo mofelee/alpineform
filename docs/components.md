@@ -5,6 +5,38 @@ directories, groups, users, packages, OpenRC generation, and service
 resources. Each mounted instance keeps its own graph prefix, for example
 `host.edge.component.worker.files.file["/etc/worker.conf"]`.
 
+## Renaming A Mounted Instance
+
+Use a top-level `moved` block when only a mounted component's instance label
+changes. AlpineForm migrates every tracked address below the old component root
+to the new root without renaming or recreating the remote objects:
+
+```hcl
+moved {
+  from = component.legacy_worker
+  to   = component.worker
+}
+```
+
+The move preserves resource ownership, lifecycle and deletion policy, observed
+provider results, and protected markers. Relationships and address-derived
+desired metadata are reconciled from the destination graph. If desired content
+also changes, that real update and any legitimate trigger remain separate from
+the move in the plan.
+
+Source builds have additional address-derived ownership. State schema v2
+retains the legacy physical component name so the existing owner ID, virtual
+APK package, dependency and installation markers, workspace/cache/build
+identity, and recorded outputs remain stable after the logical rename. A later
+input change rebuilds and cleans up through that retained identity instead of
+creating a second ownership namespace.
+
+Keep the block throughout a staged host rollout, then remove it only after all
+hosts have migrated and plan/check is clean with the block retained. See the
+[DSL validation and lifecycle](dsl-reference.md#component-address-moves),
+[operator procedure](operations-runbook.md#rename-a-component-instance), and
+[runnable offline example](../examples/component-moved.apf.hcl).
+
 ## Prebuilt artifacts
 
 An artifact component declares `type`, one or more verified sources, and an

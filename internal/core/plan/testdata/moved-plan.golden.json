@@ -1,0 +1,41 @@
+{
+  "format_version": "alpineform.plan.alpha1",
+  "mode": "online",
+  "command": {
+    "files": [
+      "moved.apf.hcl"
+    ]
+  },
+  "hosts": [
+    "alpha",
+    "zeta"
+  ],
+  "summary": {
+    "move": 3,
+    "create": 0,
+    "update": 0,
+    "delete": 0,
+    "no_op": 0,
+    "managed_resources": 0,
+    "graph_nodes": 0
+  },
+  "moves": [
+    {
+      "host": "alpha",
+      "from": "host.alpha.component.old.files.file.app",
+      "to": "host.alpha.component.current.files.file.app"
+    },
+    {
+      "host": "alpha",
+      "from": "host.alpha.component.old.services.service.api",
+      "to": "host.alpha.component.current.services.service.api"
+    },
+    {
+      "host": "zeta",
+      "from": "host.zeta.component.legacy.packages.package.tool",
+      "to": "host.zeta.component.current.packages.package.tool"
+    }
+  ],
+  "graph": [],
+  "changes": []
+}
