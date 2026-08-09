@@ -26,7 +26,7 @@ Binary, file, archive, and CA-certificate components are Beta under the
 four-branch blocking `components` case. Their `source.url` and `source.sha256`
 fields may be evaluated from normalized inputs separately for each mounted
 instance; that expression syntax is additive alpha. Literal behavior, resource
-addresses, state schema v2, and `alpineform.plan.alpha1` remain compatible, and
+addresses, state schema v3, and `alpineform.plan.alpha1` remain compatible, and
 target-side source-build semantics are unchanged.
 
 Alpine 3.21 through 3.24 aarch64 remains Preview because it has cross-build and
@@ -120,6 +120,11 @@ asks for approval of the actual locked plan. A clean `check` exits zero; drift
 prints the required actions and exits nonzero. Remote state is stored at
 `/var/lib/alpineform/state.json` with mode `0600`.
 
+Current state schema v3 reads v1 and v2 in memory and writes v3 on the next
+apply, including a fully no-op apply. Before that apply, retain a per-host
+backup plus the matching prior configuration and binary; see the
+[state migration runbook](docs/operations-runbook.md#state-backup-and-restore).
+
 Live nftables activation/deletion is separately marked as network-disrupting
 and requires `apf apply --allow-network-disruption`; `--auto-approve` alone is
 not sufficient.
@@ -131,6 +136,15 @@ Configuration uses `*.apf.hcl`. Variable inputs use
 `-var`, or `APF_VAR_<name>`. Reusable `profile`, `component`, `script`,
 `locals`, `variable`, and `assert` declarations compile into deterministic
 resource addresses and dependency order.
+
+`packages.package`, `files.file`, and runtime `services.service` declarations
+accept static, same-scope typed `depends_on` references. Generated
+`openrc.service` declarations do not. Authored dependencies add ordering,
+including reverse ordering for explicit remote removal. They never activate
+OpenRC operations or change scripts. Inferred prerequisites and `triggered_by`
+relationships remain separate. See the
+[DSL reference](docs/dsl-reference.md#resource-dependencies) and
+[plan relationship contract](docs/plan-format.md#relationships).
 
 Start with the [DSL and CLI reference](docs/dsl-reference.md), then use the
 domain guides:

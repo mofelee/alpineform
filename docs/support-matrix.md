@@ -30,12 +30,13 @@ Status meanings:
 | Groups, users, memberships, and authorized keys | Beta | [`accounts`](../test/integration/libvirt/cases/accounts) |
 | Managed and authoritative APK repositories | Beta | [`apk`](../test/integration/libvirt/cases/apk) |
 | Package present, explicit absent, and declaration forget | Beta | [`apk`](../test/integration/libvirt/cases/apk) |
+| Package -> managed configuration -> OpenRC dependency lifecycle | Beta | Four-branch [`openrc`](../test/integration/libvirt/cases/openrc), plus [parser](../internal/core/parser/resource_dependencies_test.go), [merge](../internal/core/merge/resource_dependencies_test.go), [graph](../internal/core/graph/resource_dependencies_test.go), and [engine](../internal/core/engine/dependency_order_test.go) contracts |
 | Custom APK signing keys | Preview | [Graph tests](../internal/core/graph/apk_test.go) and [provider tests](../internal/core/provider/apk_test.go); no real-VM fixture in v0.1 |
 | Generated and raw OpenRC services | Beta | [`openrc`](../test/integration/libvirt/cases/openrc) |
 | Hostname, timezone, modules, and sysctls | Beta | [`system-kernel`](../test/integration/libvirt/cases/system-kernel) |
 | Binary and archive components, shared `on_change` scripts | Beta | [`components`](../test/integration/libvirt/cases/components) |
 | File and CA-certificate components | Beta | Four-branch [`components`](../test/integration/libvirt/cases/components), plus [compiler](../internal/core/merge/components_test.go), [graph](../internal/core/graph/components_test.go), [file/source provider](../internal/core/provider/component_test.go), and [archive/CA provider](../internal/core/provider/component_archive_test.go) contracts |
-| Component-root `moved` state migrations | Preview | Four-branch [`component-moved`](../test/integration/libvirt/cases/component-moved), [engine](../internal/core/engine/moved_test.go) and [plan](../internal/core/plan/plan_test.go) contract tests, and the dedicated [component-moved Preview gate](../.github/workflows/ci.yml); the additive alpha DSL, state-v2 identity map, and plan fields remain outside the Beta promise |
+| Component-root `moved` state migrations | Preview | Four-branch [`component-moved`](../test/integration/libvirt/cases/component-moved), [engine](../internal/core/engine/moved_test.go) and [plan](../internal/core/plan/plan_test.go) contract tests, and the dedicated [component-moved Preview gate](../.github/workflows/ci.yml); the additive alpha DSL, v2-origin identity map retained by state v3, and plan fields remain outside the Beta promise |
 | Target-side component source builds | Preview | Four-branch [`source-build`](../test/integration/libvirt/cases/source-build), [compiler contract tests](../internal/core/merge/component_build_test.go), [provider transaction tests](../internal/core/provider/component_build_test.go), and the dedicated [source-build Preview gate](../.github/workflows/ci.yml); network-enabled builds remain unsupported |
 | `prevent_destroy`, forget, and recorded destroy | Beta | [`lifecycle`](../test/integration/libvirt/cases/lifecycle), [`accounts`](../test/integration/libvirt/cases/accounts), and [`apk`](../test/integration/libvirt/cases/apk) |
 | Docker Engine, OpenRC, daemon configuration, and Compose | Preview | Four-branch [`docker`](../test/integration/libvirt/cases/docker), [compiler/graph tests](../internal/core/merge/docker_test.go), and [provider tests](../internal/core/provider/docker_test.go); Alpine `community` security support is shorter than `main`, and no aarch64 VM gate exists |
@@ -51,6 +52,12 @@ compatibility phase is separate from runtime support: binary and archive remain
 Beta, and file and CA-certificate components are Beta only because the existing
 `components` case now blocks all four Alpine branches. The suite remains exactly
 12 cases and 48 jobs. Source-build inputs remain a separate Preview capability.
+
+Resource-level `depends_on` syntax is an additive alpha interface. The portable
+package -> file -> service runtime behavior is in the Beta four-branch gate:
+forward ordering, no-op, drift repair, reverse explicit cleanup, and default
+forget all run inside the existing `openrc` case, without changing matrix
+cardinality. Authored ordering does not imply a service operation trigger.
 
 ## CLI And Distribution
 

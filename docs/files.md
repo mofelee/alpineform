@@ -25,6 +25,34 @@ replaced or removed by a file resource.
 and numeric IDs are passed as positional command arguments, never interpolated
 into provider scripts. Content is sent only through redacted SSH stdin.
 
+## Ordering and change triggers
+
+A `files.file` declaration can name static `packages.package`, `files.file`, or
+runtime `services.service` prerequisites in its own resolved host or
+mounted-component scope:
+
+```hcl
+packages {
+  package "worker-daemon" {}
+}
+
+files {
+  file "/etc/worker/worker.conf" {
+    content    = "enabled=true\n"
+    depends_on = [package["worker-daemon"]]
+  }
+}
+```
+
+`depends_on` orders the package before the file on forward apply. It is not a
+change trigger: a package update does not run the file's `on_change` script or
+an OpenRC operation. Those use separate `triggered_by` relationships and run
+only when their matching managed input actually changes. If an explicit remote
+cleanup removes both resources, the dependent file is removed before the
+package; ordinary declaration removal still defaults to forget and leaves the
+remote file and package intact. See
+[resource dependencies](dsl-reference.md#resource-dependencies).
+
 ## Protected and write-only content
 
 Set `sensitive = true` for content that must be redacted. Sensitivity also

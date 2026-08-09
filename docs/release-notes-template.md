@@ -18,11 +18,14 @@ Keep every section for each AlpineForm release.
   `components` case.
 - Additive alpha interface: per-instance prebuilt
   `source.url`/`source.sha256` expressions.
+- Additive alpha interface: static same-scope `depends_on` ordering among
+  `packages.package`, `files.file`, and runtime `services.service`; it remains
+  separate from `triggered_by`.
 - Preview capability: rollback-safe named-table nftables on Alpine 3.21-3.24 x86_64.
 - Preview capability: target-side component source builds on Alpine 3.21-3.24 x86_64.
 - Preview capability: component-root moved state migrations on Alpine 3.21-3.24 x86_64.
 - DSL/state/plan JSON: <compatible | breaking alpha change>; current state
-  schema is v2 and plan format is `alpineform.plan.alpha1`.
+  schema is v3 and plan format is `alpineform.plan.alpha1`.
 
 ## Breaking Changes
 
@@ -30,7 +33,11 @@ Keep every section for each AlpineForm release.
 
 ## Migration Notes
 
-- <None, or exact upgrade and rollback steps.>
+- State v3: before the first state-writing apply, back up each host's current v1
+  or v2 state and retain its matching configuration and binary. Downgrade after
+  a v3 write requires restoring that exact backup; schema-marker editing is
+  unsupported.
+- <Other exact upgrade and rollback steps, or none.>
 
 ## Added
 
@@ -59,6 +66,8 @@ Keep every section for each AlpineForm release.
 - Alpine 3.21-3.24 x86_64 12-case, 48-job matrix and core gate: <run URL>.
 - Blocking `components` case for binary, file, archive, and CA-certificate
   behavior: <result>.
+- Four-branch `openrc` package -> managed configuration -> service dependency
+  lifecycle, within the existing 12-case matrix: <result>.
 - Alpine 3.21-3.24 x86_64 nftables Preview gate: <run URL>.
 - Alpine 3.21-3.24 x86_64 source-build Preview gate: <run URL>.
 - Alpine 3.21-3.24 x86_64 component-moved Preview gate: <run URL>.

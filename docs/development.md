@@ -23,7 +23,9 @@ precedence, product constants, version metadata, deterministic offline plans,
 Alpine facts, root SSH, remote state, runtime leases, online plan/apply/check,
 and provider-backed host files, directories, groups, users, supplementary
 memberships, authorized keys, APK repositories, APK signing keys, and explicit
-APK package world intent.
+APK package world intent. Static resource dependencies are resolved after
+composition, compiled into the graph, enforced by the engine, and retained in
+state as authored-only metadata for potential orphan teardown.
 `apf variable inspect` emits stable JSON and redacts sensitive and ephemeral
 defaults. `apf fmt` validates every selected file before writing any formatted
 content and is idempotent. No Debian resource schema is exposed.
@@ -34,10 +36,14 @@ content and is idempotent. No Debian resource schema is exposed.
 - `profile` imports with deterministic component-instance override order
 - typed `component` inputs, per-instance prebuilt source expressions, composed
   native domains, and local instance dependency validation
-- top-level and component-local scripts with reference-identity `on_change` aggregation and output observation
+- top-level and component-local scripts with reference-identity `on_change`
+  aggregation and output observation
 - `host` imports and optional offline `platform.architecture` / `version`
 - `lifecycle.prevent_destroy` metadata on component instances
-- host-level file, directory, group, user, membership, authorized-key, APK repository, APK key, aggregated APK update, and package resources
+- host-level file, directory, group, user, membership, authorized-key, APK
+  repository, APK key, aggregated APK update, package, and service resources
+- static same-scope `depends_on` references among `packages.package`,
+  `files.file`, and runtime `services.service` declarations
 
 Platform architecture is normalized to `amd64` or `arm64`. Alpine branch,
 `libc=musl`, and native APK architecture are derived read-only facts. Offline
@@ -53,6 +59,13 @@ desired data and carries them in an in-memory provider payload. This boundary
 does not extend to component `type`, `version`, `extract`, `build`, or `install`,
 and it does not change the existing source-build input model.
 
+Resource `depends_on` is parsed as typed syntax rather than an ordinary HCL
+value. Merge resolves references after profile precedence and separately inside
+each mounted component scope. Graph compilation combines those authored edges
+with structural and inferred prerequisites but never with `TriggeredBy`.
+Execution preserves forward ordering, reverses authored edges for explicit
+remote removal, and uses authored-only state metadata for orphan teardown.
+
 ## Offline plan
 
 `apf plan --offline` renders text or JSON and can atomically write a standalone
@@ -61,6 +74,13 @@ timestamp, so identical inputs and argument order produce identical output.
 Its graph contains structural `managed=false` nodes for hosts, platform facts,
 and component instances. Provider-backed host and component resources are
 `managed=true` nodes and become changes in the plan summary.
+
+For current graph resources, plan `depends_on` is the sorted, deduplicated
+effective set of structural, inferred, and authored ordering.
+`graph[].triggered_by` is the structural trigger set; online
+`changes[].triggered_by` contains only triggers activated by planned changes.
+State-only orphans do not fabricate current plan relationships. There is no
+public authored-only plan field; state v3 owns that narrow metadata contract.
 
 Protected desired values are replaced before graph, plan, JSON, or HTML
 serialization. `--color auto` honors `NO_COLOR` and non-terminal output;
@@ -80,6 +100,11 @@ approved before provider or state writes. `--parallel` bounds host work while
 preserving deterministic result order. Cancellation stops sibling work and the
 lease cleanup path still attempts release. `check` returns an error for any
 non-no-op action and succeeds for a clean plan.
+
+After execution, apply reconciles authored dependency metadata against the
+final tracked state even when provider actions were no-ops. Current explicit
+remote removal and state-only orphan removal use dependent-first ordering;
+default forget performs no remote deletion.
 
 Nftables activation and deletion are marked `network_disruption` in text and
 JSON plans. `apf apply` refuses those steps unless
@@ -139,7 +164,9 @@ git diff --check
 matrix. The matrix remains 12 cases crossed with four branches (48 jobs). Its
 blocking `components` case covers binary, file, archive, and CA-certificate
 artifacts; this is the runtime evidence boundary for their Beta status, while
-the per-instance source-expression syntax remains additive alpha. Run
+the per-instance source-expression syntax remains additive alpha. The existing
+four-branch `openrc` case also proves the package -> managed configuration ->
+service dependency lifecycle without increasing matrix cardinality. Run
 `make ALPINE_BRANCH=v3.21 test-integration` for all real-VM cases on one branch
 or `make ALPINE_BRANCH=v3.21 test-integration-case CASE=<name>` for one. The
 pinned images, lifecycle, case contract, remote-libvirt settings, diagnostics,

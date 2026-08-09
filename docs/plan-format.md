@@ -87,16 +87,32 @@ Both `graph[]` nodes and `changes[]` entries can contain the additive
 addresses, sorted lexically and deduplicated. Consumers of
 `alpineform.plan.alpha1` must continue to ignore unknown fields.
 
-`depends_on` records ordering edges. A dependency changing does not by itself
-mean that the dependent resource is triggered. `triggered_by` records the
-separate change-trigger edges that can activate an operation such as an OpenRC
-restart or a shared `on_change` script.
+For a current desired graph resource, plan `depends_on` is the complete effective
+ordering set: structural graph parents, inferred provider prerequisites, and
+authored resource `depends_on` edges are combined, sorted, and deduplicated. The
+plan does not expose a separate `explicit_depends_on` field. A dependency
+changing does not by itself mean that the dependent resource is triggered.
+`triggered_by` records the separate change-trigger edges that can activate an
+operation such as an OpenRC restart or a shared `on_change` script.
 
-Offline graph nodes and changes show the complete structural relationships. In
-an online plan, `graph[].triggered_by` still shows the complete structural edge
-set, while `changes[].triggered_by` contains only addresses whose planned
-changes activated that operation. Online `changes[].depends_on` continues to
-show the complete ordering set.
+Offline graph nodes and changes for current desired resources show their
+complete relationships. In an online plan, current-resource
+`graph[].triggered_by` still shows the complete structural trigger set, while
+`changes[].triggered_by` contains only addresses whose planned changes activated
+that operation. Online `changes[].depends_on` for current graph resources
+continues to show the complete effective ordering set.
+
+A state-only orphan has no current desired graph relationship to render, so its
+`graph[]` and `changes[]` entries do not fabricate `depends_on`. Prior-state
+authored metadata still controls dependent-first orphan execution; consumers
+observe that through deterministic `changes[]` ordering rather than a synthetic
+relationship field.
+
+State has a deliberately narrower contract: per-resource `depends_on` retains
+only authored dependencies whose target resources are still tracked. Inferred
+and structural plan ordering and all trigger relationships are recomputed from
+configuration. See
+[authored state dependencies](state-backend.md#authored-resource-dependencies).
 
 Text and HTML plans project these same fields with separate `depends_on:` and
 `triggered_by:` labels. Relationship rendering never expands an address into a

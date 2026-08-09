@@ -43,7 +43,10 @@ until install, test, and upgrade have blocking evidence.
 4. Run the full Alpine 3.21-3.24 VM matrix and verify exact cleanup. A file or
    CA-certificate component Beta claim requires the blocking `components` case
    on all four branches; expanding that case must not change the expected
-   12-case, 48-job matrix cardinality.
+   12-case, 48-job matrix cardinality. Resource dependency changes also require
+   the existing `openrc` case on all four branches to prove forward ordering,
+   no-op, drift repair, reverse explicit cleanup, and default forget without
+   adding a case.
 5. Confirm GitHub artifact attestations are available. Public repositories pass
    directly; a private Enterprise Cloud repository must explicitly set the
    repository variable `APF_PRIVATE_ATTESTATIONS_ENABLED=true` after confirming
@@ -54,11 +57,19 @@ until install, test, and upgrade have blocking evidence.
 
 For per-instance prebuilt artifact source expressions, release review must call
 out the additive alpha `source.url`/`source.sha256` boundary and confirm that
-literal behavior, resource addresses, state schema v2,
+literal behavior, resource addresses, state schema v3,
 `alpineform.plan.alpha1`, and source-build semantics remain unchanged. Release
 notes must also state that protected resolved values remain in-memory-only and
 that protected cache identity is based on retained physical component identity
 plus the normalized source label rather than protected material.
+
+For resource dependencies, release review must distinguish authored
+`depends_on`, inferred ordering, structural and active `triggered_by`, OpenRC
+operations, and forget/destroy behavior. State schema v3 reads v1 and v2 and
+persists only authored dependencies still represented by tracked resources.
+Release notes must require a per-host v1/v2 backup before the first v3-writing
+apply and exact backup restoration with the matching configuration and binary
+for downgrade; changing the schema marker is unsupported.
 
 ## Publish And Verify
 

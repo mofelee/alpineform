@@ -29,11 +29,16 @@ mode `0700` and file mode `0600`. The runtime lease lives below `/run/lock` and
 does not survive reboot. State is not a secret vault: protect target root access
 and do not put plaintext secrets in non-sensitive resource fields.
 
-Schema v2 can retain a logical component root and its legacy physical component
-name so address-derived provider ownership remains stable after a declared
-move. These names and resource addresses are metadata, not a secret channel.
+Schema v2 introduced retention of a logical component root and its legacy
+physical component name so address-derived provider ownership remains stable
+after a declared move. Current schema v3 retains that map and can store authored
+resource dependency addresses for dependent-first orphan teardown. These names,
+resource addresses, and relationship arrays are metadata, not a secret channel.
 Do not put credentials or other protected material in declaration labels,
-resource identity fields, file paths, or service names.
+resource identity fields, file paths, service names, or dependency targets.
+Resource `depends_on` accepts only static typed references; dynamic, sensitive,
+ephemeral, and raw expanded graph-address expressions are rejected before graph
+or state serialization.
 
 ## Protected Values
 
@@ -50,6 +55,11 @@ retry errors must not expand those addresses into desired or observed payloads,
 component inputs, provider output, or stored protected data. Moving a protected
 resource preserves its protected marker and ephemeral digest rules; the state
 rewrite never materializes a redacted value.
+
+Plan `depends_on` and `triggered_by` arrays likewise contain only stable
+addresses. They never expand an address into desired content, commands,
+provider output, or protected values. Authored ordering cannot silently become
+a service or script trigger.
 
 ## Downloads And Components
 

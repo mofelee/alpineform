@@ -1,10 +1,24 @@
-assert_remote "generated OpenRC init and conf files are converged" \
-  "test -x /etc/init.d/apf-ci-worker && grep -Fq \"command='/bin/sleep'\" /etc/init.d/apf-ci-worker && grep -qx 'APF_CI=enabled' /etc/conf.d/apf-ci-worker"
-assert_remote "service is enabled in the default runlevel" \
-  "rc-update show default | grep -Eq '(^|[[:space:]])apf-ci-worker([[:space:]]|$)'"
-assert_remote "service is running with its managed pidfile" \
-  "rc-service apf-ci-worker status >/dev/null && test -s /run/apf-ci-worker.pid && kill -0 \$(cat /run/apf-ci-worker.pid)"
-assert_remote "raw init service is enabled and running with its managed pidfile" \
-  "test -x /etc/init.d/apf-ci-raw && rc-update show default | grep -Eq '(^|[[:space:]])apf-ci-raw([[:space:]]|$)' && rc-service apf-ci-raw status >/dev/null && test -s /run/apf-ci-raw.pid && kill -0 \$(cat /run/apf-ci-raw.pid)"
-assert_remote "state records generated and raw init files and services" \
-  "grep -Fq '/etc/init.d/apf-ci-worker' /var/lib/alpineform/state.json && grep -Fq '/etc/init.d/apf-ci-raw' /var/lib/alpineform/state.json && grep -Fq 'services.service' /var/lib/alpineform/state.json"
+source "$CASE_DIR/assertions.sh"
+
+assert_dependency_plan "$LOG_DIR/1.pre-apply-plan.json" create
+assert_dependency_stack_running
+assert_dependency_state present "first apply persists only authored dependency metadata"
+
+case "$APF_TEST_PHASE" in
+  applied)
+    assert_remote "raw service start hook observed package and config dependencies" \
+      "grep -qx dependencies-ready /run/apf-ci-raw.start-pre"
+    ;;
+  repaired)
+    assert_remote "raw service reload observed repaired package and config dependencies" \
+      "grep -qx dependencies-ready /run/apf-ci-raw.reload"
+    assert_remote "raw reload repaired drift without restarting the service" \
+      "test \"\$(cat /run/apf-ci-raw.pid)\" = \"\$(cat /run/apf-ci-raw.before-repair.pid)\""
+    ;;
+  rebooted)
+    assert_remote "raw service reboot start observed retained dependencies" \
+      "grep -qx dependencies-ready /run/apf-ci-raw.start-pre"
+    run_remote "record raw service PID before the identical configuration" \
+      "cat /run/apf-ci-raw.pid > /run/apf-ci-raw.stage1-reboot.pid"
+    ;;
+esac

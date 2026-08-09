@@ -36,6 +36,16 @@ Every numbered configuration runs these blocking phases:
 
 Later numbered configurations cover removal semantics. The APK case proves
 declaration removal is forget-only before an explicit `ensure = "absent"`.
+The OpenRC case uses an authored package -> managed configuration -> service
+chain. Across all four branches it proves dependency-first initial convergence,
+JSON no-op and clean check, drift detection and repair, and dependent-first
+explicit cleanup. It then proves that removing declarations under the default
+forget policy performs no remote deletion. Package-only changes never activate
+the service operation; restart/reload remains tied to actual matching managed
+init/conf changes. Plan assertions distinguish effective ordering, structural
+triggers, and active triggers; state assertions require authored-only v3
+metadata, reference pruning, and no fabricated relationships for forget-only
+orphans. This extends the existing case rather than adding a thirteenth case.
 The Docker case proves package-version evidence, candidate preflight, protected
 values, invalid-daemon isolation, daemon crash recovery, partial/degraded drift
 repair, fresh running/stopped reboot persistence, project forget/adopt, scoped

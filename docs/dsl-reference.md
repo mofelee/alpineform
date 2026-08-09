@@ -58,7 +58,7 @@ checksum validation is deferred until a mount supplies normalized values.
 Diagnostics identify both the template field and mounted instance.
 
 This is an additive alpha boundary. `type`, `version`, source labels, `extract`,
-`build`, `install`, resource addresses, state schema v2, and
+`build`, `install`, resource addresses, state schema v3, and
 `alpineform.plan.alpha1` do not change. Existing literal sources retain their
 current behavior and identities. Target-side source builds retain their
 separate Preview input model. See [components](components.md#per-instance-source-expressions)
@@ -121,6 +121,67 @@ prefix is absent and destination prefix is present, remove the block and verify
 another online plan/check; completed removal is a no-op. See the
 [component-move example](../examples/component-moved.apf.hcl) and
 [operations runbook](operations-runbook.md#rename-a-component-instance).
+
+## Resource Dependencies
+
+`packages.package`, `files.file`, and runtime `services.service` declarations
+accept an additive alpha `depends_on` attribute. Its value is a list of static
+typed references:
+
+```hcl
+host "edge" {
+  packages {
+    package "bird" {}
+  }
+
+  files {
+    file "/etc/conf.d/bird" {
+      content    = "BIRD_ARGS=\"-f\"\n"
+      depends_on = [package.bird]
+    }
+  }
+
+  services {
+    service "bird" {
+      package    = "bird"
+      operation  = "restarted"
+      depends_on = [file["/etc/conf.d/bird"]]
+    }
+  }
+}
+```
+
+Only `package.<label>`, `file.<label>`, and `service.<label>` are accepted, and
+they target those three declaration families respectively. A generated
+`openrc.service` block neither accepts resource `depends_on` nor becomes a typed
+`service.<label>` target by itself. Bracket notation such as
+`package["bird-tools"]` is required when a label is not suitable for traversal
+syntax. Strings, raw expanded graph addresses,
+variables, interpolation, computed indexes, sensitive or ephemeral expressions,
+host-qualified addresses, and other resource types are rejected.
+References resolve after profile imports and overrides within the same effective
+host scope. Inside a component template they resolve only to resources in that
+mounted component instance, never to host resources or a sibling component.
+Unknown, duplicate, self-referential, and cyclic relationships fail with source
+diagnostics.
+
+Authored dependencies add ordering only. Forward apply places the dependency
+before its dependent; when both are explicitly removed from the remote host,
+the dependent is removed first. A dependency changing never adds
+`triggered_by`, so it cannot by itself restart/reload an OpenRC service or run
+an `on_change` script. Inferred package, account, init/conf, APK-refresh, and
+other prerequisites remain separate. In the example, only an actual change to
+the matching managed `/etc/conf.d/bird` file activates the service operation.
+
+Authored relationships are retained in state for safe orphan teardown and
+reconciled during no-op applies. Dependencies never select a resource action or
+removal policy: `ensure = "absent"`, supported `on_remove = "destroy"`, and
+`lifecycle.prevent_destroy` keep their documented meanings. Default declaration
+removal forgets state and performs no remote deletion, so it does not turn the
+relationship into teardown work. Current graph resources show the complete
+effective ordering set in plans; see
+[plan relationships](plan-format.md#relationships) and [state dependency
+metadata](state-backend.md#authored-resource-dependencies).
 
 ## Native Domains
 

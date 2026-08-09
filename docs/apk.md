@@ -70,6 +70,10 @@ explicit deletion among those dependencies causes exactly one quiet
 forgets perform none. Package nodes run after that refresh. The host lease and
 graph scheduler serialize all of these APK mutations.
 
+This key -> repository -> refresh -> package sequence is inferred ordering. It
+appears in plan `depends_on`, but it is not authored resource dependency
+metadata and is not persisted for orphan teardown.
+
 This surface never invokes `apk upgrade`, `apk fix`, changes the target branch,
 or accepts package version constraints.
 
@@ -92,6 +96,14 @@ packages {
 `/etc/apk/world`. Installed package metadata is observed but not pinned. The
 optional `repository` value is an APK tag and must match the `tag` of a
 declared present repository; the resulting world intent is `name@tag`.
+
+`packages.package` declarations may also use static same-scope `depends_on`
+references to other `packages.package`, `files.file`, or runtime
+`services.service` declarations. These authored edges add ordering
+only; they never cause an APK operation or another resource's change operation
+to run. When an explicit cleanup removes a package and a dependent remote
+object in the same plan, the dependent is removed first. See the complete
+[resource dependency contract](dsl-reference.md#resource-dependencies).
 
 Removing a package declaration only forgets its AlpineForm state. It never
 runs `apk del` and leaves the package and world entry untouched. The only path

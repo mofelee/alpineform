@@ -61,6 +61,16 @@ All notable user-visible changes to AlpineForm are recorded here.
   cover binary, file, archive, and CA-certificate literal and protected sources,
   checksum failure, no-op, drift repair, cleanup, and reboot. This remains part
   of the existing 12-case, 48-job matrix rather than adding a thirteenth case.
+- Add static, same-scope typed `depends_on` references to `packages.package`,
+  `files.file`, and runtime `services.service` declarations. Authored edges are
+  resolved after profile/component composition, merged with inferred ordering
+  in plans, kept separate from
+  `triggered_by`, persisted for orphan teardown, and reversed when explicit
+  remote removals would otherwise delete a dependency before its dependent.
+- Expand the existing four-branch `openrc` case to prove package -> managed
+  configuration -> OpenRC service ordering through first apply, no-op, drift
+  repair, reverse explicit cleanup, and default forget. It remains one of the
+  existing 12 cases, so the blocking matrix remains 48 jobs.
 
 ### Fixed
 
@@ -76,6 +86,15 @@ All notable user-visible changes to AlpineForm are recorded here.
 - Promote persistent Alpine 3.21 through 3.24 x86_64 targets to the v0.1 Beta
   support set. Branches outside this explicit allowlist remain rejected before
   write-capable execution; aarch64 remains Preview without a real-VM gate.
+- Resource-level `depends_on` is an additive alpha DSL interface. It accepts
+  only static references to `packages.package`, `files.file`, or runtime
+  `services.service` declarations in the same resolved host or
+  mounted-component scope. `alpineform.plan.alpha1` remains the plan format:
+  current graph resources expose structural, inferred, and authored ordering in
+  plan `depends_on`, while `triggered_by` remains the distinct change-activation
+  relationship. State
+  schema v3 adds authored dependency metadata; v3 binaries read v1 and v2, and
+  the next state write persists v3, which older binaries reject.
 - The Docker DSL and `host.<name>.docker.*` resource addresses are additive
   alpha interfaces. Docker remains Preview and outside the v0.1 core/Beta
   promise.
@@ -88,13 +107,14 @@ All notable user-visible changes to AlpineForm are recorded here.
   command networking or unchecked inputs.
 - The `moved` DSL and the `moves`/`summary.move` fields in
   `alpineform.plan.alpha1` are additive alpha interfaces. Moves are state
-  migrations and do not change resource action counts. State schema v2 retains
-  physical component identities; v2 binaries read v1, but v1 binaries reject
-  state after it is written as v2. Component-root moves remain Preview despite
-  their four-branch blocking VM case and dedicated aggregate gate.
+  migrations and do not change resource action counts. State schema v2
+  introduced retained physical component identities; current schema v3 keeps
+  that map and adds authored resource dependencies. Component-root moves remain
+  Preview despite their four-branch blocking VM case and dedicated aggregate
+  gate.
 - Per-instance prebuilt `source.url` and `source.sha256` expressions are an
   additive alpha interface. Existing literal behavior, resource addresses,
-  checksum-keyed public caches, state schema v2, and
+  checksum-keyed public caches, state schema v3, and
   `alpineform.plan.alpha1` remain compatible; target-side source-build semantics
   are unchanged.
 - Binary and archive components remain Beta. Promote file and CA-certificate
@@ -105,10 +125,12 @@ All notable user-visible changes to AlpineForm are recorded here.
 
 ### Migration Notes
 
-- Before the first apply with schema-v2 moved support, back up each host's
-  schema-v1 `/var/lib/alpineform/state.json` and retain the matching prior
-  configuration and binary. Downgrade requires restoring that backup; editing
-  the schema marker or retained identity map is unsupported.
+- Before the first state-writing apply with a schema-v3 binary, back up each
+  host's schema-v1 or schema-v2 `/var/lib/alpineform/state.json` and retain the
+  matching prior configuration and binary. Online plan/check only normalizes
+  older state in memory. Downgrade after a v3 write requires restoring the
+  exact backup; editing the schema marker, dependency metadata, or retained
+  identity map is unsupported.
 - For a component instance rename, add the `moved` block with the rename and
   retain it until every host is migrated and plan/check is clean. Removing the
   block after only one host or rollout batch prevents remaining source states

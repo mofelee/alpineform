@@ -94,7 +94,8 @@ are not treated as authoritative.
 Optional `operation = "restarted"` or `"reloaded"` runs once after one or
 more matching managed init/conf files actually change. Init and conf changes in
 the same apply are aggregated into one service operation, while a no-op or a
-runlevel-only repair performs no restart/reload. Operations require
+runlevel-only repair performs no restart/reload. An authored `depends_on` edge
+also does not activate the operation. Operations require
 `state = "running"` and at least one managed `/etc/init.d/<name>` or
 `/etc/conf.d/<name>` trigger. OpenRC always supports restart. Reload is allowed
 only for raw init scripts; generated scripts reject it during validation, and a
@@ -109,6 +110,43 @@ present on the same host and make the service depend on them. A generated
 service also depends on its init and conf files. When `command_user` names a
 declared present user, that dependency is inferred. Raw scripts managed with
 `files.file` at the matching init/conf paths receive the same file ordering.
+
+These are inferred prerequisites. A runtime `services.service` declaration may
+additionally declare static same-scope `packages.package`, `files.file`, or
+`services.service` references with `depends_on`, for example:
+
+```hcl
+services {
+  service "worker" {
+    package    = "worker-daemon"
+    operation  = "restarted"
+    depends_on = [file["/etc/conf.d/worker"]]
+  }
+}
+```
+
+A generated `openrc.service` declaration itself neither accepts resource
+`depends_on` nor becomes a typed `service.<label>` target. Its generated
+init/conf files and matching runtime service receive inferred graph edges.
+
+The effective plan ordering combines structural, inferred, and authored
+dependencies, but only matching init/conf changes appear in the service's
+active `triggered_by` and cause the restart. When supported explicit absence is
+declared for the file and package while the service is declared stopped and
+disabled, authored ordering places the service work before file deletion and
+the file deletion before package deletion. The dependency does not add a
+service deletion policy. Service declaration removal remains forget-only and
+performs no stop or disable; default file/package declaration removal likewise
+performs no remote deletion.
+
+## Four-branch workflow proof
+
+The blocking `openrc` VM case runs on Alpine 3.21, 3.22, 3.23, and 3.24. Its
+package -> managed configuration -> service workflow proves first apply, JSON
+no-op and clean check, drift detection and repair, dependent-first explicit
+cleanup, and default forget without adding a thirteenth case. The complete
+suite therefore remains 12 cases and 48 jobs; see the
+[integration runbook](../test/integration/libvirt/README.md).
 
 Removing a service declaration only forgets its state entry. To stop or disable
 a service, declare that intent before removing the declaration. Service and

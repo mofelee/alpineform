@@ -10,7 +10,9 @@ host "cihost" {
   }
 
   packages {
-    package "jq" {}
+    package "jq" {
+      ensure = "absent"
+    }
   }
 
   openrc {
@@ -27,7 +29,7 @@ host "cihost" {
 
   files {
     file "/etc/alpineform-dependency.json" {
-      content    = "{\"enabled\":true,\"revision\":1}\n"
+      ensure     = "absent"
       depends_on = [package.jq]
     }
 
@@ -75,10 +77,9 @@ host "cihost" {
     }
 
     service "apf-ci-raw" {
-      enabled    = true
+      enabled    = false
       runlevel   = "default"
-      state      = "running"
-      operation  = "reloaded"
+      state      = "stopped"
       depends_on = [file["/etc/alpineform-dependency.json"]]
     }
   }

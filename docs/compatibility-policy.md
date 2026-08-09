@@ -35,7 +35,7 @@ values.
 The expression boundary does not include component `type`, `version`, source
 labels, `extract`, `build`, or `install`; target-side source builds keep their
 existing separate semantics. Existing literal source behavior, checksum-keyed
-caches, resource addresses, desired/state representation, state schema v2, and
+caches, resource addresses, desired/state representation, state schema v3, and
 `alpineform.plan.alpha1` remain compatible.
 
 Protected resolved URLs and checksums are in-memory payloads, not serialized
@@ -62,13 +62,36 @@ safety change.
 
 State has an AlpineForm product marker, host identity, schema version, serial,
 facts, and managed resources. The decoder rejects foreign products, unknown
-newer schemas, and wrong-host state. State schema v2 adds bounded retained
-component physical identities. A schema-v2 binary reads v1 and writes v2 on its
-next state write; a schema-v1 binary rejects v2. Back up every host's v1 state
-before the first v2 apply and retain the matching prior configuration and
-binary. Downgrade requires restoring that backup. There is no imperative state
+newer schemas, and wrong-host state. Schema v2 introduced bounded retained
+component physical identities. Current schema v3 retains them and adds authored
+resource dependency metadata. A schema-v3 binary reads v1 and v2, normalizes
+them in memory, and writes v3 on its next state write; schema-v1 and schema-v2
+binaries reject v3. Back up every host's current v1 or v2 state before its first
+v3-writing apply and retain the matching prior configuration and binary.
+Downgrade requires restoring that exact backup. There is no imperative state
 migration command or supported hand conversion, and state must never be edited
 while an apply may be running.
+
+## Resource Relationships
+
+Resource-level `depends_on` is an additive alpha DSL interface limited to static
+same-scope references among `packages.package`, `files.file`, and runtime
+`services.service` declarations. Generated `openrc.service` declarations remain
+outside that authored relationship surface. It adds ordering only and
+cannot activate an OpenRC operation or shared `on_change` script. The plan
+format remains `alpineform.plan.alpha1`: plan `depends_on` exposes the complete
+effective ordering set for current graph resources, while `triggered_by`
+exposes the separate structural or active change-trigger set. State-only
+orphans do not fabricate a current relationship field. Consumers must not infer
+triggering from ordering.
+
+State v3 persists only authored dependency addresses whose targets remain
+tracked. Authored graph edges make current explicit remote deletion
+dependent-first; persisted v3 metadata preserves that order for later orphan
+teardown. Default declaration removal remains state-only forget and does not
+delete remote objects. Relationships never choose `ensure`, `on_remove`, or
+`prevent_destroy` behavior. Changing the allowed reference scope, trigger
+separation, or teardown guarantees requires compatibility and migration review.
 
 ## Plan JSON
 
@@ -99,6 +122,6 @@ Before release, classify changes across DSL, CLI, address identity, state,
 plan JSON, provider behavior, installer, and artifacts. Breaking alpha changes
 must appear under `Breaking Changes` and `Migration Notes`. If rollback cannot
 reuse the prior state safely, the release must say so before the tag is made.
-The schema-v2 release notes must require a pre-apply v1 backup, explain that
-schema-v1 binaries reject v2, and document backup restoration as the downgrade
-boundary.
+The schema-v3 release notes must require a pre-write v1 or v2 backup, explain
+that older binaries reject v3, and document exact backup restoration with the
+matching configuration and binary as the downgrade boundary.

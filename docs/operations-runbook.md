@@ -23,18 +23,21 @@ understands. Stop concurrent automation first, preserve mode `0600`, and use an
 atomic replacement. State restoration does not undo target-side mutations; run
 `apf plan` immediately afterward.
 
-The moved-block release introduces state schema v2. Its binary reads schema v1,
-but any later state write persists v2, which schema-v1 binaries reject. Before
-the first apply with a schema-v2 binary, back up every selected host's v1 state
-and retain the matching prior configuration and binary. An online plan/check is
-read-only and does not cross this boundary.
+The current state schema is v3. Its binary reads schema v1 and v2 and normalizes
+either in memory, but the next state write persists v3, which schema-v1 and
+schema-v2 binaries reject. Before the first state-writing apply with a schema-v3
+binary, back up every selected host's current v1 or v2 state and retain the
+matching prior configuration and binary. An online plan/check is read-only and
+does not cross this boundary.
 
-To downgrade after v2 has been written, stop apply automation, restore the
-host's v1 backup atomically, and use the matching old configuration and binary.
-Restoring state does not reverse remote actions performed after the backup, so
-review an online plan before approving reconciliation. If no compatible v1
-backup exists, remain on a schema-v2-capable binary; hand-editing
-`schema_version`, resource addresses, or `component_identities` is unsupported.
+To downgrade after v3 has been written, stop apply automation, restore the
+host's exact v1 or v2 backup atomically, and use the matching old configuration
+and binary. Restoring state does not reverse remote actions performed after the
+backup, so review an online plan before approving reconciliation. If no
+compatible backup exists, remain on a schema-v3-capable binary; hand-editing
+`schema_version`, resource addresses, `depends_on`, or `component_identities`
+is unsupported. Schema v2 historically introduced `component_identities`; v3
+retains them and adds authored resource dependency metadata.
 
 ## Rename A Component Instance
 
@@ -53,7 +56,8 @@ Use this rollout sequence:
 1. Rename the mounted component and add the `moved` block in the same
    configuration change. Run `apf validate` and an offline plan to catch static
    endpoint, duplicate, chain, and mount errors without reading remote state.
-2. Back up state on every rollout target before its first schema-v2 apply.
+2. Back up state on every rollout target before its first schema-v3-writing
+   apply.
 3. Run an online plan for the selected host. Confirm the complete old and new
    addresses under `moves`, verify `summary.move`, and review any real resource
    action or trigger separately.
@@ -104,6 +108,34 @@ finishes. On failure:
 Use `apf apply --debug` for structural fact, state, lock, inspect, operation,
 apply, and cleanup events. Debug does not include command stdin/output or
 protected values.
+
+## Change Or Remove A Dependency Chain
+
+Use resource `depends_on` only among same-scope `packages.package`,
+`files.file`, and runtime `services.service` declarations. Review plan
+`depends_on` and `triggered_by` separately: a dependency change does not
+activate an OpenRC restart/reload or an `on_change` script.
+
+For a package -> managed configuration -> OpenRC service workflow:
+
+1. Add or change the typed relationships, run `apf validate`, and review an
+   online plan. On forward apply, require package before file before service.
+2. Confirm an OpenRC `operation` is active only when a matching managed init or
+   conf file actually changes. A package-only change must leave
+   `changes[].triggered_by` empty for the service operation.
+3. For deliberate remote cleanup, keep the declarations and relationships in
+   place while expressing supported remote intent: stop/disable the service,
+   mark the managed file absent, and mark the package absent. The locked plan
+   must order the dependent service work before file deletion and file deletion
+   before package deletion.
+4. Apply, then require a no-op plan and clean check before removing declarations.
+   Later declaration removal is default forget and must perform no remote work.
+
+If resource types that support recorded destroy behavior have already become
+orphans, state v3 uses their persisted authored relationships for the same
+dependent-first teardown. `prevent_destroy` still blocks protected resources.
+Do not hand-edit state to add, remove, or reorder dependencies. A failed cleanup
+is retried through normal plan/apply after the target-side cause is corrected.
 
 ## Rotate A Per-Instance Artifact Source
 

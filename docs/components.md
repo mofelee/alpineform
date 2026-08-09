@@ -25,11 +25,11 @@ also changes, that real update and any legitimate trigger remain separate from
 the move in the plan.
 
 Source builds have additional address-derived ownership. State schema v2
-retains the legacy physical component name so the existing owner ID, virtual
-APK package, dependency and installation markers, workspace/cache/build
-identity, and recorded outputs remain stable after the logical rename. A later
-input change rebuilds and cleans up through that retained identity instead of
-creating a second ownership namespace.
+introduced the retained legacy physical component name; current schema v3 keeps
+it so the existing owner ID, virtual APK package, dependency and installation
+markers, workspace/cache/build identity, and recorded outputs remain stable
+after the logical rename. A later input change rebuilds and cleans up through
+that retained identity instead of creating a second ownership namespace.
 
 Keep the block throughout a staged host rollout, then remove it only after all
 hosts have migrated and plan/check is clean with the block retained. See the
@@ -53,8 +53,25 @@ workspaces, and output ownership.
 
 This real-VM coverage runs on Alpine 3.21 through 3.24 x86_64 and has a
 dedicated aggregate gate. It makes moved-state regressions blocking, but does
-not promote the additive alpha DSL, state-v2 identity map, or plan fields into
-the v0.1 Beta promise; component-root moves remain Preview.
+not promote the additive alpha DSL, v2-origin identity map retained by state v3,
+or plan fields into the v0.1 Beta promise; component-root moves remain Preview.
+
+## Resource dependencies inside components
+
+`packages.package`, `files.file`, and runtime `services.service` declarations
+inside a component template may use static typed `depends_on` references;
+generated `openrc.service` declarations may not. Resolution is local to that
+template and is repeated beneath each mounted instance's address prefix. A component
+resource cannot reference a host-level resource or a resource in a sibling
+component, even when the labels match.
+
+This resource-level syntax is distinct from a mounted component block's
+`depends_on = [component.<instance>]`, which orders component roots. Resource
+dependencies add ordering only and never activate a component `on_change`
+script. Plans show the complete effective ordering for current graph resources;
+state v3 retains only authored resource edges whose targets remain tracked so
+component moves and orphan teardown preserve them safely. See the canonical
+[resource dependency contract](dsl-reference.md#resource-dependencies).
 
 ## Prebuilt artifacts
 
@@ -316,7 +333,9 @@ declaration. `global.script.<name>` explicitly selects the top-level
 declaration. Deduplication uses the resolved declaration identity on one host,
 not the label or command text. Multiple changed files or artifacts referencing
 one top-level script therefore produce one operation; an unchanged plan runs
-none. Component-local declarations remain distinct per mounted instance.
+none. Component-local declarations remain distinct per mounted instance. An
+authored resource `depends_on` edge never activates a script; only the separate
+`on_change` relationship contributes an active `triggered_by` address.
 
 `outputs` are absolute regular-file paths. After successful execution their
 digests and the script declaration digest are recorded in a remote marker.
