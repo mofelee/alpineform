@@ -18,20 +18,21 @@ type ResourceGraph struct {
 }
 
 type Node struct {
-	Host        string            `json:"host,omitempty"`
-	Address     string            `json:"address"`
-	Kind        string            `json:"kind"`
-	Managed     bool              `json:"managed"`
-	Summary     string            `json:"summary,omitempty"`
-	Source      ir.SourceRef      `json:"source"`
-	Lifecycle   *ir.LifecycleSpec `json:"lifecycle,omitempty"`
-	Desired     map[string]any    `json:"desired,omitempty"`
-	Payload     map[string]any    `json:"-"`
-	DependsOn   []string          `json:"depends_on,omitempty"`
-	TriggeredBy []string          `json:"triggered_by,omitempty"`
-	Sensitive   bool              `json:"-"`
-	Ephemeral   bool              `json:"-"`
-	DigestSafe  bool              `json:"-"`
+	Host                  string            `json:"host,omitempty"`
+	Address               string            `json:"address"`
+	Kind                  string            `json:"kind"`
+	Managed               bool              `json:"managed"`
+	Summary               string            `json:"summary,omitempty"`
+	Source                ir.SourceRef      `json:"source"`
+	Lifecycle             *ir.LifecycleSpec `json:"lifecycle,omitempty"`
+	Desired               map[string]any    `json:"desired,omitempty"`
+	Payload               map[string]any    `json:"-"`
+	DependsOn             []string          `json:"depends_on,omitempty"`
+	TriggeredBy           []string          `json:"triggered_by,omitempty"`
+	Sensitive             bool              `json:"-"`
+	Ephemeral             bool              `json:"-"`
+	DigestSafe            bool              `json:"-"`
+	ProtectedIntentDigest string            `json:"-"`
 }
 
 func (node Node) MarshalJSON() ([]byte, error) {
@@ -407,28 +408,63 @@ func appendComponentArtifactNodes(resourceGraph *ResourceGraph, host ir.HostSpec
 	if sourceLabel == "" {
 		sourceLabel = "any"
 	}
+	urlProtected := source.URLSensitive || source.URLEphemeral
+	shaProtected := source.SHA256Sensitive || source.SHA256Ephemeral
+	sourceProtected := urlProtected || shaProtected
 	cachePath := "/var/cache/alpineform/components/" + component.PhysicalComponentName() + "/" + source.SHA256 + "/artifact"
+	if sourceProtected {
+		cachePath = "/var/cache/alpineform/components/" + component.PhysicalComponentName() + "/protected/" + sourceLabel + "/artifact"
+	}
 	sourceAddress := componentAddress + ".artifact.source[" + strconv.Quote(sourceLabel) + "]"
+	sourceDesired := map[string]any{
+		"path": cachePath, "ensure": "present", "delete_behavior": "delete",
+		"delete": map[string]any{"path": cachePath}, "prevent_destroy": component.Lifecycle.PreventDestroy,
+	}
+	var sourcePayload map[string]any
+	if sourceProtected {
+		sourceDesired["verified"] = true
+		sourcePayload = map[string]any{}
+		setComponentArtifactField(sourceDesired, sourcePayload, "url", source.URL, source.URLSensitive, source.URLEphemeral)
+		setComponentArtifactField(sourceDesired, sourcePayload, "sha256", source.SHA256, source.SHA256Sensitive, source.SHA256Ephemeral)
+	} else {
+		sourceDesired["url"] = source.URL
+		sourceDesired["sha256"] = source.SHA256
+	}
 	resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
 		Host: host.Name, Address: sourceAddress, Kind: "component_artifact_source", Managed: true,
 		Summary: "download and verify component " + component.Name + " artifact for " + sourceLabel,
 		Source:  source.Source, Lifecycle: &component.Lifecycle,
-		Desired: map[string]any{
-			"path": cachePath, "url": source.URL, "sha256": source.SHA256, "ensure": "present",
-			"delete_behavior": "delete", "delete": map[string]any{"path": cachePath},
-			"prevent_destroy": component.Lifecycle.PreventDestroy,
-		},
-		DependsOn: []string{componentAddress}, DigestSafe: true,
+		Desired: sourceDesired, Payload: sourcePayload, DependsOn: []string{componentAddress},
+		Sensitive: source.URLSensitive || source.SHA256Sensitive,
+		Ephemeral: source.URLEphemeral || source.SHA256Ephemeral, DigestSafe: true,
+		ProtectedIntentDigest: componentArtifactProtectedIntentDigest(
+			componentArtifactIntentField{Name: "url", Value: source.URL, Protected: urlProtected},
+			componentArtifactIntentField{Name: "sha256", Value: source.SHA256, Protected: shaProtected},
+		),
 	})
 	installAddress := componentAddress + ".artifact.install[" + strconv.Quote(install.Path) + "]"
 	desired := map[string]any{
 		"path": install.Path, "owner": install.Owner, "group": install.Group, "mode": install.Mode,
-		"content_sha256": source.SHA256, "cache_path": cachePath, "artifact_type": component.ArtifactType,
-		"version": component.Version, "ensure": "present", "delete_behavior": "destroy",
+		"cache_path": cachePath, "artifact_type": component.ArtifactType, "version": component.Version,
+		"ensure": "present", "delete_behavior": "destroy",
 		"delete": map[string]any{"path": install.Path}, "prevent_destroy": component.Lifecycle.PreventDestroy,
+	}
+	var installPayload map[string]any
+	if shaProtected {
+		installPayload = map[string]any{}
+		desired["content_verified"] = true
+		setComponentArtifactField(desired, installPayload, "content_sha256", source.SHA256, source.SHA256Sensitive, source.SHA256Ephemeral)
+		if component.ArtifactType == "archive" {
+			desired["tree_integrity"] = "clean"
+		}
+	} else {
+		desired["content_sha256"] = source.SHA256
 	}
 	if component.ArtifactType == "ca_certificate" {
 		marker := "/var/lib/alpineform/ca-certificates/" + source.SHA256 + ".updated"
+		if sourceProtected {
+			marker = "/var/lib/alpineform/ca-certificates/" + component.PhysicalComponentName() + "/protected/" + sourceLabel + ".updated"
+		}
 		desired["trust_marker"] = marker
 		desired["trust_updated"] = true
 		desired["delete"] = map[string]any{"path": install.Path, "trust_marker": marker}
@@ -450,9 +486,56 @@ func appendComponentArtifactNodes(resourceGraph *ResourceGraph, host ir.HostSpec
 		Host: host.Name, Address: installAddress, Kind: "component_" + component.ArtifactType, Managed: true,
 		Summary: "install component " + component.Name + " " + component.ArtifactType + " at " + install.Path,
 		Source:  install.Source, Lifecycle: &component.Lifecycle,
-		Desired:   desired,
-		DependsOn: installDependencies, DigestSafe: true,
+		Desired: desired, Payload: installPayload, DependsOn: installDependencies,
+		TriggeredBy: componentArtifactInstallTriggers(sourceAddress, shaProtected),
+		Sensitive:   source.SHA256Sensitive, Ephemeral: source.SHA256Ephemeral, DigestSafe: true,
 	})
+}
+
+type componentArtifactIntentField struct {
+	Name      string `json:"name"`
+	Value     string `json:"value"`
+	Protected bool   `json:"-"`
+}
+
+func componentArtifactProtectedIntentDigest(fields ...componentArtifactIntentField) string {
+	protected := make([]componentArtifactIntentField, 0, len(fields))
+	for _, field := range fields {
+		if field.Protected {
+			protected = append(protected, field)
+		}
+	}
+	if len(protected) == 0 {
+		return ""
+	}
+	document := struct {
+		Domain string                         `json:"domain"`
+		Fields []componentArtifactIntentField `json:"fields"`
+	}{Domain: "alpineform.component-artifact.protected-intent.v1", Fields: protected}
+	encoded, _ := json.Marshal(document)
+	digest := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func setComponentArtifactField(desired, payload map[string]any, name, value string, sensitive, ephemeral bool) {
+	if !sensitive && !ephemeral {
+		desired[name] = value
+		return
+	}
+	payload[name] = value
+	if sensitive {
+		desired[name+"_sensitive"] = true
+	}
+	if ephemeral {
+		desired[name+"_ephemeral"] = true
+	}
+}
+
+func componentArtifactInstallTriggers(sourceAddress string, protected bool) []string {
+	if !protected {
+		return nil
+	}
+	return []string{sourceAddress}
 }
 
 func appendKernelNodes(resourceGraph *ResourceGraph, host ir.HostSpec, hostAddress string) {

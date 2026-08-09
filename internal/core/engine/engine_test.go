@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -144,6 +145,22 @@ type failingProvider struct {
 	applyError   error
 	deleteError  error
 	observed     ObservedResource
+}
+
+type protectedResultProvider struct {
+	applied ObservedResource
+}
+
+func (provider protectedResultProvider) Inspect(context.Context, graph.Node) (ObservedResource, error) {
+	return ObservedResource{}, nil
+}
+
+func (provider protectedResultProvider) Apply(context.Context, Step) (ObservedResource, error) {
+	return provider.applied, nil
+}
+
+func (protectedResultProvider) Delete(context.Context, Step) error {
+	return nil
 }
 
 func (provider failingProvider) Inspect(context.Context, graph.Node) (ObservedResource, error) {
@@ -657,10 +674,21 @@ func TestApplyRequiresReviewCallbacksAndStableHostIdentity(t *testing.T) {
 
 func TestProtectedApplyStateDoesNotRetainObservedContent(t *testing.T) {
 	secret := "not-a-real-provider-secret"
-	node := testNode(map[string]any{"content": secret, "sensitive": true})
-	node.Sensitive = true
+	secretDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(secret)))
+	deletePath := "/var/cache/alpineform/components/retained/protected/amd64/artifact"
+	node := testNode(map[string]any{
+		"path": deletePath, "verified": true, "url_ephemeral": true, "sha256_ephemeral": true,
+		"ensure": "present", "delete_behavior": ActionDelete, "delete": map[string]any{"path": deletePath},
+	})
+	node.Payload = map[string]any{"url": "https://example.invalid/tool?token=" + secret, "sha256": secretDigest}
+	node.Ephemeral = true
+	node.DigestSafe = true
+	node.ProtectedIntentDigest = "not-a-serialized-protected-intent"
 	backend := newMemoryBackend()
-	provider := newMemoryProvider()
+	provider := protectedResultProvider{applied: ObservedResource{
+		Exists: true, Protected: true,
+		Values: map[string]any{"verified": true, "url": secret, "sha256": secretDigest},
+	}}
 	engine := Engine{Backend: backend, Provider: provider}
 	_, err := engine.Apply(context.Background(), staticBuild(testHost(), node), ApplyOptions{
 		ReviewPreview: func(context.Context, Plan) error { return nil },
@@ -671,15 +699,35 @@ func TestProtectedApplyStateDoesNotRetainObservedContent(t *testing.T) {
 	}
 	state, _ := backend.snapshot("node")
 	resource := state.Resources[node.Address]
-	if resource.Observed != nil || !resource.Sensitive {
+	if resource.Observed != nil || !resource.Ephemeral || !resource.Protected || resource.DesiredDigest != corestate.Digest(node.Desired) || !reflect.DeepEqual(resource.Delete, map[string]any{"path": deletePath}) {
 		t.Fatalf("protected state resource = %#v", resource)
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{secret, secretDigest, node.ProtectedIntentDigest} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("protected state leaked %q: %s", forbidden, encoded)
+		}
+	}
+	decoded, err := corestate.Decode(encoded, "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodedResource := decoded.Resources[node.Address]
+	if decoded.SchemaVersion != 2 || !decodedResource.Protected || decodedResource.DesiredDigest != resource.DesiredDigest || decodedResource.Observed != nil || !reflect.DeepEqual(decodedResource.Delete, resource.Delete) {
+		t.Fatalf("decoded protected state = %#v", decoded)
 	}
 }
 
 func TestProtectedPlanJSONDoesNotRetainObservedContent(t *testing.T) {
 	secret := "not-a-real-observed-secret"
-	node := testNode(map[string]any{"content": "desired"})
+	secretDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(secret)))
+	node := testNode(map[string]any{"verified": true, "url_sensitive": true, "sha256_sensitive": true})
 	node.Sensitive = true
+	node.Payload = map[string]any{"url": "https://example.invalid/tool?token=" + secret, "sha256": secretDigest}
+	node.ProtectedIntentDigest = "not-a-serialized-protected-intent"
 	provider := newMemoryProvider()
 	provider.set(node.Address, ObservedResource{Exists: true, Values: map[string]any{"content": secret}})
 	engine := Engine{Backend: newMemoryBackend(), Provider: provider}
@@ -691,8 +739,184 @@ func TestProtectedPlanJSONDoesNotRetainObservedContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), secret) || !strings.Contains(string(data), `"protected":true`) {
+	for _, forbidden := range []string{secret, secretDigest, node.ProtectedIntentDigest, plan.Hosts[0].Fingerprint} {
+		if forbidden != "" && strings.Contains(string(data), forbidden) {
+			t.Fatalf("protected online plan JSON leaked %q: %s", forbidden, data)
+		}
+	}
+	if !strings.Contains(string(data), `"protected":true`) || strings.Contains(string(data), `"Fingerprint"`) || strings.Contains(string(data), `"fingerprint"`) {
 		t.Fatalf("protected online plan JSON = %s", data)
+	}
+}
+
+func TestProtectedIntentChangeIsDurableNoOpButRequiresLockedReview(t *testing.T) {
+	publicSHA := strings.Repeat("a", 64)
+	desired := map[string]any{
+		"path":   "/var/cache/alpineform/components/retained/protected/amd64/artifact",
+		"sha256": publicSHA, "verified": true, "url_sensitive": true,
+		"ensure": "present", "delete_behavior": ActionDelete,
+	}
+	desiredDigest := corestate.Digest(desired)
+	backend := newMemoryBackend()
+	backend.states["node"] = corestate.State{
+		Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node",
+		Resources: map[string]corestate.Resource{
+			"host.node.component.cli.artifact.source[\"amd64\"]": {DesiredDigest: desiredDigest, Protected: true},
+		},
+	}
+	provider := newMemoryProvider()
+	address := `host.node.component.cli.artifact.source["amd64"]`
+	provider.set(address, ObservedResource{Exists: true, Digest: desiredDigest, Protected: true})
+	buildCalls := 0
+	build := func(context.Context) (*ir.Program, *graph.ResourceGraph, error) {
+		buildCalls++
+		mirror := "alpha"
+		intent := "protected-intent-alpha"
+		if buildCalls > 1 {
+			mirror = "beta"
+			intent = "protected-intent-beta"
+		}
+		node := graph.Node{
+			Host: "node", Address: address, Kind: "component_artifact_source", Managed: true, Desired: desired,
+			Payload: map[string]any{"url": "https://" + mirror + ".invalid/tool"}, Sensitive: true, DigestSafe: true,
+			ProtectedIntentDigest: intent, Source: ir.SourceRef{File: "main.apf.hcl", Line: 1},
+		}
+		return &ir.Program{Hosts: []ir.HostSpec{testHost()}}, &graph.ResourceGraph{Nodes: []graph.Node{node}}, nil
+	}
+	rejected := errors.New("review protected intent again")
+	_, err := (Engine{Backend: backend, Provider: provider}).Apply(context.Background(), build, ApplyOptions{
+		ReviewPreview: func(_ context.Context, preview Plan) error {
+			if preview.Hosts[0].Steps[0].Action != ActionNoOp {
+				t.Fatalf("preview mirror action = %s", preview.Hosts[0].Steps[0].Action)
+			}
+			return nil
+		},
+		ReviewLocked: func(_ context.Context, preview, locked Plan, changed bool) error {
+			if !changed || preview.Hosts[0].Steps[0].Action != ActionNoOp || locked.Hosts[0].Steps[0].Action != ActionNoOp {
+				t.Fatalf("protected mirror locked review: changed=%v preview=%#v locked=%#v", changed, preview, locked)
+			}
+			return rejected
+		},
+	})
+	if !errors.Is(err, rejected) || buildCalls != 2 {
+		t.Fatalf("protected mirror apply = %v, builds=%d", err, buildCalls)
+	}
+	_, writes := backend.snapshot("node")
+	if writes != 0 {
+		t.Fatalf("protected mirror review rejection wrote state %d time(s)", writes)
+	}
+}
+
+func TestProtectedSourceRepairTriggersOtherwiseCleanInstall(t *testing.T) {
+	sourceAddress := `host.node.component.cli.artifact.source["amd64"]`
+	installAddress := `host.node.component.cli.artifact.install["/usr/local/bin/tool"]`
+	source := graph.Node{
+		Host: "node", Address: sourceAddress, Kind: "component_artifact_source", Managed: true,
+		Desired:   map[string]any{"path": "/var/cache/alpineform/components/cli/protected/amd64/artifact", "verified": true},
+		Sensitive: true, DigestSafe: true,
+	}
+	install := graph.Node{
+		Host: "node", Address: installAddress, Kind: "component_binary", Managed: true,
+		Desired:   map[string]any{"path": "/usr/local/bin/tool", "content_verified": true},
+		DependsOn: []string{sourceAddress}, TriggeredBy: []string{sourceAddress}, Sensitive: true, DigestSafe: true,
+	}
+	backend := newMemoryBackend()
+	backend.states["node"] = corestate.State{
+		Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node",
+		Resources: map[string]corestate.Resource{
+			sourceAddress:  {DesiredDigest: corestate.Digest(source.Desired), Protected: true},
+			installAddress: {DesiredDigest: corestate.Digest(install.Desired), Protected: true},
+		},
+	}
+	provider := newMemoryProvider()
+	provider.set(installAddress, ObservedResource{Exists: true, Digest: corestate.Digest(install.Desired), Protected: true})
+	plan, err := (Engine{Backend: backend, Provider: provider}).Plan(context.Background(), staticBuild(testHost(), source, install))
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := map[string]Step{}
+	for _, step := range plan.Hosts[0].Steps {
+		steps[step.Address] = step
+	}
+	if steps[sourceAddress].Action != ActionCreate || steps[installAddress].Action != ActionUpdate || !reflect.DeepEqual(steps[installAddress].TriggeredBy, []string{sourceAddress}) {
+		t.Fatalf("protected source repair plan = %#v", plan.Hosts[0].Steps)
+	}
+}
+
+func TestProtectedOrphanDeletionUsesOnlyRecordedStablePaths(t *testing.T) {
+	tests := []struct {
+		name           string
+		kind           string
+		address        string
+		deleteBehavior string
+		delete         map[string]any
+	}{
+		{
+			name: "source", kind: "component_artifact_source", address: `host.node.component.cli.artifact.source["amd64"]`, deleteBehavior: ActionDelete,
+			delete: map[string]any{"path": "/var/cache/alpineform/components/retained/protected/amd64/artifact"},
+		},
+		{
+			name: "binary", kind: "component_binary", address: `host.node.component.binary.artifact.install["/usr/local/bin/tool"]`, deleteBehavior: ActionDestroy,
+			delete: map[string]any{"path": "/usr/local/bin/tool"},
+		},
+		{
+			name: "file", kind: "component_file", address: `host.node.component.file.artifact.install["/etc/tool.conf"]`, deleteBehavior: ActionDestroy,
+			delete: map[string]any{"path": "/etc/tool.conf"},
+		},
+		{
+			name: "archive", kind: "component_archive", address: `host.node.component.archive.artifact.install["/opt/tool"]`, deleteBehavior: ActionDestroy,
+			delete: map[string]any{"path": "/opt/tool"},
+		},
+		{
+			name: "ca", kind: "component_ca_certificate", address: `host.node.component.ca.artifact.install["/usr/local/share/ca-certificates/root.crt"]`, deleteBehavior: ActionDestroy,
+			delete: map[string]any{
+				"path":         "/usr/local/share/ca-certificates/root.crt",
+				"trust_marker": "/var/lib/alpineform/ca-certificates/retained/protected/amd64.updated",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := newMemoryBackend()
+			backend.states["node"] = corestate.State{
+				Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node",
+				Resources: map[string]corestate.Resource{
+					test.address: {
+						Host: "node", Kind: test.kind, Ownership: "managed", Order: 1,
+						Protected: true, DeleteBehavior: test.deleteBehavior, Delete: test.delete,
+					},
+				},
+			}
+			provider := newMemoryProvider()
+			_, err := (Engine{Backend: backend, Provider: provider}).Apply(context.Background(), staticBuild(testHost()), ApplyOptions{
+				ReviewPreview: func(_ context.Context, preview Plan) error {
+					step := preview.Hosts[0].Steps[0]
+					if step.Action != test.deleteBehavior || step.Node.Payload != nil || step.Prior == nil || !reflect.DeepEqual(step.Prior.Delete, test.delete) {
+						t.Fatalf("protected orphan preview = %#v", step)
+					}
+					return nil
+				},
+				ReviewLocked: func(_ context.Context, _, locked Plan, changed bool) error {
+					if changed || locked.Hosts[0].Steps[0].Node.Payload != nil {
+						t.Fatalf("protected orphan locked plan = changed %v, %#v", changed, locked)
+					}
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider.mu.Lock()
+			deleted := append([]Step(nil), provider.deleted...)
+			provider.mu.Unlock()
+			if len(deleted) != 1 || deleted[0].Prior == nil || !reflect.DeepEqual(deleted[0].Prior.Delete, test.delete) || deleted[0].Node.Payload != nil {
+				t.Fatalf("protected orphan delete step = %#v", deleted)
+			}
+			state, _ := backend.snapshot("node")
+			if _, exists := state.Resources[test.address]; exists {
+				t.Fatalf("protected orphan remained in state: %#v", state.Resources[test.address])
+			}
+		})
 	}
 }
 
@@ -833,6 +1057,17 @@ func TestPlanFingerprintIgnoresOnlyFactDetectionTime(t *testing.T) {
 	secondHost.Facts.Version = "3.24.2"
 	if first == planFingerprint(HostPlan{Host: secondHost}) {
 		t.Fatal("semantic fact change did not change fingerprint")
+	}
+}
+
+func TestPlanFingerprintIncludesProtectedIntentDigest(t *testing.T) {
+	node := testNode(map[string]any{"verified": true})
+	step := Step{Address: node.Address, Action: ActionNoOp, Node: node, Observed: ObservedResource{Exists: true, Digest: corestate.Digest(node.Desired)}}
+	first := planFingerprint(HostPlan{Host: testHost(), Steps: []Step{step}})
+	step.Node.ProtectedIntentDigest = "different-protected-intent"
+	second := planFingerprint(HostPlan{Host: testHost(), Steps: []Step{step}})
+	if first == second {
+		t.Fatalf("protected intent did not change fingerprint: %q", first)
 	}
 }
 

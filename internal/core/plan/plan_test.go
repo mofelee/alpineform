@@ -2,7 +2,9 @@ package plan
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -44,6 +46,50 @@ func TestPlanRenderersMatchGoldenAndDoNotLeak(t *testing.T) {
 			t.Fatalf("%s leaked protected value", name)
 		}
 		assertGolden(t, name, output)
+	}
+}
+
+func TestProtectedArtifactPlanSurfacesNeverExposePayloadOrIntent(t *testing.T) {
+	sentinel := "not-a-real-artifact-plan-secret"
+	sentinelDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(sentinel)))
+	intentDigest := "not-a-serialized-artifact-intent"
+	hostFingerprint := "not-a-serialized-host-fingerprint"
+	node := graph.Node{
+		Host: "node", Address: `host.node.component.cli.artifact.source["amd64"]`, Kind: "component_artifact_source", Managed: true,
+		Summary: "download and verify protected component artifact", Source: ir.SourceRef{File: "model.apf.hcl", Line: 3},
+		Desired: map[string]any{
+			"path": "/var/cache/alpineform/components/cli/protected/amd64/artifact", "verified": true,
+			"url_sensitive": true, "sha256_ephemeral": true,
+		},
+		Payload: map[string]any{
+			"url":    "https://example.invalid/tool?token=" + sentinel,
+			"sha256": sentinelDigest,
+		},
+		Sensitive: true, Ephemeral: true, DigestSafe: true, ProtectedIntentDigest: intentDigest,
+	}
+	offline := New(&graph.ResourceGraph{Nodes: []graph.Node{node}}, Options{Files: []string{"model.apf.hcl"}, Hosts: []string{"node"}})
+	online := NewOnline(engine.Plan{Hosts: []engine.HostPlan{{
+		Host: ir.HostSpec{Name: "node"}, Fingerprint: hostFingerprint,
+		Steps: []engine.Step{{
+			Host: "node", Address: node.Address, Action: engine.ActionNoOp, Summary: node.Summary, Node: node,
+			Observed: engine.ObservedResource{Exists: true, Values: map[string]any{"verified": true}, Protected: true},
+		}},
+	}}}, Options{Files: []string{"model.apf.hcl"}})
+	for mode, document := range map[string]Document{"offline": offline, "online": online} {
+		textOutput, jsonOutput, htmlOutput := renderPlanFormats(t, document)
+		for format, output := range map[string][]byte{"text": textOutput, "json": jsonOutput, "html": htmlOutput} {
+			for _, forbidden := range []string{sentinel, sentinelDigest, intentDigest, hostFingerprint} {
+				if strings.Contains(string(output), forbidden) {
+					t.Fatalf("%s %s plan leaked %q: %s", mode, format, forbidden, output)
+				}
+			}
+		}
+		if !strings.Contains(string(jsonOutput), `"protected": true`) {
+			t.Fatalf("%s protected artifact JSON = %s", mode, jsonOutput)
+		}
+		if document.FormatVersion != "alpineform.plan.alpha1" {
+			t.Fatalf("%s format version = %q", mode, document.FormatVersion)
+		}
 	}
 }
 

@@ -2,8 +2,10 @@ package graph
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -34,11 +36,307 @@ func TestCompileArtifactSourceAndInstallNodes(t *testing.T) {
 	installAddress := componentAddress + `.artifact.install["/usr/local/bin/tool"]`
 	sourceNode := byAddress[sourceAddress]
 	installNode := byAddress[installAddress]
-	if sourceNode.Kind != "component_artifact_source" || !reflect.DeepEqual(sourceNode.DependsOn, []string{componentAddress}) || sourceNode.Desired["sha256"] != componentArtifactSHA {
+	cachePath := "/var/cache/alpineform/components/cli/" + componentArtifactSHA + "/artifact"
+	wantSourceDesired := map[string]any{
+		"path": cachePath, "url": "https://example.invalid/tool", "sha256": componentArtifactSHA, "ensure": "present",
+		"delete_behavior": "delete", "delete": map[string]any{"path": cachePath}, "prevent_destroy": false,
+	}
+	wantInstallDesired := map[string]any{
+		"path": "/usr/local/bin/tool", "owner": "root", "group": "root", "mode": "0755",
+		"content_sha256": componentArtifactSHA, "cache_path": cachePath, "artifact_type": "binary", "version": "1.2.3",
+		"ensure": "present", "delete_behavior": "destroy", "delete": map[string]any{"path": "/usr/local/bin/tool"}, "prevent_destroy": false,
+	}
+	if sourceNode.Kind != "component_artifact_source" || !reflect.DeepEqual(sourceNode.DependsOn, []string{componentAddress}) || !reflect.DeepEqual(sourceNode.Desired, wantSourceDesired) {
 		t.Fatalf("source node = %#v", sourceNode)
 	}
-	if installNode.Kind != "component_binary" || !reflect.DeepEqual(installNode.DependsOn, []string{sourceAddress}) || installNode.Desired["content_sha256"] != componentArtifactSHA || installNode.Desired["version"] != "1.2.3" {
+	if sourceNode.Payload != nil || sourceNode.Sensitive || sourceNode.Ephemeral || sourceNode.ProtectedIntentDigest != "" {
+		t.Fatalf("public source protection metadata = %#v", sourceNode)
+	}
+	if installNode.Kind != "component_binary" || !reflect.DeepEqual(installNode.DependsOn, []string{sourceAddress}) || !reflect.DeepEqual(installNode.Desired, wantInstallDesired) {
 		t.Fatalf("install node = %#v", installNode)
+	}
+	if installNode.Payload != nil || installNode.Sensitive || installNode.Ephemeral || installNode.ProtectedIntentDigest != "" || installNode.TriggeredBy != nil {
+		t.Fatalf("public install protection metadata = %#v", installNode)
+	}
+}
+
+func TestCompilePublicArchiveDesiredMapRemainsCompatible(t *testing.T) {
+	component := ir.ComponentInstanceSpec{
+		Name: "bundle", Template: "bundle", ArtifactType: "archive", Version: "2.0.0", Source: source(2),
+		SelectedSource: &ir.ComponentArtifactSourceSpec{URL: "https://example.invalid/bundle.tar.gz", SHA256: componentArtifactSHA, Source: source(3)},
+		Extract:        &ir.ComponentArtifactExtractSpec{Format: "tar.gz", StripComponents: 1, Source: source(4)},
+		Install:        &ir.ComponentArtifactInstallSpec{Path: "/opt/bundle", Owner: "root", Group: "root", Mode: "0755", Source: source(4)},
+	}
+	resourceGraph, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{component}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := `host.node.component.bundle.artifact.install["/opt/bundle"]`
+	var install Node
+	for _, node := range resourceGraph.Nodes {
+		if node.Address == address {
+			install = node
+		}
+	}
+	cachePath := "/var/cache/alpineform/components/bundle/" + componentArtifactSHA + "/artifact"
+	want := map[string]any{
+		"path": "/opt/bundle", "owner": "root", "group": "root", "mode": "0755",
+		"content_sha256": componentArtifactSHA, "cache_path": cachePath, "artifact_type": "archive", "version": "2.0.0",
+		"ensure": "present", "delete_behavior": "destroy", "delete": map[string]any{"path": "/opt/bundle"}, "prevent_destroy": false,
+		"extract_format": "tar.gz", "strip_components": 1,
+	}
+	if !reflect.DeepEqual(install.Desired, want) || install.Payload != nil || install.TriggeredBy != nil || install.ProtectedIntentDigest != "" {
+		t.Fatalf("public archive install = %#v", install)
+	}
+}
+
+func TestCompileProtectedArtifactPayloadsAreHostScopedAndNonSerializable(t *testing.T) {
+	type protectedFixture struct {
+		Host            string
+		Sentinel        string
+		URLSensitive    bool
+		URLEphemeral    bool
+		SHA256Sensitive bool
+		SHA256Ephemeral bool
+	}
+	fixtures := []protectedFixture{
+		{Host: "alpha", Sentinel: "not-a-real-alpha-artifact-secret", URLSensitive: true, SHA256Ephemeral: true},
+		{Host: "beta", Sentinel: "not-a-real-beta-artifact-secret", URLEphemeral: true, SHA256Sensitive: true},
+	}
+	program := &ir.Program{}
+	digests := map[string]string{}
+	for _, fixture := range fixtures {
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(fixture.Sentinel)))
+		digests[fixture.Host] = digest
+		program.Hosts = append(program.Hosts, ir.HostSpec{
+			Name: fixture.Host, Source: source(1),
+			Components: []ir.ComponentInstanceSpec{{
+				Name: "cli", PhysicalName: "retained_cli", Template: "tool", ArtifactType: "binary", Version: "1.2.3", Source: source(2),
+				SelectedSource: &ir.ComponentArtifactSourceSpec{
+					Architecture: "amd64", URL: "https://example.invalid/tool?token=" + fixture.Sentinel, SHA256: digest,
+					URLSensitive: fixture.URLSensitive, URLEphemeral: fixture.URLEphemeral,
+					SHA256Sensitive: fixture.SHA256Sensitive, SHA256Ephemeral: fixture.SHA256Ephemeral, Source: source(3),
+				},
+				Install: &ir.ComponentArtifactInstallSpec{Path: "/usr/local/bin/tool", Owner: "root", Group: "root", Mode: "0755", Source: source(4)},
+			}},
+		})
+	}
+	resourceGraph, err := Compile(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byAddress := map[string]Node{}
+	for _, node := range resourceGraph.Nodes {
+		byAddress[node.Address] = node
+	}
+	intentDigests := map[string]bool{}
+	for _, fixture := range fixtures {
+		prefix := "host." + fixture.Host + ".component.cli"
+		sourceAddress := prefix + `.artifact.source["amd64"]`
+		installAddress := prefix + `.artifact.install["/usr/local/bin/tool"]`
+		sourceNode := byAddress[sourceAddress]
+		installNode := byAddress[installAddress]
+		cachePath := "/var/cache/alpineform/components/retained_cli/protected/amd64/artifact"
+		if sourceNode.Address != sourceAddress || sourceNode.Desired["path"] != cachePath || sourceNode.Desired["verified"] != true {
+			t.Fatalf("%s protected source identity = %#v", fixture.Host, sourceNode)
+		}
+		if _, exists := sourceNode.Desired["url"]; exists {
+			t.Fatalf("%s protected URL retained in Desired: %#v", fixture.Host, sourceNode.Desired)
+		}
+		if _, exists := sourceNode.Desired["sha256"]; exists {
+			t.Fatalf("%s protected SHA retained in Desired: %#v", fixture.Host, sourceNode.Desired)
+		}
+		wantURL := "https://example.invalid/tool?token=" + fixture.Sentinel
+		if sourceNode.Payload["url"] != wantURL || sourceNode.Payload["sha256"] != digests[fixture.Host] {
+			t.Fatalf("%s source payload = %#v", fixture.Host, sourceNode.Payload)
+		}
+		for name, want := range map[string]bool{
+			"url_sensitive": fixture.URLSensitive, "url_ephemeral": fixture.URLEphemeral,
+			"sha256_sensitive": fixture.SHA256Sensitive, "sha256_ephemeral": fixture.SHA256Ephemeral,
+		} {
+			got, _ := sourceNode.Desired[name].(bool)
+			if got != want {
+				t.Fatalf("%s independent source mark %s = %v, want %v: %#v", fixture.Host, name, got, want, sourceNode.Desired)
+			}
+		}
+		if sourceNode.ProtectedIntentDigest == "" || intentDigests[sourceNode.ProtectedIntentDigest] {
+			t.Fatalf("%s source protected intent = %q", fixture.Host, sourceNode.ProtectedIntentDigest)
+		}
+		intentDigests[sourceNode.ProtectedIntentDigest] = true
+		if installNode.Address != installAddress || installNode.Desired["cache_path"] != cachePath || installNode.Desired["content_verified"] != true || installNode.Payload["content_sha256"] != digests[fixture.Host] {
+			t.Fatalf("%s protected install identity = %#v", fixture.Host, installNode)
+		}
+		if _, exists := installNode.Desired["content_sha256"]; exists {
+			t.Fatalf("%s protected install SHA retained in Desired: %#v", fixture.Host, installNode.Desired)
+		}
+		for name, want := range map[string]bool{
+			"content_sha256_sensitive": fixture.SHA256Sensitive,
+			"content_sha256_ephemeral": fixture.SHA256Ephemeral,
+		} {
+			got, _ := installNode.Desired[name].(bool)
+			if got != want {
+				t.Fatalf("%s independent install mark %s = %v, want %v: %#v", fixture.Host, name, got, want, installNode.Desired)
+			}
+		}
+		if !reflect.DeepEqual(installNode.DependsOn, []string{sourceAddress}) || !reflect.DeepEqual(installNode.TriggeredBy, []string{sourceAddress}) {
+			t.Fatalf("%s protected install relationships = depends %#v triggered %#v", fixture.Host, installNode.DependsOn, installNode.TriggeredBy)
+		}
+		if installNode.Sensitive != fixture.SHA256Sensitive || installNode.Ephemeral != fixture.SHA256Ephemeral || installNode.ProtectedIntentDigest != "" {
+			t.Fatalf("%s protected install flags = %#v", fixture.Host, installNode)
+		}
+	}
+	for name, value := range map[string]any{"host spec": program, "resource graph": resourceGraph} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(encoded)
+		for _, fixture := range fixtures {
+			for _, forbidden := range []string{fixture.Sentinel, digests[fixture.Host]} {
+				if strings.Contains(text, forbidden) {
+					t.Fatalf("%s leaked %q: %s", name, forbidden, text)
+				}
+			}
+		}
+		for digest := range intentDigests {
+			if strings.Contains(text, digest) {
+				t.Fatalf("%s leaked protected intent digest %q: %s", name, digest, text)
+			}
+		}
+	}
+}
+
+func TestCompileProtectedArtifactKindsUseSafeDesiredIdentity(t *testing.T) {
+	tests := []struct {
+		name        string
+		kind        string
+		installPath string
+	}{
+		{name: "binary", kind: "binary", installPath: "/usr/local/bin/tool"},
+		{name: "file", kind: "file", installPath: "/etc/tool.conf"},
+		{name: "archive", kind: "archive", installPath: "/opt/tool"},
+		{name: "ca", kind: "ca_certificate", installPath: "/usr/local/share/ca-certificates/tool.crt"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			component := ir.ComponentInstanceSpec{
+				Name: "current", PhysicalName: "legacy", Template: "tool", ArtifactType: test.kind, Version: "1.2.3", Source: source(2),
+				SelectedSource: &ir.ComponentArtifactSourceSpec{
+					URL: "https://example.invalid/tool", SHA256: componentArtifactSHA, SHA256Sensitive: true, Source: source(3),
+				},
+				Install: &ir.ComponentArtifactInstallSpec{Path: test.installPath, Owner: "root", Group: "root", Mode: "0644", Source: source(4)},
+			}
+			if test.kind == "archive" {
+				component.Extract = &ir.ComponentArtifactExtractSpec{Format: "tar.gz", StripComponents: 1, Source: source(4)}
+			}
+			resourceGraph, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{component}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			byAddress := map[string]Node{}
+			for _, node := range resourceGraph.Nodes {
+				byAddress[node.Address] = node
+			}
+			prefix := "host.node.component.current"
+			sourceAddress := prefix + `.artifact.source["any"]`
+			installAddress := prefix + ".artifact.install[" + strconv.Quote(test.installPath) + "]"
+			sourceNode := byAddress[sourceAddress]
+			installNode := byAddress[installAddress]
+			cachePath := "/var/cache/alpineform/components/legacy/protected/any/artifact"
+			if sourceNode.Desired["path"] != cachePath || sourceNode.Desired["url"] != "https://example.invalid/tool" || sourceNode.Desired["verified"] != true || sourceNode.Desired["sha256_sensitive"] != true || sourceNode.Payload["sha256"] != componentArtifactSHA {
+				t.Fatalf("protected %s source = %#v", test.kind, sourceNode)
+			}
+			if _, exists := sourceNode.Payload["url"]; exists {
+				t.Fatalf("public URL moved out of Desired: %#v", sourceNode.Payload)
+			}
+			if installNode.Kind != "component_"+test.kind || installNode.Desired["cache_path"] != cachePath || installNode.Desired["content_verified"] != true || installNode.Desired["content_sha256_sensitive"] != true || installNode.Payload["content_sha256"] != componentArtifactSHA {
+				t.Fatalf("protected %s install = %#v", test.kind, installNode)
+			}
+			if !reflect.DeepEqual(installNode.DependsOn, []string{sourceAddress}) || !reflect.DeepEqual(installNode.TriggeredBy, []string{sourceAddress}) {
+				t.Fatalf("protected %s relationships = %#v / %#v", test.kind, installNode.DependsOn, installNode.TriggeredBy)
+			}
+			if test.kind == "archive" && installNode.Desired["tree_integrity"] != "clean" {
+				t.Fatalf("protected archive desired = %#v", installNode.Desired)
+			}
+			if test.kind == "ca_certificate" {
+				marker := "/var/lib/alpineform/ca-certificates/legacy/protected/any.updated"
+				if installNode.Desired["trust_marker"] != marker || !reflect.DeepEqual(installNode.Desired["delete"], map[string]any{"path": test.installPath, "trust_marker": marker}) {
+					t.Fatalf("protected CA marker = %#v", installNode.Desired)
+				}
+			}
+		})
+	}
+}
+
+func TestCompileURLProtectedCAUsesStableMarkerWithoutProtectingInstall(t *testing.T) {
+	component := ir.ComponentInstanceSpec{
+		Name: "current", PhysicalName: "legacy", Template: "ca", ArtifactType: "ca_certificate", Source: source(2),
+		SelectedSource: &ir.ComponentArtifactSourceSpec{
+			Architecture: "arm64", URL: "https://example.invalid/root.crt?token=protected", SHA256: componentArtifactSHA, URLSensitive: true, Source: source(3),
+		},
+		Install: &ir.ComponentArtifactInstallSpec{Path: "/usr/local/share/ca-certificates/root.crt", Owner: "root", Group: "root", Mode: "0644", Source: source(4)},
+	}
+	resourceGraph, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{component}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byAddress := map[string]Node{}
+	for _, node := range resourceGraph.Nodes {
+		byAddress[node.Address] = node
+	}
+	prefix := "host.node.component.current"
+	sourceAddress := prefix + `.artifact.source["arm64"]`
+	installNode := byAddress[prefix+`.artifact.install["/usr/local/share/ca-certificates/root.crt"]`]
+	marker := "/var/lib/alpineform/ca-certificates/legacy/protected/arm64.updated"
+	if installNode.Sensitive || installNode.Ephemeral || installNode.ProtectedIntentDigest != "" || installNode.Payload != nil || installNode.TriggeredBy != nil {
+		t.Fatalf("URL-only protection spread to CA install: %#v", installNode)
+	}
+	if !reflect.DeepEqual(installNode.DependsOn, []string{sourceAddress}) || installNode.Desired["content_sha256"] != componentArtifactSHA || installNode.Desired["trust_marker"] != marker {
+		t.Fatalf("URL-protected CA identity = %#v", installNode)
+	}
+}
+
+func TestProtectedArtifactPathsStayStableAcrossRawIntentChanges(t *testing.T) {
+	compile := func(logicalName, rawURL, rawSHA string) (Node, Node) {
+		t.Helper()
+		component := ir.ComponentInstanceSpec{
+			Name: logicalName, PhysicalName: "retained_ca", Template: "ca", ArtifactType: "ca_certificate", Source: source(2),
+			SelectedSource: &ir.ComponentArtifactSourceSpec{
+				Architecture: "arm64", URL: rawURL, SHA256: rawSHA, URLSensitive: true, SHA256Ephemeral: true, Source: source(3),
+			},
+			Install: &ir.ComponentArtifactInstallSpec{Path: "/usr/local/share/ca-certificates/root.crt", Owner: "root", Group: "root", Mode: "0644", Source: source(4)},
+		}
+		resourceGraph, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{component}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		prefix := "host.node.component." + logicalName
+		var sourceNode, installNode Node
+		for _, node := range resourceGraph.Nodes {
+			switch node.Address {
+			case prefix + `.artifact.source["arm64"]`:
+				sourceNode = node
+			case prefix + `.artifact.install["/usr/local/share/ca-certificates/root.crt"]`:
+				installNode = node
+			}
+		}
+		return sourceNode, installNode
+	}
+	firstSource, firstInstall := compile("old", "https://mirror-a.invalid/root.crt?token=alpha", strings.Repeat("a", 64))
+	secondSource, secondInstall := compile("current", "https://mirror-b.invalid/root.crt?token=beta", strings.Repeat("b", 64))
+	wantCache := "/var/cache/alpineform/components/retained_ca/protected/arm64/artifact"
+	wantMarker := "/var/lib/alpineform/ca-certificates/retained_ca/protected/arm64.updated"
+	if firstSource.Desired["path"] != wantCache || secondSource.Desired["path"] != wantCache || firstInstall.Desired["cache_path"] != wantCache || secondInstall.Desired["cache_path"] != wantCache {
+		t.Fatalf("protected cache paths changed: first=%#v/%#v second=%#v/%#v", firstSource.Desired, firstInstall.Desired, secondSource.Desired, secondInstall.Desired)
+	}
+	if firstInstall.Desired["trust_marker"] != wantMarker || secondInstall.Desired["trust_marker"] != wantMarker {
+		t.Fatalf("protected CA marker changed: first=%#v second=%#v", firstInstall.Desired, secondInstall.Desired)
+	}
+	if !reflect.DeepEqual(firstSource.Desired, secondSource.Desired) || !reflect.DeepEqual(firstInstall.Desired, secondInstall.Desired) {
+		t.Fatalf("protected durable identities changed:\nfirst=%#v/%#v\nsecond=%#v/%#v", firstSource.Desired, firstInstall.Desired, secondSource.Desired, secondInstall.Desired)
+	}
+	if reflect.DeepEqual(firstSource.Payload, secondSource.Payload) || firstSource.ProtectedIntentDigest == secondSource.ProtectedIntentDigest {
+		t.Fatalf("protected raw intent did not change: first=%#v/%q second=%#v/%q", firstSource.Payload, firstSource.ProtectedIntentDigest, secondSource.Payload, secondSource.ProtectedIntentDigest)
 	}
 }
 
@@ -428,5 +726,17 @@ func TestCompileCACertificateDependsOnSynthesizedPackage(t *testing.T) {
 	want := []string{prefix + `.artifact.source["any"]`, prefix + `.packages.package["ca-certificates"]`}
 	if !reflect.DeepEqual(install.DependsOn, want) {
 		t.Fatalf("CA dependencies = %#v, want %#v", install.DependsOn, want)
+	}
+	cachePath := "/var/cache/alpineform/components/ca/" + componentArtifactSHA + "/artifact"
+	marker := "/var/lib/alpineform/ca-certificates/" + componentArtifactSHA + ".updated"
+	wantDesired := map[string]any{
+		"path": "/usr/local/share/ca-certificates/root.crt", "owner": "root", "group": "root", "mode": "0644",
+		"content_sha256": componentArtifactSHA, "cache_path": cachePath, "artifact_type": "ca_certificate", "version": "",
+		"ensure": "present", "delete_behavior": "destroy",
+		"delete": map[string]any{"path": "/usr/local/share/ca-certificates/root.crt", "trust_marker": marker}, "prevent_destroy": false,
+		"trust_marker": marker, "trust_updated": true,
+	}
+	if !reflect.DeepEqual(install.Desired, wantDesired) || install.Payload != nil || install.TriggeredBy != nil || install.ProtectedIntentDigest != "" {
+		t.Fatalf("public CA install = %#v", install)
 	}
 }

@@ -106,7 +106,7 @@ type HostPlan struct {
 	Steps       []Step
 	Moves       []corestate.RealizedMove
 	PriorState  corestate.State
-	Fingerprint string
+	Fingerprint string `json:"-"`
 }
 
 type Step struct {
@@ -506,7 +506,7 @@ func planFingerprint(plan HostPlan) string {
 		parts = append(parts, strings.Join([]string{"move", move.Host, move.From, move.To}, "\x00"))
 	}
 	for _, step := range plan.Steps {
-		parts = append(parts, strings.Join([]string{step.Address, step.Action, corestate.Digest(step.Node.Desired), step.Observed.Digest, strconvBool(step.Observed.Exists)}, "\x00"))
+		parts = append(parts, strings.Join([]string{step.Address, step.Action, corestate.Digest(step.Node.Desired), step.Node.ProtectedIntentDigest, step.Observed.Digest, strconvBool(step.Observed.Exists)}, "\x00"))
 	}
 	return corestate.Digest(parts)
 }
@@ -622,7 +622,7 @@ func resourceForStep(step Step, observed ObservedResource, order int) corestate.
 		Order:         order,
 		DesiredDigest: digest,
 		Observed:      observedValues,
-		Protected:     observed.Protected,
+		Protected:     step.Node.Sensitive || step.Node.Ephemeral || observed.Protected,
 		Sensitive:     step.Node.Sensitive,
 		Ephemeral:     step.Node.Ephemeral,
 		DigestSafe:    step.Node.DigestSafe,
