@@ -24,6 +24,7 @@ type Config struct {
 	Hosts                  map[string]Host
 	Scripts                map[string]Script
 	Asserts                []Assert
+	Moves                  []Moved
 }
 
 type Variable struct {
@@ -128,6 +129,9 @@ func ParseFilesWithOptions(files []string, opts ParseOptions) (*Config, error) {
 		if err := parseModelBlocks(cfg, file.name, file.body); err != nil {
 			return nil, err
 		}
+	}
+	if err := validateAndSortMoved(cfg); err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }

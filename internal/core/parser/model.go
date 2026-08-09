@@ -262,6 +262,12 @@ func parseModelBlocks(cfg *Config, file string, body *hclsyntax.Body) error {
 				return err
 			}
 			cfg.Asserts = append(cfg.Asserts, assertion)
+		case "moved":
+			move, err := parseMovedBlock(file, block)
+			if err != nil {
+				return err
+			}
+			cfg.Moves = append(cfg.Moves, move)
 		default:
 			return fmt.Errorf("%s:%d: unknown top-level block %q", file, block.TypeRange.Start.Line, block.Type)
 		}

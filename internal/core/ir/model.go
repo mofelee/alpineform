@@ -145,6 +145,7 @@ type HostSpec struct {
 	Name        string                  `json:"name"`
 	SSH         SSHSpec                 `json:"ssh"`
 	State       StateSpec               `json:"state"`
+	Moves       []MovedSpec             `json:"moves,omitempty"`
 	Platform    *PlatformSpec           `json:"platform,omitempty"`
 	Facts       *HostFacts              `json:"facts,omitempty"`
 	APK         *APKSpec                `json:"apk,omitempty"`
@@ -162,6 +163,14 @@ type HostSpec struct {
 	Packages    []PackageSpec           `json:"packages,omitempty"`
 	Services    []ServiceSpec           `json:"services,omitempty"`
 	Source      SourceRef               `json:"source"`
+}
+
+type MovedSpec struct {
+	From       string    `json:"from"`
+	To         string    `json:"to"`
+	Source     SourceRef `json:"source,omitempty"`
+	FromSource SourceRef `json:"from_source,omitempty"`
+	ToSource   SourceRef `json:"to_source,omitempty"`
 }
 
 type NftablesSpec struct {
@@ -436,6 +445,7 @@ type PlatformSpec struct {
 
 type ComponentInstanceSpec struct {
 	Name            string                        `json:"name"`
+	PhysicalName    string                        `json:"-"`
 	Template        string                        `json:"template"`
 	ArtifactType    string                        `json:"artifact_type,omitempty"`
 	Version         string                        `json:"version,omitempty"`

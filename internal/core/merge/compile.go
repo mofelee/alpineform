@@ -256,6 +256,10 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	if err := validateInstanceDependencies(host, resolved); err != nil {
 		return ir.HostSpec{}, err
 	}
+	moves, err := compileMovedSpecs(config.Moves, host.Name, resolved.Components)
+	if err != nil {
+		return ir.HostSpec{}, err
+	}
 
 	hostContext, err := hostEvalContext(baseContext, host, facts)
 	if err != nil {
@@ -271,9 +275,9 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 			return ir.HostSpec{}, err
 		}
 	}
-
 	out := ir.HostSpec{
-		Name: host.Name,
+		Name:  host.Name,
+		Moves: moves,
 		SSH: ir.SSHSpec{
 			Host:         host.SSH.Host,
 			Port:         host.SSH.Port,
@@ -383,6 +387,73 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	}
 	if err := validateComponentResourceCollisions(out); err != nil {
 		return ir.HostSpec{}, err
+	}
+	return out, nil
+}
+
+func compileMovedSpecs(moves []parser.Moved, host string, components map[string]parser.ComponentInstance) ([]ir.MovedSpec, error) {
+	if len(moves) == 0 {
+		return nil, nil
+	}
+
+	bySource := make(map[string]parser.Moved, len(moves))
+	targets := make(map[string]bool, len(moves))
+	for _, move := range moves {
+		bySource[move.From] = move
+		targets[move.To] = true
+	}
+	heads := make([]string, 0, len(moves))
+	for source := range bySource {
+		if !targets[source] {
+			heads = append(heads, source)
+		}
+	}
+	sort.Strings(heads)
+
+	out := make([]ir.MovedSpec, 0, len(moves))
+	for _, head := range heads {
+		chain := make([]parser.Moved, 0)
+		nodes := []string{head}
+		for current := head; ; {
+			move, ok := bySource[current]
+			if !ok {
+				break
+			}
+			chain = append(chain, move)
+			nodes = append(nodes, move.To)
+			current = move.To
+		}
+
+		mounted := make([]int, 0, len(nodes))
+		for i, node := range nodes {
+			if _, ok := components[node]; ok {
+				mounted = append(mounted, i)
+			}
+		}
+		if len(mounted) == 0 || mounted[0] == 0 && len(mounted) == 1 {
+			continue
+		}
+		if len(mounted) > 1 {
+			names := make([]string, 0, len(mounted))
+			for _, index := range mounted {
+				names = append(names, "component."+nodes[index])
+			}
+			source := components[nodes[mounted[1]]].Source
+			return nil, fmt.Errorf("%s:%d:%s: ambiguous moved chain on host %s: multiple chain nodes are mounted (%s)", source.File, source.Line, source.Path, host, strings.Join(names, ", "))
+		}
+
+		for _, move := range chain[:mounted[0]] {
+			out = append(out, ir.MovedSpec{
+				From:       fmt.Sprintf("host.%s.component.%s", host, move.From),
+				To:         fmt.Sprintf("host.%s.component.%s", host, move.To),
+				Source:     move.Source,
+				FromSource: move.FromSource,
+				ToSource:   move.ToSource,
+			})
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
 	}
 	return out, nil
 }
@@ -504,6 +575,7 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 	}
 	return ir.ComponentInstanceSpec{
 		Name:            instance.Name,
+		PhysicalName:    instance.Name,
 		Template:        instance.Template,
 		ArtifactType:    template.ArtifactType,
 		Version:         template.Version,
