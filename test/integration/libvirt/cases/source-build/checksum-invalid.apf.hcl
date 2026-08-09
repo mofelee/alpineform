@@ -25,7 +25,11 @@ component "failure" {
   }
   install { path = "/usr/local/bin/apf-ci-source-tool" }
 }
+profile "source_build_defaults" {
+  staging { root = "/srv/alpineform-profile-builds" }
+}
 host "cihost" {
+  imports = [profile.source_build_defaults]
   ssh {
     host          = "__APF_VM_HOST__"
     identity_file = "${path.module}/id_ed25519"
@@ -34,8 +38,10 @@ host "cihost" {
     architecture = "amd64"
     version      = "3.24.1"
   }
+  staging { root = "/srv/alpineform-host-builds" }
   component "failure" {
-    source = component.failure
-    inputs = { token = var.build_token }
+    source       = component.failure
+    staging_root = "/srv/alpineform-instance-builds"
+    inputs       = { token = var.build_token }
   }
 }

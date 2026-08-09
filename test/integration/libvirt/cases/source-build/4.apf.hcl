@@ -7,7 +7,7 @@ variable "build_token" {
 
 component "musl_tool" {
   type    = "source"
-  version = "1"
+  version = "3"
 
   input "token" {
     type      = string
@@ -17,8 +17,8 @@ component "musl_tool" {
 
   build {
     input "source" {
-      source      = "fixtures/tool-v1.c"
-      sha256      = "3764b3a8b3b7a021738231ecc9310011da67487f41d6f1732a02d53b6ef903e6"
+      source      = "fixtures/tool-v2.c"
+      sha256      = "488e4dab8ecb6a92a12a75ddb5acb2b5fa6c1437c7880987ee7d0de2c11d6ad1"
       destination = "tool.c"
     }
     input "verify_environment" {
@@ -27,7 +27,7 @@ component "musl_tool" {
       destination = "verify-env.sh"
     }
     command { argv = ["sh", "verify-env.sh"] }
-    command { argv = ["cc", "-Os", "-static", "-o", "build/tool", "tool.c"] }
+    command { argv = ["cc", "-O2", "-static", "-DBUILD_VARIANT=\"definition-v3\"", "-o", "build/tool", "tool.c"] }
 
     environment         = { BUILD_TOKEN = input.token }
     environment_version = "integration-secret-v1"

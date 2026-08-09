@@ -70,11 +70,16 @@ mutation, external ownership, real SSH loss, local `SIGKILL`, detached and
 synchronous confirmed rollback, state preservation, stale-artifact cleanup,
 and protected-log scanning.
 The source-build case is the eleventh case and the dedicated Preview gate. It
-compiles a checksummed C fixture against musl, proves no-op, source drift,
-build-definition drift, installed drift, repair, cleanup, and reboot, then
-exercises checksum, compiler, missing-output, symlink-output, cancellation,
-ENOSPC, and owned-leftover recovery paths while requiring the prior installation
-and protected state to survive.
+passes exactly 48 explicit assertions per Alpine branch. Its four numbered
+configurations compile a checksummed C fixture against musl under the legacy
+default root, prove that profile/host/instance root precedence is a complete
+no-op, rebuild a workspace larger than a deliberately constrained 2 MiB
+`/var/tmp` through the instance root, and retain the existing source and
+build-definition drift coverage. The failure loop exercises checksum,
+compiler, missing-output, symlink-output, cancellation, selected-root ENOSPC,
+and legacy owned-leftover recovery while requiring the prior installation and
+protected state to survive. It also checks private ownership, bounded capacity
+diagnostics, and cleanup across every candidate root and `/run` input path.
 The component-moved case is the twelfth case and has its own Preview gate. It
 starts from old worker and source-builder component instances. Together they
 cover files, accounts, packages, OpenRC, prebuilt artifacts, scripts, and a
@@ -90,7 +95,8 @@ markers, workspaces, or output ownership.
 The account and lifecycle cases prove recorded destroy ordering. The layout
 validator requires contiguous configs, a check hook for every step, at least
 one drift hook per case, pinned offline facts, shell syntax, the nftables-only
-risk marker, and no committed keys or state.
+risk marker, and no committed keys or state. A case can commit an
+`expected-assertions` file to make its exact runtime assertion count blocking.
 
 CI discovers exactly 12 cases and crosses them with four Alpine branches.
 The aggregate `Alpine 3.21-3.24 core gate` requires the full 48-job matrix. The

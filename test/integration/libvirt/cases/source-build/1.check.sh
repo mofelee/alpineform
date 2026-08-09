@@ -9,3 +9,7 @@ assert_remote "source-build state is protected and contains no secret" \
 if [[ "$APF_TEST_PHASE" == repaired ]]; then
   assert_local "installed drift was reported as repair" grep -Fq 'repair:' "$LOG_DIR/1.drift-check.log"
 fi
+if [[ "$APF_TEST_PHASE" == rebooted ]]; then
+  run_remote "record the legacy-root installation identity" \
+    "mkdir -p /var/lib/alpineform && stat -c '%d:%i' /usr/local/bin/apf-ci-source-tool > /var/lib/alpineform/source-build-v1.identity"
+fi

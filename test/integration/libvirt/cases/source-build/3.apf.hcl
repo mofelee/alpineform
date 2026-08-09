@@ -7,7 +7,7 @@ variable "build_token" {
 
 component "musl_tool" {
   type    = "source"
-  version = "3"
+  version = "2"
 
   input "token" {
     type      = string
@@ -27,7 +27,9 @@ component "musl_tool" {
       destination = "verify-env.sh"
     }
     command { argv = ["sh", "verify-env.sh"] }
-    command { argv = ["cc", "-O2", "-static", "-DBUILD_VARIANT=\"definition-v3\"", "-o", "build/tool", "tool.c"] }
+    command { argv = ["mkdir", "-p", "build"] }
+    command { argv = ["dd", "if=/dev/zero", "of=build/workspace-capacity-proof", "bs=1048576", "count=4"] }
+    command { argv = ["cc", "-Os", "-static", "-o", "build/tool", "tool.c"] }
 
     environment         = { BUILD_TOKEN = input.token }
     environment_version = "integration-secret-v1"
@@ -45,7 +47,15 @@ component "musl_tool" {
   }
 }
 
+profile "source_build_defaults" {
+  staging {
+    root = "/srv/alpineform-profile-builds"
+  }
+}
+
 host "cihost" {
+  imports = [profile.source_build_defaults]
+
   ssh {
     host          = "__APF_VM_HOST__"
     identity_file = "${path.module}/id_ed25519"
@@ -54,8 +64,14 @@ host "cihost" {
     architecture = "amd64"
     version      = "3.24.1"
   }
+
+  staging {
+    root = "/srv/alpineform-host-builds"
+  }
+
   component "musl_tool" {
-    source = component.musl_tool
-    inputs = { token = var.build_token }
+    source       = component.musl_tool
+    staging_root = "/srv/alpineform-instance-builds"
+    inputs       = { token = var.build_token }
   }
 }

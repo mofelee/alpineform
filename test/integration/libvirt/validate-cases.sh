@@ -255,12 +255,24 @@ case_count=0
 while IFS= read -r case_dir; do
   case_count=$((case_count + 1))
   case_name="$(basename "$case_dir")"
+  expected_assertions=
   if [[ -f "$case_dir/.allow-network-disruption" && "$case_name" != nftables ]]; then
     printf '%s: only the nftables case may pre-authorize network disruption\n' "$case_name" >&2
     failed=1
   fi
   if [[ "$case_name" == nftables && ! -f "$case_dir/.allow-network-disruption" ]]; then
     printf 'nftables: missing explicit network disruption case marker\n' >&2
+    failed=1
+  fi
+  if [[ -f "$case_dir/expected-assertions" ]]; then
+    expected_assertions="$(tr -d '[:space:]' < "$case_dir/expected-assertions")"
+    if [[ ! "$expected_assertions" =~ ^[1-9][0-9]*$ ]]; then
+      printf '%s: expected-assertions must contain one positive integer\n' "$case_name" >&2
+      failed=1
+    fi
+  fi
+  if [[ "$case_name" == source-build && "${expected_assertions:-}" != 48 ]]; then
+    printf 'source-build: expected-assertions must remain 48\n' >&2
     failed=1
   fi
   configs=()

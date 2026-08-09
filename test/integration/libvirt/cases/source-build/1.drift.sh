@@ -7,7 +7,7 @@ assert_v1_survives() {
 wait_for_build_cleanup() {
   local attempt
   for attempt in $(seq 1 30); do
-    if ssh_vm "! apk info | grep -Eq '^\\.alpineform-build-' && test -z \"\$(find /var/tmp/alpineform/builds -mindepth 1 -print -quit 2>/dev/null)\""; then
+    if ssh_vm "! apk info | grep -Eq '^\\.alpineform-build-' && test -z \"\$(find /var/tmp/alpineform/builds /srv/alpineform-profile-builds /srv/alpineform-host-builds /srv/alpineform-instance-builds -mindepth 1 -print -quit 2>/dev/null)\" && test -z \"\$(find /run/alpineform/build-inputs /run/alpineform/build-runtime -mindepth 1 -print -quit 2>/dev/null)\""; then
       return 0
     fi
     sleep 1
@@ -37,7 +37,17 @@ HOME="$APF_HOME" APF_SSH_CONFIG="$APF_HOME/.ssh/config" \
   "$APF_BIN" apply -f "$CASE_DIR/cancellation.apf.hcl" --auto-approve --color never \
   >"$LOG_DIR/failure-cancellation.log" 2>&1 &
 cancel_pid=$!
-sleep 5
+workspace_ready=0
+for attempt in $(seq 1 30); do
+  if ssh_vm "test \"\$(find /srv/alpineform-instance-builds -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')\" = 1"; then
+    workspace_ready=1
+    break
+  fi
+  sleep 1
+done
+(( workspace_ready == 1 )) || fail "cancelled source build did not create its selected private workspace"
+assert_remote "running build uses one private instance-root child without persisting its secret" \
+  "test \"\$(find /srv/alpineform-instance-builds -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')\" = 1 && workspace=\$(find /srv/alpineform-instance-builds -mindepth 1 -maxdepth 1 -type d -print -quit) && test \"\$(stat -c '%U:%G:%a' \"\$workspace\")\" = root:root:700 && test -z \"\$(find /var/tmp/alpineform/builds /srv/alpineform-profile-builds /srv/alpineform-host-builds -mindepth 1 -print -quit 2>/dev/null)\" && ! grep -R -Fq alpineform-ci-secret-sentinel /srv/alpineform-instance-builds"
 kill -TERM "$cancel_pid"
 if wait "$cancel_pid"; then
   fail "cancelled source build unexpectedly succeeded"
@@ -46,20 +56,26 @@ cat "$LOG_DIR/failure-cancellation.log"
 wait_for_build_cleanup || fail "cancelled source build did not clean owned processes and workspace"
 assert_v1_survives "cancelled source build leaves the previous installation and state intact"
 
-run_remote "mount a small source-build workspace to force ENOSPC" \
-  "mkdir -p /var/tmp/alpineform/builds && mount -t tmpfs -o size=2m tmpfs /var/tmp/alpineform/builds"
+run_remote "mount a small selected workspace root to force ENOSPC" \
+  "mkdir -p /srv/alpineform-instance-builds && chmod 0700 /srv/alpineform-instance-builds && mount -t tmpfs -o size=2m,mode=0700 tmpfs /srv/alpineform-instance-builds"
 set +e
 apf apply -f "$CASE_DIR/disk-full.apf.hcl" --auto-approve --color never >"$LOG_DIR/failure-disk-full.log" 2>&1
 disk_status=$?
 set -e
-run_remote "unmount the source-build ENOSPC fixture" "umount /var/tmp/alpineform/builds"
+cat "$LOG_DIR/failure-disk-full.log"
+assert_local "ENOSPC reports the selected root, derived work path, and bounded capacity" \
+  grep -Eq 'staging_root=/srv/alpineform-instance-builds work_path=/srv/alpineform-instance-builds/[0-9a-f]{64} available_kib=([0-9]+|unknown)' "$LOG_DIR/failure-disk-full.log"
+disk_cleanup_status=0
+wait_for_build_cleanup || disk_cleanup_status=$?
+run_remote "unmount the source-build ENOSPC fixture" "umount /srv/alpineform-instance-builds"
 assert_remote "source-build ENOSPC fixture is unmounted" \
-  "! grep -Fq ' /var/tmp/alpineform/builds ' /proc/mounts"
+  "! grep -Fq ' /srv/alpineform-instance-builds ' /proc/mounts"
 if (( disk_status == 0 )); then
   fail "disk-full source build unexpectedly succeeded"
 fi
-cat "$LOG_DIR/failure-disk-full.log"
-wait_for_build_cleanup || fail "disk-full source build did not clean owned state"
+if (( disk_cleanup_status != 0 )); then
+  fail "disk-full source build did not clean owned state while the constrained root was mounted"
+fi
 assert_v1_survives "disk-full source build leaves the previous installation and state intact"
 
 apf plan -f "$CASE_DIR/1.apf.hcl" --format json >"$LOG_DIR/leftover-plan.json"
@@ -79,7 +95,7 @@ PY
 )
 workspace="/var/tmp/alpineform/builds/$identity"
 run_remote "inject a recoverable owned virtual package and workspace" \
-  "apk --quiet add --virtual '$virtual' build-base bubblewrap zlib-dev && mkdir -p '$workspace' \"\$(dirname '$marker')\" && printf '%s\\n%s\\n%s\\n' '$virtual' '$owner' '$identity' > '$marker'"
+  "apk --quiet add --virtual '$virtual' build-base bubblewrap zlib-dev && mkdir -p '$workspace' \"\$(dirname '$marker')\" && chmod 0700 '$workspace' && printf '%s\\n%s\\n%s\\n' '$virtual' '$owner' '$identity' > '$marker' && chmod 0600 '$marker'"
 apf apply -f "$CASE_DIR/1.apf.hcl" --auto-approve --color never >"$LOG_DIR/leftover-recovery.log"
 assert_remote "owned interrupted-build leftovers are reconciled" \
   "! apk info -e '$virtual' && test ! -e '$marker' && test ! -e '$workspace' && grep -qx zlib-dev /etc/apk/world"

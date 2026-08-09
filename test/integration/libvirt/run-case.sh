@@ -495,4 +495,10 @@ if grep -R -F 'alpineform-ci-secret-sentinel' "$LOG_DIR" >/dev/null 2>&1; then
   fail "sensitive sentinel leaked into integration logs"
 fi
 (( ASSERTION_COUNT > 0 )) || fail "case must run at least one explicit assertion"
+if [[ -f "$CASE_DIR/expected-assertions" ]]; then
+  expected_assertions="$(tr -d '[:space:]' < "$CASE_DIR/expected-assertions")"
+  [[ "$expected_assertions" =~ ^[1-9][0-9]*$ ]] || fail "expected-assertions must contain one positive integer"
+  (( ASSERTION_COUNT == expected_assertions )) ||
+    fail "case ran $ASSERTION_COUNT explicit assertions; expected $expected_assertions"
+fi
 log "case passed with $ASSERTION_COUNT explicit assertions"
