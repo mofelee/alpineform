@@ -33,12 +33,19 @@ func TestOpenRCRelationshipsAcrossPlanFormats(t *testing.T) {
 	secondOffline, secondGraph := compilePlanFixture(t, path)
 	secondOnline := onlinePlanForGraph(secondGraph, []string{path})
 
+	packageAddress := `host.node.packages.package["worker-daemon"]`
+	protectedFileAddress := `host.node.files.file["/etc/worker/worker.conf"]`
 	serviceAddress := `host.node.services.service["worker"]`
+	wantFileDependsOn := []string{
+		"host.node",
+		packageAddress,
+	}
 	wantDependsOn := []string{
 		"host.node",
 		`host.node.files.file["/etc/conf.d/worker"]`,
 		`host.node.files.file["/etc/init.d/worker"]`,
-		`host.node.packages.package["worker-daemon"]`,
+		protectedFileAddress,
+		packageAddress,
 	}
 	wantTriggeredBy := []string{
 		`host.node.files.file["/etc/conf.d/worker"]`,
@@ -53,7 +60,22 @@ func TestOpenRCRelationshipsAcrossPlanFormats(t *testing.T) {
 		{name: "online", document: online, secondDocument: secondOnline},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			assertRelationshipsAcrossFormats(t, test.document, protectedFileAddress, wantFileDependsOn, nil)
 			assertRelationshipsAcrossFormats(t, test.document, serviceAddress, wantDependsOn, wantTriggeredBy)
+			protected := changeForAddress(t, test.document, protectedFileAddress)
+			if !reflect.DeepEqual(protected.Desired, map[string]any{"protected": true}) {
+				t.Fatalf("protected file desired value = %#v", protected.Desired)
+			}
+			rendered := renderPlanDocument(t, test.document)
+			for format, output := range map[string][]byte{
+				"text": rendered.text,
+				"json": rendered.json,
+				"html": rendered.html,
+			} {
+				if bytes.Contains(output, []byte("protected-worker-plan-sentinel")) {
+					t.Fatalf("%s output leaked protected managed-file content", format)
+				}
+			}
 			assertRenderedDocumentsEqual(t, test.document, test.secondDocument)
 		})
 	}

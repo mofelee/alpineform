@@ -648,6 +648,41 @@ func TestBindHostComponentIdentitiesDoesNotMutateSharedProgram(t *testing.T) {
 	}
 }
 
+func TestHostWithLogicalComponentNamesRewritesExplicitDependencies(t *testing.T) {
+	host := movedEngineHost("node", "current", "1")
+	component := &host.Components[0]
+	component.Packages = []ir.PackageSpec{{Name: "tool", Ensure: "present", Source: ir.SourceRef{File: "main.apf.hcl", Line: 20, Path: "component.tool.package.tool"}}}
+	component.Files = []ir.ManagedFileSpec{{Path: "/etc/tool.conf", Ensure: "present", Source: ir.SourceRef{File: "main.apf.hcl", Line: 21, Path: "component.tool.file.config"}}}
+	currentPrefix := componentRoot(host.Name, "current")
+	component.ExplicitDependencies = []ir.ResourceDependencySpec{
+		{
+			From: currentPrefix + `.files.file["/etc/tool.conf"]`, DependsOn: currentPrefix + `.packages.package["tool"]`,
+			Source: ir.SourceRef{File: "main.apf.hcl", Line: 22, Path: "component.tool.file.config.depends_on[0]"},
+		},
+		{
+			From: currentPrefix + `.services.service["tool"]`, DependsOn: currentPrefix + `.files.file["/etc/tool.conf"]`,
+			Source: ir.SourceRef{File: "main.apf.hcl", Line: 23, Path: "component.tool.service.tool.depends_on[0]"},
+		},
+	}
+	original := append([]ir.ResourceDependencySpec(nil), component.ExplicitDependencies...)
+
+	legacy := hostWithLogicalComponentNames(host, map[string]string{"current": "old"})
+	oldPrefix := componentRoot(host.Name, "old")
+	want := []ir.ResourceDependencySpec{
+		{From: oldPrefix + `.files.file["/etc/tool.conf"]`, DependsOn: oldPrefix + `.packages.package["tool"]`, Source: original[0].Source},
+		{From: oldPrefix + `.services.service["tool"]`, DependsOn: oldPrefix + `.files.file["/etc/tool.conf"]`, Source: original[1].Source},
+	}
+	if !reflect.DeepEqual(legacy.Components[0].ExplicitDependencies, want) {
+		t.Fatalf("legacy explicit dependencies = %#v, want %#v", legacy.Components[0].ExplicitDependencies, want)
+	}
+	if !reflect.DeepEqual(host.Components[0].ExplicitDependencies, original) {
+		t.Fatalf("legacy rewrite mutated input dependencies: %#v", host.Components[0].ExplicitDependencies)
+	}
+	if _, err := graph.Compile(&ir.Program{Hosts: []ir.HostSpec{legacy}}); err != nil {
+		t.Fatalf("compile legacy component dependencies: %v", err)
+	}
+}
+
 func TestMovedApplyPrewriteUsesReturnedSerial(t *testing.T) {
 	host, resourceGraph, initial := movedEngineFixture(t, "node", "2")
 	backend := newMemoryBackend()

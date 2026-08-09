@@ -644,9 +644,25 @@ func planFingerprint(plan HostPlan) string {
 			strconvBool(step.Observed.Exists),
 			strconvBool(step.ReclassifiedProtected),
 			stepCleanupIdentityFingerprint(step),
+			canonicalRelationshipFingerprint(step.Node.DependsOn),
+			canonicalRelationshipFingerprint(step.Node.ExplicitDependsOn),
+			canonicalRelationshipFingerprint(step.Node.TriggeredBy),
+			canonicalRelationshipFingerprint(step.TriggeredBy),
 		}, "\x00"))
 	}
 	return corestate.Digest(parts)
+}
+
+func canonicalRelationshipFingerprint(addresses []string) string {
+	canonical := append([]string{}, addresses...)
+	sort.Strings(canonical)
+	unique := canonical[:0]
+	for _, address := range canonical {
+		if len(unique) == 0 || unique[len(unique)-1] != address {
+			unique = append(unique, address)
+		}
+	}
+	return corestate.Digest(unique)
 }
 
 func stepCleanupIdentityFingerprint(step Step) string {

@@ -134,10 +134,11 @@ func cloneState(input corestate.State) corestate.State {
 }
 
 type memoryProvider struct {
-	mu       sync.Mutex
-	observed map[string]ObservedResource
-	applied  []Step
-	deleted  []Step
+	mu        sync.Mutex
+	observed  map[string]ObservedResource
+	inspected []string
+	applied   []Step
+	deleted   []Step
 }
 
 type failingProvider struct {
@@ -182,6 +183,7 @@ func newMemoryProvider() *memoryProvider {
 func (provider *memoryProvider) Inspect(_ context.Context, node graph.Node) (ObservedResource, error) {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
+	provider.inspected = append(provider.inspected, node.Address)
 	return provider.observed[node.Address], nil
 }
 
@@ -212,6 +214,12 @@ func (provider *memoryProvider) counts() (int, int) {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	return len(provider.applied), len(provider.deleted)
+}
+
+func (provider *memoryProvider) inspectionAddresses() []string {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	return append([]string(nil), provider.inspected...)
 }
 
 func testHost() ir.HostSpec {
@@ -1273,18 +1281,137 @@ func TestPlanFingerprintIncludesProtectedIntentDigest(t *testing.T) {
 	}
 }
 
+func TestPlanFingerprintIncludesCanonicalRelationships(t *testing.T) {
+	base := Step{
+		Address: "host.node.service.worker", Action: ActionNoOp,
+		Node: graph.Node{
+			Address: "host.node.service.worker", Desired: map[string]any{"state": "running"},
+			DependsOn:         []string{"host.node.file.config", "host.node.package.worker"},
+			ExplicitDependsOn: []string{"host.node.file.config"},
+			TriggeredBy:       []string{"host.node.file.config", "host.node.package.worker"},
+		},
+		Observed:    ObservedResource{Exists: true, Digest: "observed"},
+		TriggeredBy: []string{"host.node.file.config"},
+	}
+	fingerprint := func(step Step) string {
+		return planFingerprint(HostPlan{Host: testHost(), Steps: []Step{step}})
+	}
+	want := fingerprint(base)
+
+	permuted := base
+	permuted.Node.DependsOn = []string{"host.node.package.worker", "host.node.file.config", "host.node.file.config"}
+	permuted.Node.ExplicitDependsOn = []string{"host.node.file.config", "host.node.file.config"}
+	permuted.Node.TriggeredBy = []string{"host.node.package.worker", "host.node.file.config", "host.node.package.worker"}
+	permuted.TriggeredBy = []string{"host.node.file.config", "host.node.file.config"}
+	if got := fingerprint(permuted); got != want {
+		t.Fatalf("relationship permutation changed fingerprint: %q != %q", got, want)
+	}
+
+	combined := base
+	combined.Node.DependsOn = []string{"host.node.file.config", "host.node.package.other"}
+	authored := base
+	authored.Node.ExplicitDependsOn = []string{"host.node.package.worker"}
+	structuralTriggers := base
+	structuralTriggers.Node.TriggeredBy = []string{"host.node.file.config"}
+	activeTriggers := base
+	activeTriggers.TriggeredBy = []string{"host.node.package.worker"}
+	variants := []struct {
+		name string
+		step Step
+	}{
+		{name: "combined dependencies", step: combined},
+		{name: "authored dependencies", step: authored},
+		{name: "structural triggers", step: structuralTriggers},
+		{name: "active triggers", step: activeTriggers},
+	}
+	for _, variant := range variants {
+		t.Run(variant.name, func(t *testing.T) {
+			if got := fingerprint(variant.step); got == want {
+				t.Fatalf("%s did not change fingerprint %q", variant.name, got)
+			}
+		})
+	}
+}
+
 func TestPlanPreservesDependencyOrder(t *testing.T) {
 	nodes := []graph.Node{
-		{Host: "node", Address: "host.node.a", Kind: "test", Managed: true, Desired: map[string]any{"v": 1}, DependsOn: []string{"host.node.z"}},
-		{Host: "node", Address: "host.node.z", Kind: "test", Managed: true, Desired: map[string]any{"v": 2}},
+		{Host: "node", Address: "host.node.services.service.worker", Kind: "service", Managed: true, Desired: map[string]any{"state": "running"}, DependsOn: []string{"host.node.files.file.config"}},
+		{Host: "node", Address: "host.node.files.file.config", Kind: "file", Managed: true, Desired: map[string]any{"content": "managed"}, DependsOn: []string{"host.node.packages.package.worker"}},
+		{Host: "node", Address: "host.node.packages.package.worker", Kind: "package", Managed: true, Desired: map[string]any{"installed": true}},
 	}
-	engine := Engine{Backend: newMemoryBackend(), Provider: newMemoryProvider()}
+	provider := newMemoryProvider()
+	engine := Engine{Backend: newMemoryBackend(), Provider: provider}
 	plan, err := engine.Plan(context.Background(), staticBuild(testHost(), nodes...))
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := []string{plan.Hosts[0].Steps[0].Address, plan.Hosts[0].Steps[1].Address}
-	if !reflect.DeepEqual(got, []string{"host.node.z", "host.node.a"}) {
-		t.Fatalf("dependency order = %#v", got)
+	want := []string{"host.node.packages.package.worker", "host.node.files.file.config", "host.node.services.service.worker"}
+	got := make([]string, 0, len(plan.Hosts[0].Steps))
+	for _, step := range plan.Hosts[0].Steps {
+		got = append(got, step.Address)
+	}
+	if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(provider.inspectionAddresses(), want) {
+		t.Fatalf("dependency order: steps=%#v inspections=%#v, want %#v", got, provider.inspectionAddresses(), want)
+	}
+}
+
+func TestExplicitDependenciesDoNotActivateConvergedResources(t *testing.T) {
+	packageNode := graph.Node{
+		Host: "node", Address: "host.node.packages.package.worker", Kind: "package", Managed: true,
+		Desired: map[string]any{"installed": true},
+	}
+	fileNode := graph.Node{
+		Host: "node", Address: "host.node.files.file.config", Kind: "file", Managed: true,
+		Desired: map[string]any{"content": "managed"}, DependsOn: []string{packageNode.Address}, ExplicitDependsOn: []string{packageNode.Address},
+	}
+	serviceNode := graph.Node{
+		Host: "node", Address: "host.node.services.service.worker", Kind: "service", Managed: true,
+		Desired: map[string]any{"state": "running", "operation": "restarted"}, DependsOn: []string{fileNode.Address}, ExplicitDependsOn: []string{fileNode.Address},
+	}
+	nodes := []graph.Node{serviceNode, fileNode, packageNode}
+	backend := newMemoryBackend()
+	backend.states["node"] = corestate.State{
+		Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node",
+		Resources: map[string]corestate.Resource{
+			packageNode.Address: {DesiredDigest: corestate.Digest(packageNode.Desired)},
+			fileNode.Address:    {DesiredDigest: corestate.Digest(fileNode.Desired)},
+			serviceNode.Address: {DesiredDigest: corestate.Digest(serviceNode.Desired)},
+		},
+	}
+	provider := newMemoryProvider()
+	for _, node := range nodes {
+		provider.set(node.Address, ObservedResource{Exists: true, Digest: corestate.Digest(node.Desired)})
+	}
+	actionEngine := Engine{Backend: backend, Provider: provider}
+	plan, err := actionEngine.Apply(context.Background(), staticBuild(testHost(), nodes...), ApplyOptions{
+		ReviewPreview: func(context.Context, Plan) error { return nil },
+		ReviewLocked:  func(context.Context, Plan, Plan, bool) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Hosts) != 1 || len(plan.Hosts[0].Steps) != len(nodes) {
+		t.Fatalf("dependency-only plan = %#v", plan)
+	}
+	for _, step := range plan.Hosts[0].Steps {
+		if step.Action != ActionNoOp || len(step.TriggeredBy) != 0 {
+			t.Fatalf("dependency-only step = %#v", step)
+		}
+	}
+	if applied, deleted := provider.counts(); applied != 0 || deleted != 0 {
+		t.Fatalf("dependency-only apply mutated provider: applied=%d deleted=%d", applied, deleted)
+	}
+
+	provider.set(packageNode.Address, ObservedResource{Exists: true, Digest: "drifted"})
+	drifted, err := actionEngine.Plan(context.Background(), staticBuild(testHost(), nodes...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := map[string]Step{}
+	for _, step := range drifted.Hosts[0].Steps {
+		actions[step.Address] = step
+	}
+	if actions[packageNode.Address].Action != ActionUpdate || actions[fileNode.Address].Action != ActionNoOp || actions[serviceNode.Address].Action != ActionNoOp || len(actions[serviceNode.Address].TriggeredBy) != 0 {
+		t.Fatalf("explicit ordering activated dependent: %#v", actions)
 	}
 }

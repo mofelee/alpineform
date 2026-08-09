@@ -169,6 +169,7 @@ func hostWithLogicalComponentNames(host ir.HostSpec, renames map[string]string) 
 	for index, component := range host.Components {
 		copyComponent := component
 		copyComponent.DependsOn = append([]string(nil), component.DependsOn...)
+		copyComponent.ExplicitDependencies = append([]ir.ResourceDependencySpec(nil), component.ExplicitDependencies...)
 		for dependencyIndex, dependency := range copyComponent.DependsOn {
 			if legacy, exists := renames[dependency]; exists {
 				copyComponent.DependsOn[dependencyIndex] = legacy
@@ -177,6 +178,7 @@ func hostWithLogicalComponentNames(host ir.HostSpec, renames map[string]string) 
 		legacyName, renamed := renames[component.Name]
 		if renamed {
 			copyComponent.Name = legacyName
+			copyComponent.ExplicitDependencies = rewriteComponentExplicitDependencies(host.Name, component.Name, legacyName, component.ExplicitDependencies)
 			copyComponent.Scripts = rewriteComponentScripts(component.Scripts, component.Name, legacyName)
 			copyComponent.Files = rewriteComponentFiles(component.Files, component.Name, legacyName)
 			copyComponent.Install = rewriteComponentInstall(component.Install, component.Name, legacyName)
@@ -184,6 +186,27 @@ func hostWithLogicalComponentNames(host ir.HostSpec, renames map[string]string) 
 		out.Components[index] = copyComponent
 	}
 	return out
+}
+
+func rewriteComponentExplicitDependencies(host, from, to string, dependencies []ir.ResourceDependencySpec) []ir.ResourceDependencySpec {
+	out := append([]ir.ResourceDependencySpec(nil), dependencies...)
+	fromPrefix := componentRoot(host, from)
+	toPrefix := componentRoot(host, to)
+	for index := range out {
+		out[index].From = rewriteComponentAddressPrefix(out[index].From, fromPrefix, toPrefix)
+		out[index].DependsOn = rewriteComponentAddressPrefix(out[index].DependsOn, fromPrefix, toPrefix)
+	}
+	return out
+}
+
+func rewriteComponentAddressPrefix(address, from, to string) string {
+	if address == from {
+		return to
+	}
+	if !strings.HasPrefix(address, from+".") {
+		return address
+	}
+	return to + strings.TrimPrefix(address, from)
 }
 
 func rewriteComponentScripts(scripts map[string]ir.ScriptSpec, from, to string) map[string]ir.ScriptSpec {

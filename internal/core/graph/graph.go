@@ -18,21 +18,23 @@ type ResourceGraph struct {
 }
 
 type Node struct {
-	Host                  string            `json:"host,omitempty"`
-	Address               string            `json:"address"`
-	Kind                  string            `json:"kind"`
-	Managed               bool              `json:"managed"`
-	Summary               string            `json:"summary,omitempty"`
-	Source                ir.SourceRef      `json:"source"`
-	Lifecycle             *ir.LifecycleSpec `json:"lifecycle,omitempty"`
-	Desired               map[string]any    `json:"desired,omitempty"`
-	Payload               map[string]any    `json:"-"`
-	DependsOn             []string          `json:"depends_on,omitempty"`
-	TriggeredBy           []string          `json:"triggered_by,omitempty"`
-	Sensitive             bool              `json:"-"`
-	Ephemeral             bool              `json:"-"`
-	DigestSafe            bool              `json:"-"`
-	ProtectedIntentDigest string            `json:"-"`
+	Host                  string                  `json:"host,omitempty"`
+	Address               string                  `json:"address"`
+	Kind                  string                  `json:"kind"`
+	Managed               bool                    `json:"managed"`
+	Summary               string                  `json:"summary,omitempty"`
+	Source                ir.SourceRef            `json:"source"`
+	Lifecycle             *ir.LifecycleSpec       `json:"lifecycle,omitempty"`
+	Desired               map[string]any          `json:"desired,omitempty"`
+	Payload               map[string]any          `json:"-"`
+	DependsOn             []string                `json:"depends_on,omitempty"`
+	TriggeredBy           []string                `json:"triggered_by,omitempty"`
+	ExplicitDependsOn     []string                `json:"-"`
+	DependencySources     map[string]ir.SourceRef `json:"-"`
+	Sensitive             bool                    `json:"-"`
+	Ephemeral             bool                    `json:"-"`
+	DigestSafe            bool                    `json:"-"`
+	ProtectedIntentDigest string                  `json:"-"`
 }
 
 func (node Node) MarshalJSON() ([]byte, error) {
@@ -51,6 +53,7 @@ func (node Node) MarshalJSON() ([]byte, error) {
 func Compile(program *ir.Program) (*ResourceGraph, error) {
 	graph := &ResourceGraph{}
 	for _, host := range program.Hosts {
+		hostNodeStart := len(graph.Nodes)
 		hostAddress := "host." + host.Name
 		graph.Nodes = append(graph.Nodes, Node{
 			Host:    host.Name,
@@ -288,6 +291,13 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 			appendComponentBuildNodes(graph, host, component, address)
 		}
 		appendComponentScriptNodes(graph, host)
+		explicitDependencies := append([]ir.ResourceDependencySpec(nil), host.ExplicitDependencies...)
+		for _, component := range host.Components {
+			explicitDependencies = append(explicitDependencies, component.ExplicitDependencies...)
+		}
+		if err := applyExplicitDependencies(host.Name, graph.Nodes[hostNodeStart:], explicitDependencies); err != nil {
+			return nil, err
+		}
 	}
 	sort.SliceStable(graph.Nodes, func(i, j int) bool { return graph.Nodes[i].Address < graph.Nodes[j].Address })
 	if err := graph.Validate(); err != nil {
@@ -1114,33 +1124,40 @@ func fileResourceAddress(host, path string) string {
 }
 
 func (graph *ResourceGraph) Validate() error {
+	_, err := graph.validatedNodes()
+	return err
+}
+
+func (graph *ResourceGraph) validatedNodes() (map[string]Node, error) {
 	byAddress := make(map[string]Node, len(graph.Nodes))
 	for _, node := range graph.Nodes {
 		if node.Address == "" {
-			return fmt.Errorf("%s:%d:%s: graph node has an empty address", node.Source.File, node.Source.Line, node.Source.Path)
+			return nil, fmt.Errorf("%s:%d:%s: graph node has an empty address", node.Source.File, node.Source.Line, node.Source.Path)
 		}
 		if previous, exists := byAddress[node.Address]; exists {
-			return fmt.Errorf("%s:%d:%s: duplicate resource address %q; first defined at %s:%d", node.Source.File, node.Source.Line, node.Source.Path, node.Address, previous.Source.File, previous.Source.Line)
+			return nil, fmt.Errorf("%s:%d:%s: duplicate resource address %q; first defined at %s:%d", node.Source.File, node.Source.Line, node.Source.Path, node.Address, previous.Source.File, previous.Source.Line)
 		}
 		byAddress[node.Address] = node
 	}
 	for _, node := range graph.Nodes {
-		for _, dependency := range node.DependsOn {
+		for _, dependency := range sortedUniqueStrings(append([]string(nil), node.DependsOn...)) {
 			if _, exists := byAddress[dependency]; !exists {
-				return fmt.Errorf("%s:%d:%s: resource %q depends on unknown address %q", node.Source.File, node.Source.Line, node.Source.Path, node.Address, dependency)
+				return nil, fmt.Errorf("%s:%d:%s: resource %q depends on unknown address %q", node.Source.File, node.Source.Line, node.Source.Path, node.Address, dependency)
 			}
 		}
 		for _, trigger := range node.TriggeredBy {
 			if _, exists := byAddress[trigger]; !exists {
-				return fmt.Errorf("%s:%d:%s: resource %q is triggered by unknown address %q", node.Source.File, node.Source.Line, node.Source.Path, node.Address, trigger)
+				return nil, fmt.Errorf("%s:%d:%s: resource %q is triggered by unknown address %q", node.Source.File, node.Source.Line, node.Source.Path, node.Address, trigger)
 			}
 			if !containsAddress(node.DependsOn, trigger) {
-				return fmt.Errorf("%s:%d:%s: resource %q trigger %q must also be a dependency", node.Source.File, node.Source.Line, node.Source.Path, node.Address, trigger)
+				return nil, fmt.Errorf("%s:%d:%s: resource %q trigger %q must also be a dependency", node.Source.File, node.Source.Line, node.Source.Path, node.Address, trigger)
 			}
 		}
 	}
-	_, err := graph.Schedule()
-	return err
+	if err := validateAcyclicDependencies(byAddress); err != nil {
+		return nil, err
+	}
+	return byAddress, nil
 }
 
 func containsAddress(addresses []string, wanted string) bool {
@@ -1153,13 +1170,16 @@ func containsAddress(addresses []string, wanted string) bool {
 }
 
 func (graph *ResourceGraph) Schedule() ([]Node, error) {
-	byAddress := make(map[string]Node, len(graph.Nodes))
+	byAddress, err := graph.validatedNodes()
+	if err != nil {
+		return nil, err
+	}
 	indegree := make(map[string]int, len(graph.Nodes))
 	dependents := make(map[string][]string, len(graph.Nodes))
 	for _, node := range graph.Nodes {
-		byAddress[node.Address] = node
-		indegree[node.Address] = len(node.DependsOn)
-		for _, dependency := range node.DependsOn {
+		dependencies := sortedUniqueStrings(append([]string(nil), node.DependsOn...))
+		indegree[node.Address] = len(dependencies)
+		for _, dependency := range dependencies {
 			dependents[dependency] = append(dependents[dependency], node.Address)
 		}
 	}
@@ -1186,15 +1206,89 @@ func (graph *ResourceGraph) Schedule() ([]Node, error) {
 	if len(ordered) == len(graph.Nodes) {
 		return ordered, nil
 	}
-	var cycle []string
-	for address, degree := range indegree {
-		if degree > 0 {
-			cycle = append(cycle, address)
+	return nil, fmt.Errorf("resource dependency schedule did not emit every graph node")
+}
+
+func validateAcyclicDependencies(byAddress map[string]Node) error {
+	const (
+		unvisited = iota
+		visiting
+		visited
+	)
+	state := make(map[string]int, len(byAddress))
+	stackIndex := make(map[string]int, len(byAddress))
+	stack := make([]string, 0, len(byAddress))
+	var visit func(string) error
+	visit = func(address string) error {
+		state[address] = visiting
+		stackIndex[address] = len(stack)
+		stack = append(stack, address)
+		dependencies := sortedUniqueStrings(append([]string(nil), byAddress[address].DependsOn...))
+		for _, dependency := range dependencies {
+			switch state[dependency] {
+			case unvisited:
+				if err := visit(dependency); err != nil {
+					return err
+				}
+			case visiting:
+				cycle := append([]string(nil), stack[stackIndex[dependency]:]...)
+				cycle = append(cycle, dependency)
+				cycle = canonicalDependencyCycle(cycle)
+				source := dependencyCycleSource(cycle, byAddress)
+				message := "resource dependency cycle: " + strings.Join(cycle, " -> ")
+				if source.File != "" {
+					return fmt.Errorf("%s:%d:%s: %s", source.File, source.Line, source.Path, message)
+				}
+				return fmt.Errorf("%s", message)
+			}
+		}
+		stack = stack[:len(stack)-1]
+		delete(stackIndex, address)
+		state[address] = visited
+		return nil
+	}
+	addresses := make([]string, 0, len(byAddress))
+	for address := range byAddress {
+		addresses = append(addresses, address)
+	}
+	sort.Strings(addresses)
+	for _, address := range addresses {
+		if state[address] != unvisited {
+			continue
+		}
+		if err := visit(address); err != nil {
+			return err
 		}
 	}
-	sort.Strings(cycle)
-	first := byAddress[cycle[0]].Source
-	return nil, fmt.Errorf("%s:%d:%s: resource dependency cycle involves: %s", first.File, first.Line, first.Path, strings.Join(cycle, ", "))
+	return nil
+}
+
+func canonicalDependencyCycle(cycle []string) []string {
+	if len(cycle) <= 2 {
+		return append([]string(nil), cycle...)
+	}
+	unique := cycle[:len(cycle)-1]
+	start := 0
+	for index := 1; index < len(unique); index++ {
+		if unique[index] < unique[start] {
+			start = index
+		}
+	}
+	out := make([]string, 0, len(cycle))
+	out = append(out, unique[start:]...)
+	out = append(out, unique[:start]...)
+	out = append(out, out[0])
+	return out
+}
+
+func dependencyCycleSource(cycle []string, byAddress map[string]Node) ir.SourceRef {
+	for index := 0; index+1 < len(cycle); index++ {
+		node := byAddress[cycle[index]]
+		if source, exists := node.DependencySources[cycle[index+1]]; exists {
+			return source
+		}
+	}
+	return byAddress[cycle[0]].Source
 }
 
 func (graph *ResourceGraph) ManagedCount() int {
