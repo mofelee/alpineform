@@ -15,7 +15,8 @@ func appendComponentBuildNodes(resourceGraph *ResourceGraph, host ir.HostSpec, c
 	}
 	build := *component.Build
 	install := *component.Install
-	addressDigest := sha256.Sum256([]byte(componentAddress))
+	physicalComponentAddress := "host." + host.Name + ".component." + component.PhysicalComponentName()
+	addressDigest := sha256.Sum256([]byte(physicalComponentAddress))
 	ownerID := fmt.Sprintf("%x", addressDigest[:16])
 	workspace := "/var/tmp/alpineform/builds/" + build.Identity
 	outputCache := "/var/cache/alpineform/builds/outputs/" + build.Identity + "/artifact"

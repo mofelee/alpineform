@@ -84,6 +84,9 @@ host "node" {
 		return program.Hosts[0].Components[0].Build.Identity
 	}
 	first := compileIdentity("-Os")
+	if want := "1d0280f3869227bbf72109ca5b7c64a52ff96f7af92d74af7f7ccb044a250feb"; first != want {
+		t.Fatalf("legacy source-build identity = %q, want %q", first, want)
+	}
 	if again := compileIdentity("-Os"); first != again {
 		t.Fatalf("identical definitions produced %q and %q", first, again)
 	}

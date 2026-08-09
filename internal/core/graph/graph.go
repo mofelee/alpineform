@@ -296,10 +296,11 @@ func Compile(program *ir.Program) (*ResourceGraph, error) {
 }
 
 type componentScriptAggregation struct {
-	Script       ir.ScriptSpec
-	Address      string
-	TriggeredBy  []string
-	TriggerPaths map[string]string
+	Script                ir.ScriptSpec
+	Address               string
+	PhysicalDeclarationID string
+	TriggeredBy           []string
+	TriggerPaths          map[string]string
 }
 
 func appendComponentScriptNodes(resourceGraph *ResourceGraph, host ir.HostSpec) {
@@ -307,6 +308,7 @@ func appendComponentScriptNodes(resourceGraph *ResourceGraph, host ir.HostSpec) 
 	add := func(reference ir.ScriptReferenceSpec, componentName, trigger, path string) {
 		var script ir.ScriptSpec
 		address := ""
+		physicalDeclarationID := reference.DeclarationID
 		if reference.Scope == "root" {
 			script = host.Scripts[reference.Name]
 			address = "host." + host.Name + ".script[" + strconv.Quote(reference.Name) + "]"
@@ -314,6 +316,7 @@ func appendComponentScriptNodes(resourceGraph *ResourceGraph, host ir.HostSpec) 
 			for _, component := range host.Components {
 				if component.Name == componentName {
 					script = component.Scripts[reference.Name]
+					physicalDeclarationID = "component." + component.PhysicalComponentName() + ".script[" + strconv.Quote(reference.Name) + "]"
 					break
 				}
 			}
@@ -321,7 +324,7 @@ func appendComponentScriptNodes(resourceGraph *ResourceGraph, host ir.HostSpec) 
 		}
 		entry := aggregated[reference.DeclarationID]
 		if entry == nil {
-			entry = &componentScriptAggregation{Script: script, Address: address, TriggerPaths: map[string]string{}}
+			entry = &componentScriptAggregation{Script: script, Address: address, PhysicalDeclarationID: physicalDeclarationID, TriggerPaths: map[string]string{}}
 			aggregated[reference.DeclarationID] = entry
 		}
 		entry.TriggeredBy = append(entry.TriggeredBy, trigger)
@@ -355,7 +358,7 @@ func appendComponentScriptNodes(resourceGraph *ResourceGraph, host ir.HostSpec) 
 	for _, key := range keys {
 		entry := aggregated[key]
 		entry.TriggeredBy = sortedUniqueStrings(entry.TriggeredBy)
-		markerHash := sha256.Sum256([]byte(host.Name + "\x00" + key))
+		markerHash := sha256.Sum256([]byte(host.Name + "\x00" + entry.PhysicalDeclarationID))
 		marker := "/var/lib/alpineform/scripts/" + fmt.Sprintf("%x", markerHash[:]) + ".outputs"
 		resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
 			Host: host.Name, Address: entry.Address, Kind: "component_script", Managed: true,
@@ -404,7 +407,7 @@ func appendComponentArtifactNodes(resourceGraph *ResourceGraph, host ir.HostSpec
 	if sourceLabel == "" {
 		sourceLabel = "any"
 	}
-	cachePath := "/var/cache/alpineform/components/" + component.Name + "/" + source.SHA256 + "/artifact"
+	cachePath := "/var/cache/alpineform/components/" + component.PhysicalComponentName() + "/" + source.SHA256 + "/artifact"
 	sourceAddress := componentAddress + ".artifact.source[" + strconv.Quote(sourceLabel) + "]"
 	resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
 		Host: host.Name, Address: sourceAddress, Kind: "component_artifact_source", Managed: true,

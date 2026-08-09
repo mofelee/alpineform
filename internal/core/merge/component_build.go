@@ -3,7 +3,6 @@ package merge
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -113,27 +112,11 @@ func compileComponentBuild(template parser.Component, instance parser.ComponentI
 	if err != nil {
 		return nil, err
 	}
-	identityDocument := struct {
-		Template           string
-		Instance           string
-		Inputs             []any
-		Commands           []any
-		WorkingDirectory   string
-		Environment        []any
-		EnvironmentVersion string
-		Output             string
-		OutputSHA256       string
-		MaxOutputBytes     int64
-		Executable         bool
-		Dependencies       []string
-		Network            string
-		Install            any
-		Platform           any
-	}{
+	identityDocument := ir.ComponentBuildIdentityDocument{
 		Template: template.Name, Instance: instance.Name, WorkingDirectory: workingDirectory,
 		EnvironmentVersion: environmentVersion, Output: output, OutputSHA256: outputSHA,
 		MaxOutputBytes: maxOutputBytes, Executable: executable, Dependencies: dependencies, Network: network,
-		Install:  struct{ Path, Owner, Group, Mode string }{install.Path, install.Owner, install.Group, install.Mode},
+		Install:  ir.ComponentBuildInstallIdentity{Path: install.Path, Owner: install.Owner, Group: install.Group, Mode: install.Mode},
 		Platform: buildPlatformIdentity(host, facts),
 	}
 	for _, input := range inputs {
@@ -147,20 +130,19 @@ func compileComponentBuild(template parser.Component, instance parser.ComponentI
 			extractFormat = input.Extract.Format
 			stripComponents = input.Extract.StripComponents
 		}
-		identityDocument.Inputs = append(identityDocument.Inputs, struct {
-			Name, Kind, Identity, Destination, ExtractFormat string
-			StripComponents                                  int
-		}{input.Name, input.Kind, identity, input.Destination, extractFormat, stripComponents})
+		identityDocument.Inputs = append(identityDocument.Inputs, ir.ComponentBuildInputIdentity{
+			Name: input.Name, Kind: input.Kind, Identity: identity, Destination: input.Destination,
+			ExtractFormat: extractFormat, StripComponents: stripComponents,
+		})
 	}
 	for _, command := range commands {
 		stdinIdentity := command.StdinSHA256
 		if command.Sensitive || command.Ephemeral {
 			stdinIdentity = "version:" + command.StdinVersion
 		}
-		identityDocument.Commands = append(identityDocument.Commands, struct {
-			Argv          []string
-			StdinIdentity string
-		}{command.Argv, stdinIdentity})
+		identityDocument.Commands = append(identityDocument.Commands, ir.ComponentBuildCommandIdentity{
+			Argv: command.Argv, StdinIdentity: stdinIdentity,
+		})
 	}
 	for _, name := range environmentNames {
 		value := environment[name]
@@ -169,10 +151,9 @@ func compileComponentBuild(template parser.Component, instance parser.ComponentI
 		}
 		identityDocument.Environment = append(identityDocument.Environment, []string{name, value})
 	}
-	encoded, _ := json.Marshal(identityDocument)
-	digest := sha256.Sum256(encoded)
+	identity := identityDocument.DigestForInstance(instance.Name)
 	return &ir.ComponentBuildSpec{
-		Identity: hex.EncodeToString(digest[:]), Inputs: inputs, Commands: commands,
+		Identity: identity, IdentityDocument: &identityDocument, Inputs: inputs, Commands: commands,
 		WorkingDirectory: workingDirectory, Environment: environment, EnvironmentNames: environmentNames,
 		EnvironmentVersion: environmentVersion, Output: output, OutputSHA256: outputSHA,
 		MaxOutputBytes: maxOutputBytes, Dependencies: dependencies, Network: network, OnRemove: onRemove,

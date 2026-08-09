@@ -34,23 +34,24 @@ type ComponentTemplateSpec struct {
 }
 
 type ComponentBuildSpec struct {
-	Identity           string                      `json:"identity"`
-	Inputs             []ComponentBuildInputSpec   `json:"inputs"`
-	Commands           []ComponentBuildCommandSpec `json:"commands"`
-	WorkingDirectory   string                      `json:"working_directory"`
-	Environment        map[string]string           `json:"-"`
-	EnvironmentNames   []string                    `json:"environment_names,omitempty"`
-	EnvironmentVersion string                      `json:"environment_version,omitempty"`
-	Output             string                      `json:"output"`
-	OutputSHA256       string                      `json:"output_sha256,omitempty"`
-	MaxOutputBytes     int64                       `json:"max_output_bytes"`
-	Executable         bool                        `json:"executable,omitempty"`
-	Dependencies       []string                    `json:"dependencies,omitempty"`
-	Network            string                      `json:"network"`
-	OnRemove           string                      `json:"on_remove"`
-	Sensitive          bool                        `json:"sensitive,omitempty"`
-	Ephemeral          bool                        `json:"ephemeral,omitempty"`
-	Source             SourceRef                   `json:"source"`
+	Identity           string                          `json:"identity"`
+	IdentityDocument   *ComponentBuildIdentityDocument `json:"-"`
+	Inputs             []ComponentBuildInputSpec       `json:"inputs"`
+	Commands           []ComponentBuildCommandSpec     `json:"commands"`
+	WorkingDirectory   string                          `json:"working_directory"`
+	Environment        map[string]string               `json:"-"`
+	EnvironmentNames   []string                        `json:"environment_names,omitempty"`
+	EnvironmentVersion string                          `json:"environment_version,omitempty"`
+	Output             string                          `json:"output"`
+	OutputSHA256       string                          `json:"output_sha256,omitempty"`
+	MaxOutputBytes     int64                           `json:"max_output_bytes"`
+	Executable         bool                            `json:"executable,omitempty"`
+	Dependencies       []string                        `json:"dependencies,omitempty"`
+	Network            string                          `json:"network"`
+	OnRemove           string                          `json:"on_remove"`
+	Sensitive          bool                            `json:"sensitive,omitempty"`
+	Ephemeral          bool                            `json:"ephemeral,omitempty"`
+	Source             SourceRef                       `json:"source"`
 }
 
 type ComponentBuildInputSpec struct {

@@ -1,6 +1,8 @@
 package graph
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -37,6 +39,34 @@ func TestCompileArtifactSourceAndInstallNodes(t *testing.T) {
 	}
 	if installNode.Kind != "component_binary" || !reflect.DeepEqual(installNode.DependsOn, []string{sourceAddress}) || installNode.Desired["content_sha256"] != componentArtifactSHA || installNode.Desired["version"] != "1.2.3" {
 		t.Fatalf("install node = %#v", installNode)
+	}
+}
+
+func TestCompileUsesPhysicalComponentNameOnlyForArtifactCache(t *testing.T) {
+	component := ir.ComponentInstanceSpec{
+		Name: "current", PhysicalName: "legacy", Template: "tool", ArtifactType: "binary", Version: "1.2.3", Source: source(2),
+		SelectedSource: &ir.ComponentArtifactSourceSpec{Architecture: "amd64", URL: "https://example.invalid/tool", SHA256: componentArtifactSHA, Source: source(3)},
+		Install:        &ir.ComponentArtifactInstallSpec{Path: "/usr/local/bin/tool", Owner: "root", Group: "root", Mode: "0755", Source: source(4)},
+	}
+	resourceGraph, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{component}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logicalPrefix := "host.node.component.current"
+	foundSource := false
+	for _, node := range resourceGraph.Nodes {
+		if strings.Contains(node.Address, ".component.legacy") {
+			t.Fatalf("physical name leaked into graph address %q", node.Address)
+		}
+		if node.Address == logicalPrefix+`.artifact.source["amd64"]` {
+			foundSource = true
+			if got := node.Desired["path"]; got != "/var/cache/alpineform/components/legacy/"+componentArtifactSHA+"/artifact" {
+				t.Fatalf("artifact cache path = %#v", got)
+			}
+		}
+	}
+	if !foundSource {
+		t.Fatal("component artifact source node not found")
 	}
 }
 
@@ -125,6 +155,174 @@ func TestCompileSourceBuildOwnershipIdentitiesDoNotCollide(t *testing.T) {
 	}
 }
 
+func TestCompileSourceBuildRetainsPhysicalOwnershipNamespace(t *testing.T) {
+	type physicalSnapshot struct {
+		BuildIdentity       string
+		OwnerID             string
+		VirtualPackage      string
+		DependencyMarker    string
+		InstallMarker       string
+		Workspace           string
+		OutputCache         string
+		OutputMarker        string
+		ProtectedInputCache string
+		CleanupDesired      map[string]any
+	}
+	component := func(logicalName, inputVersion string) ir.ComponentInstanceSpec {
+		payloadSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(inputVersion)))
+		document := &ir.ComponentBuildIdentityDocument{
+			Template: "tool", Instance: logicalName,
+			Inputs:           []ir.ComponentBuildInputIdentity{{Name: "source", Kind: "content", Identity: "version:" + inputVersion, Destination: "main.c"}},
+			Commands:         []ir.ComponentBuildCommandIdentity{{Argv: []string{"cc", "-o", "tool", "main.c"}}},
+			WorkingDirectory: ".", Output: "tool", MaxOutputBytes: 1024, Dependencies: []string{"build-base"}, Network: "none",
+			Install: ir.ComponentBuildInstallIdentity{Path: "/usr/local/bin/tool", Owner: "root", Group: "root", Mode: "0755"},
+		}
+		return ir.ComponentInstanceSpec{
+			Name: logicalName, PhysicalName: logicalName, Template: "tool", ArtifactType: "source", Source: source(2),
+			Build: &ir.ComponentBuildSpec{
+				Identity: document.DigestForInstance(logicalName), IdentityDocument: document,
+				WorkingDirectory: ".", Output: "tool", MaxOutputBytes: 1024, Dependencies: []string{"build-base"}, Network: "none", OnRemove: "destroy", Sensitive: true,
+				Inputs: []ir.ComponentBuildInputSpec{{
+					Name: "source", Kind: "content", SHA256: payloadSHA, PayloadSHA256: payloadSHA, ContentVersion: inputVersion,
+					Destination: "main.c", Sensitive: true, Source: source(3),
+				}},
+				Commands: []ir.ComponentBuildCommandSpec{{Argv: []string{"cc", "-o", "tool", "main.c"}, Source: source(4)}}, Source: source(2),
+			},
+			Install: &ir.ComponentArtifactInstallSpec{Path: "/usr/local/bin/tool", Owner: "root", Group: "root", Mode: "0755", Source: source(5)},
+		}
+	}
+	compile := func(component ir.ComponentInstanceSpec) physicalSnapshot {
+		t.Helper()
+		resourceGraph, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{component}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		byKind := map[string]Node{}
+		physicalFragment := ".component." + component.PhysicalComponentName()
+		for _, node := range resourceGraph.Nodes {
+			byKind[node.Kind] = node
+			identities := append(append([]string{node.Address}, node.DependsOn...), node.TriggeredBy...)
+			for _, identity := range identities {
+				if component.Name != component.PhysicalComponentName() && strings.Contains(identity, physicalFragment) {
+					t.Fatalf("physical component name leaked into logical graph identity %q", identity)
+				}
+			}
+		}
+		for _, kind := range []string{"component_build_input", "component_build_dependencies", "component_build_workspace", "component_build_output", "component_build_cleanup", "component_build_install"} {
+			if byKind[kind].Kind == "" {
+				t.Fatalf("source-build graph missing %s node", kind)
+			}
+		}
+		value := func(kind, key string) string {
+			t.Helper()
+			got, ok := byKind[kind].Desired[key].(string)
+			if !ok || got == "" {
+				t.Fatalf("%s desired %s = %#v", kind, key, byKind[kind].Desired[key])
+			}
+			return got
+		}
+		snapshot := physicalSnapshot{
+			BuildIdentity:       value("component_build_dependencies", "build_identity"),
+			OwnerID:             value("component_build_dependencies", "owner_id"),
+			VirtualPackage:      value("component_build_dependencies", "virtual_package"),
+			DependencyMarker:    value("component_build_dependencies", "marker_path"),
+			InstallMarker:       value("component_build_install", "install_marker"),
+			Workspace:           value("component_build_workspace", "workspace"),
+			OutputCache:         value("component_build_output", "cache_path"),
+			OutputMarker:        value("component_build_output", "marker_path"),
+			ProtectedInputCache: value("component_build_input", "path"),
+			CleanupDesired:      byKind["component_build_cleanup"].Desired,
+		}
+		for kind, key := range map[string]string{
+			"component_build_workspace": "build_identity", "component_build_output": "build_identity",
+			"component_build_cleanup": "build_identity", "component_build_install": "build_identity",
+		} {
+			if got := value(kind, key); got != snapshot.BuildIdentity {
+				t.Fatalf("%s build identity = %q, want %q", kind, got, snapshot.BuildIdentity)
+			}
+		}
+		for kind, key := range map[string]string{
+			"component_build_workspace": "dependency_marker", "component_build_output": "dependency_marker", "component_build_cleanup": "dependency_marker",
+		} {
+			if got := value(kind, key); got != snapshot.DependencyMarker {
+				t.Fatalf("%s dependency marker = %q, want %q", kind, got, snapshot.DependencyMarker)
+			}
+		}
+		if value("component_build_cleanup", "workspace") != snapshot.Workspace || value("component_build_cleanup", "output_marker") != snapshot.OutputMarker {
+			t.Fatalf("cleanup physical paths = %#v", snapshot.CleanupDesired)
+		}
+		if value("component_build_install", "cache_path") != snapshot.OutputCache || value("component_build_install", "output_marker") != snapshot.OutputMarker {
+			t.Fatalf("install physical paths = %#v", byKind["component_build_install"].Desired)
+		}
+		return snapshot
+	}
+
+	legacy := compile(component("legacy", "input-v1"))
+	moved := compile(component("current", "input-v1").WithPhysicalName("legacy"))
+	changed := compile(component("current", "input-v2").WithPhysicalName("legacy"))
+	ownerDigest := sha256.Sum256([]byte("host.node.component.legacy"))
+	wantOwner := fmt.Sprintf("%x", ownerDigest[:16])
+	if legacy.OwnerID != wantOwner || legacy.VirtualPackage != ".alpineform-build-"+wantOwner[:24] {
+		t.Fatalf("legacy physical ownership = %#v", legacy)
+	}
+	if !reflect.DeepEqual(moved, legacy) {
+		t.Fatalf("rename-only physical identity changed:\nlegacy=%#v\nmoved=%#v", legacy, moved)
+	}
+	for name, values := range map[string][2]string{
+		"owner ID": {moved.OwnerID, changed.OwnerID}, "virtual package": {moved.VirtualPackage, changed.VirtualPackage},
+		"dependency marker": {moved.DependencyMarker, changed.DependencyMarker}, "install marker": {moved.InstallMarker, changed.InstallMarker},
+	} {
+		if values[0] != values[1] {
+			t.Fatalf("definition change changed retained %s: %q != %q", name, values[0], values[1])
+		}
+	}
+	for name, values := range map[string][2]string{
+		"build identity": {moved.BuildIdentity, changed.BuildIdentity}, "workspace": {moved.Workspace, changed.Workspace},
+		"output cache": {moved.OutputCache, changed.OutputCache}, "output marker": {moved.OutputMarker, changed.OutputMarker},
+		"protected input cache": {moved.ProtectedInputCache, changed.ProtectedInputCache},
+	} {
+		if values[0] == values[1] {
+			t.Fatalf("definition change retained stale %s %q", name, values[0])
+		}
+	}
+	if reflect.DeepEqual(moved.CleanupDesired, changed.CleanupDesired) || changed.CleanupDesired["owner_id"] != moved.OwnerID || changed.CleanupDesired["virtual_package"] != moved.VirtualPackage {
+		t.Fatalf("changed cleanup did not retain owner namespace with new build paths: before=%#v after=%#v", moved.CleanupDesired, changed.CleanupDesired)
+	}
+}
+
+func TestCompileComponentScriptKeepsLogicalDeclarationAndPhysicalMarker(t *testing.T) {
+	compile := func(name, physical string) Node {
+		declarationID := `component.` + name + `.script["refresh"]`
+		script := ir.ScriptSpec{Name: "refresh", DeclarationID: declarationID, Commands: [][]string{{"refresh"}}, ScriptDigest: componentArtifactSHA, Executable: true, Source: source(5)}
+		component := ir.ComponentInstanceSpec{
+			Name: name, PhysicalName: physical, Template: "worker", Source: source(2), Scripts: map[string]ir.ScriptSpec{"refresh": script},
+			Files: []ir.ManagedFileSpec{{
+				Path: "/etc/worker.conf", Content: "value", ContentSHA256: componentArtifactSHA, Owner: "root", Group: "root", Mode: "0644", Ensure: "present",
+				OnChange: &ir.ScriptReferenceSpec{Name: "refresh", Scope: "component", DeclarationID: declarationID}, Source: source(3),
+			}},
+		}
+		resourceGraph, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Source: source(1), Components: []ir.ComponentInstanceSpec{component}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, node := range resourceGraph.Nodes {
+			if node.Kind == "component_script" {
+				return node
+			}
+		}
+		t.Fatal("component script node not found")
+		return Node{}
+	}
+	legacy := compile("legacy", "legacy")
+	moved := compile("current", "legacy")
+	if legacy.Desired["marker_path"] != moved.Desired["marker_path"] {
+		t.Fatalf("script marker changed across rename: %#v != %#v", legacy.Desired["marker_path"], moved.Desired["marker_path"])
+	}
+	if moved.Address != `host.node.component.current.script["refresh"]` || moved.Desired["declaration_id"] != `component.current.script["refresh"]` {
+		t.Fatalf("moved script logical identity = %#v", moved)
+	}
+}
+
 func TestCompileDeduplicatesRootScriptByResolvedDeclaration(t *testing.T) {
 	root := ir.ScriptSpec{Name: "refresh", DeclarationID: `script["refresh"]`, Commands: [][]string{{"refresh"}}, ScriptDigest: componentArtifactSHA, Executable: true, Source: source(5)}
 	makeComponent := func(name, path string) ir.ComponentInstanceSpec {
@@ -150,6 +348,26 @@ func TestCompileDeduplicatesRootScriptByResolvedDeclaration(t *testing.T) {
 	}
 	if len(scripts) != 1 || scripts[0].Address != `host.node.script["refresh"]` || len(scripts[0].TriggeredBy) != 2 || !reflect.DeepEqual(scripts[0].DependsOn, scripts[0].TriggeredBy) {
 		t.Fatalf("script nodes = %#v", scripts)
+	}
+	marker := scripts[0].Desired["marker_path"]
+	for i := range program.Hosts[0].Components {
+		program.Hosts[0].Components[i].PhysicalName = "retained_" + program.Hosts[0].Components[i].Name
+	}
+	physicalGraph, err := Compile(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRootScript := false
+	for _, node := range physicalGraph.Nodes {
+		if node.Kind == "component_script" {
+			foundRootScript = true
+			if node.Desired["marker_path"] != marker {
+				t.Fatalf("component physical names changed root script marker: %v != %v", node.Desired["marker_path"], marker)
+			}
+		}
+	}
+	if !foundRootScript {
+		t.Fatal("root script node not found after changing component physical names")
 	}
 }
 

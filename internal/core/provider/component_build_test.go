@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -15,11 +16,101 @@ import (
 	"github.com/mofelee/alpineform/internal/core/backend"
 	"github.com/mofelee/alpineform/internal/core/engine"
 	"github.com/mofelee/alpineform/internal/core/graph"
+	"github.com/mofelee/alpineform/internal/core/ir"
 	corestate "github.com/mofelee/alpineform/internal/core/state"
 )
 
 const testBuildIdentity = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 const testBuildOwner = "0123456789abcdef0123456789abcdef"
+
+func TestComponentBuildProviderRetainsPhysicalOwnershipAfterRename(t *testing.T) {
+	type identities struct {
+		Dependency []string
+		Workspace  []string
+		Output     []string
+		Cleanup    []string
+		Install    []string
+		Command    []string
+	}
+	component := func(logical, physical string) ir.ComponentInstanceSpec {
+		document := &ir.ComponentBuildIdentityDocument{
+			Template: "tool", Instance: logical,
+			Inputs:           []ir.ComponentBuildInputIdentity{{Name: "source", Kind: "content", Identity: testBuildIdentity, Destination: "main.c"}},
+			Commands:         []ir.ComponentBuildCommandIdentity{{Argv: []string{"cc", "-o", "tool", "main.c"}}},
+			WorkingDirectory: ".", Output: "tool", MaxOutputBytes: 1024, Dependencies: []string{"build-base"}, Network: "none",
+			Install: ir.ComponentBuildInstallIdentity{Path: "/usr/local/bin/tool", Owner: "root", Group: "root", Mode: "0755"},
+		}
+		instance := ir.ComponentInstanceSpec{
+			Name: logical, PhysicalName: logical, Template: "tool", ArtifactType: "source",
+			Build: &ir.ComponentBuildSpec{
+				Identity: document.DigestForInstance(logical), IdentityDocument: document,
+				Inputs:           []ir.ComponentBuildInputSpec{{Name: "source", Kind: "content", SHA256: testBuildIdentity, PayloadSHA256: testBuildIdentity, Destination: "main.c"}},
+				Commands:         []ir.ComponentBuildCommandSpec{{Argv: []string{"cc", "-o", "tool", "main.c"}}},
+				WorkingDirectory: ".", Output: "tool", MaxOutputBytes: 1024, Dependencies: []string{"build-base"}, Network: "none", OnRemove: "destroy",
+			},
+			Install: &ir.ComponentArtifactInstallSpec{Path: "/usr/local/bin/tool", Owner: "root", Group: "root", Mode: "0755"},
+		}
+		return instance.WithPhysicalName(physical)
+	}
+	providerIdentities := func(instance ir.ComponentInstanceSpec) identities {
+		t.Helper()
+		resourceGraph, err := graph.Compile(&ir.Program{Hosts: []ir.HostSpec{{Name: "node", Components: []ir.ComponentInstanceSpec{instance}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		byKind := map[string]graph.Node{}
+		for _, node := range resourceGraph.Nodes {
+			byKind[node.Kind] = node
+		}
+
+		virtual, dependencyMarker, owner, buildIdentity, dependencyOutputMarker, err := componentBuildDependencyIdentity(byKind["component_build_dependencies"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		workspace, workspaceIdentity, workspaceOutputMarker, err := componentBuildWorkspaceIdentity(byKind["component_build_workspace"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		outputCache, outputMarker, outputIdentity, err := componentBuildOutputIdentity(byKind["component_build_output"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		cleanupWorkspace, cleanupVirtual, cleanupDependencyMarker, cleanupOutputMarker, cleanupIdentity, cleanupOwner, err := componentBuildCleanupIdentity(byKind["component_build_cleanup"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		installPath, installMarker, installOutputMarker, installIdentity, err := componentBuildInstallIdentity(byKind["component_build_install"])
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		runner := &commandRunner{outputs: map[string][]byte{"inspect.component_build_cleanup": []byte("clean\n")}, errors: map[string]error{}}
+		if _, err := applyComponentBuildCleanup(context.Background(), runner, byKind["component_build_cleanup"]); err != nil {
+			t.Fatal(err)
+		}
+		if len(runner.commands) != 2 || runner.commands[0].Name != "apply.component_build_cleanup" {
+			t.Fatalf("cleanup commands = %#v", runner.commands)
+		}
+		return identities{
+			Dependency: []string{virtual, dependencyMarker, owner, buildIdentity, dependencyOutputMarker},
+			Workspace:  []string{workspace, workspaceIdentity, workspaceOutputMarker},
+			Output:     []string{outputCache, outputMarker, outputIdentity},
+			Cleanup:    []string{cleanupWorkspace, cleanupVirtual, cleanupDependencyMarker, cleanupOutputMarker, cleanupIdentity, cleanupOwner},
+			Install:    []string{installPath, installMarker, installOutputMarker, installIdentity},
+			Command:    append([]string(nil), runner.commands[0].Arguments...),
+		}
+	}
+
+	legacy := providerIdentities(component("legacy", "legacy"))
+	moved := providerIdentities(component("current", "legacy"))
+	fresh := providerIdentities(component("current", "current"))
+	if !reflect.DeepEqual(moved, legacy) {
+		t.Fatalf("provider physical identity changed across rename:\nlegacy=%#v\nmoved=%#v", legacy, moved)
+	}
+	if reflect.DeepEqual(fresh, legacy) || reflect.DeepEqual(fresh.Command, legacy.Command) {
+		t.Fatalf("fresh logical identity unexpectedly reused retained ownership: legacy=%#v fresh=%#v", legacy, fresh)
+	}
+}
 
 func TestComponentBuildInputStagesProtectedBytesOnlyThroughStdin(t *testing.T) {
 	content := []byte("protected-build-input")
