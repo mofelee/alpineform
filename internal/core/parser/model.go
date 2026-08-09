@@ -20,6 +20,7 @@ type Profile struct {
 	Name       string
 	Imports    []string
 	Components []ComponentInstance
+	Resources  []ResourceDeclaration
 	Asserts    []Assert
 	Source     ir.SourceRef
 }
@@ -300,6 +301,15 @@ func parseProfile(file string, block *hclsyntax.Block, ctx EvalContext) (Profile
 	}
 	for _, child := range block.Body.Blocks {
 		switch child.Type {
+		case "files", "directories", "groups", "users", "packages", "services":
+			resources, err := parseHostResourceCollection(file, path, child, ctx)
+			if err != nil {
+				return Profile{}, err
+			}
+			profile.Resources, err = appendUniqueResources(profile.Resources, resources)
+			if err != nil {
+				return Profile{}, err
+			}
 		case "component":
 			instance, err := parseComponentInstance(file, path, child, ctx)
 			if err != nil {

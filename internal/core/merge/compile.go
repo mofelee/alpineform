@@ -16,9 +16,11 @@ import (
 )
 
 type resolvedProfile struct {
-	Components map[string]parser.ComponentInstance
-	Order      []string
-	Asserts    []parser.Assert
+	Components    map[string]parser.ComponentInstance
+	Order         []string
+	Resources     map[string]parser.ResourceDeclaration
+	ResourceOrder []string
+	Asserts       []parser.Assert
 }
 
 type CompileOptions struct {
@@ -211,7 +213,7 @@ func resolveProfiles(config *parser.Config) (map[string]resolvedProfile, error) 
 		}
 		visiting[name] = len(stack)
 		stack = append(stack, name)
-		result := resolvedProfile{Components: map[string]parser.ComponentInstance{}}
+		result := resolvedProfile{Components: map[string]parser.ComponentInstance{}, Resources: map[string]parser.ResourceDeclaration{}}
 		for _, importedName := range profile.Imports {
 			if _, exists := config.Profiles[importedName]; !exists {
 				return resolvedProfile{}, fmt.Errorf("%s:%d:%s: unknown profile.%s", profile.Source.File, profile.Source.Line, profile.Source.Path, importedName)
@@ -224,6 +226,9 @@ func resolveProfiles(config *parser.Config) (map[string]resolvedProfile, error) 
 		}
 		for _, instance := range profile.Components {
 			overlayInstance(&result, instance)
+		}
+		for _, resource := range profile.Resources {
+			overlayResource(&result, resource)
 		}
 		result.Asserts = append(result.Asserts, profile.Asserts...)
 		stack = stack[:len(stack)-1]
@@ -245,7 +250,7 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 			return ir.HostSpec{}, err
 		}
 	}
-	resolved := resolvedProfile{Components: map[string]parser.ComponentInstance{}}
+	resolved := resolvedProfile{Components: map[string]parser.ComponentInstance{}, Resources: map[string]parser.ResourceDeclaration{}}
 	for _, profileName := range host.Imports {
 		profile, exists := profiles[profileName]
 		if !exists {
@@ -256,6 +261,10 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 	for _, instance := range host.Components {
 		overlayInstance(&resolved, instance)
 	}
+	for _, resource := range host.Resources {
+		overlayResource(&resolved, resource)
+	}
+	host.Resources = resolvedResources(resolved)
 	if err := validateInstanceDependencies(host, resolved); err != nil {
 		return ir.HostSpec{}, err
 	}
@@ -346,6 +355,10 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 		}
 	}
 	out.Files, out.Directories, out.Groups, out.Users, out.Packages, out.Services, err = compileHostNativeResources(host, out.APK, facts, hostContext)
+	if err != nil {
+		return ir.HostSpec{}, err
+	}
+	out.ExplicitDependencies, err = resolveResourceDependencies(host.Resources, "host."+host.Name)
 	if err != nil {
 		return ir.HostSpec{}, err
 	}
@@ -589,29 +602,34 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 	if err := resolveAndValidateServiceDependencies(services, openrc, files, packages, users, groups); err != nil {
 		return ir.ComponentInstanceSpec{}, err
 	}
+	explicitDependencies, err := resolveResourceDependencies(template.Resources, "host."+host.Name+".component."+instance.Name)
+	if err != nil {
+		return ir.ComponentInstanceSpec{}, err
+	}
 	return ir.ComponentInstanceSpec{
-		Name:            instance.Name,
-		PhysicalName:    instance.Name,
-		Template:        instance.Template,
-		ArtifactType:    template.ArtifactType,
-		Version:         template.Version,
-		SelectedSource:  selectedSource,
-		Extract:         extract,
-		Install:         install,
-		Build:           build,
-		Scripts:         scripts,
-		OpenRC:          openrc,
-		Files:           files,
-		Directories:     directories,
-		Groups:          groups,
-		Users:           users,
-		Packages:        packages,
-		Services:        services,
-		InputNames:      inputNames,
-		ProtectedInputs: protected,
-		DependsOn:       dependencies,
-		Lifecycle:       ir.LifecycleSpec{PreventDestroy: instance.Lifecycle.PreventDestroy, Source: instance.Lifecycle.Source},
-		Source:          instance.Source,
+		Name:                 instance.Name,
+		PhysicalName:         instance.Name,
+		Template:             instance.Template,
+		ArtifactType:         template.ArtifactType,
+		Version:              template.Version,
+		SelectedSource:       selectedSource,
+		Extract:              extract,
+		Install:              install,
+		Build:                build,
+		Scripts:              scripts,
+		OpenRC:               openrc,
+		Files:                files,
+		Directories:          directories,
+		Groups:               groups,
+		Users:                users,
+		Packages:             packages,
+		Services:             services,
+		InputNames:           inputNames,
+		ProtectedInputs:      protected,
+		DependsOn:            dependencies,
+		ExplicitDependencies: explicitDependencies,
+		Lifecycle:            ir.LifecycleSpec{PreventDestroy: instance.Lifecycle.PreventDestroy, Source: instance.Lifecycle.Source},
+		Source:               instance.Source,
 	}, nil
 }
 
@@ -866,6 +884,9 @@ func overlayInstances(target *resolvedProfile, source resolvedProfile) {
 	for _, name := range source.Order {
 		overlayInstance(target, source.Components[name])
 	}
+	for _, key := range source.ResourceOrder {
+		overlayResource(target, source.Resources[key])
+	}
 	target.Asserts = append(target.Asserts, source.Asserts...)
 }
 
@@ -874,6 +895,22 @@ func overlayInstance(target *resolvedProfile, instance parser.ComponentInstance)
 		target.Order = append(target.Order, instance.Name)
 	}
 	target.Components[instance.Name] = instance
+}
+
+func overlayResource(target *resolvedProfile, resource parser.ResourceDeclaration) {
+	key := resource.Kind + "\x00" + resource.Label
+	if _, exists := target.Resources[key]; !exists {
+		target.ResourceOrder = append(target.ResourceOrder, key)
+	}
+	target.Resources[key] = resource
+}
+
+func resolvedResources(profile resolvedProfile) []parser.ResourceDeclaration {
+	resources := make([]parser.ResourceDeclaration, 0, len(profile.ResourceOrder))
+	for _, key := range profile.ResourceOrder {
+		resources = append(resources, profile.Resources[key])
+	}
+	return resources
 }
 
 func protectedDefault(value *parser.Value, sensitive, ephemeral bool) any {

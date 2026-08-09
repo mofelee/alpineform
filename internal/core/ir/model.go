@@ -166,28 +166,35 @@ type ScriptReferenceSpec struct {
 	Source        SourceRef `json:"source"`
 }
 
+type ResourceDependencySpec struct {
+	From      string    `json:"from"`
+	DependsOn string    `json:"depends_on"`
+	Source    SourceRef `json:"source,omitempty"`
+}
+
 type HostSpec struct {
-	Name        string                  `json:"name"`
-	SSH         SSHSpec                 `json:"ssh"`
-	State       StateSpec               `json:"state"`
-	Moves       []MovedSpec             `json:"moves,omitempty"`
-	Platform    *PlatformSpec           `json:"platform,omitempty"`
-	Facts       *HostFacts              `json:"facts,omitempty"`
-	APK         *APKSpec                `json:"apk,omitempty"`
-	OpenRC      []OpenRCServiceSpec     `json:"openrc,omitempty"`
-	System      *SystemSpec             `json:"system,omitempty"`
-	Kernel      *KernelSpec             `json:"kernel,omitempty"`
-	Nftables    *NftablesSpec           `json:"nftables,omitempty"`
-	Docker      *DockerSpec             `json:"docker,omitempty"`
-	Components  []ComponentInstanceSpec `json:"components,omitempty"`
-	Scripts     map[string]ScriptSpec   `json:"scripts,omitempty"`
-	Files       []ManagedFileSpec       `json:"files,omitempty"`
-	Directories []ManagedDirectorySpec  `json:"directories,omitempty"`
-	Groups      []ManagedGroupSpec      `json:"groups,omitempty"`
-	Users       []ManagedUserSpec       `json:"users,omitempty"`
-	Packages    []PackageSpec           `json:"packages,omitempty"`
-	Services    []ServiceSpec           `json:"services,omitempty"`
-	Source      SourceRef               `json:"source"`
+	Name                 string                   `json:"name"`
+	SSH                  SSHSpec                  `json:"ssh"`
+	State                StateSpec                `json:"state"`
+	Moves                []MovedSpec              `json:"moves,omitempty"`
+	Platform             *PlatformSpec            `json:"platform,omitempty"`
+	Facts                *HostFacts               `json:"facts,omitempty"`
+	APK                  *APKSpec                 `json:"apk,omitempty"`
+	OpenRC               []OpenRCServiceSpec      `json:"openrc,omitempty"`
+	System               *SystemSpec              `json:"system,omitempty"`
+	Kernel               *KernelSpec              `json:"kernel,omitempty"`
+	Nftables             *NftablesSpec            `json:"nftables,omitempty"`
+	Docker               *DockerSpec              `json:"docker,omitempty"`
+	Components           []ComponentInstanceSpec  `json:"components,omitempty"`
+	Scripts              map[string]ScriptSpec    `json:"scripts,omitempty"`
+	Files                []ManagedFileSpec        `json:"files,omitempty"`
+	Directories          []ManagedDirectorySpec   `json:"directories,omitempty"`
+	Groups               []ManagedGroupSpec       `json:"groups,omitempty"`
+	Users                []ManagedUserSpec        `json:"users,omitempty"`
+	Packages             []PackageSpec            `json:"packages,omitempty"`
+	Services             []ServiceSpec            `json:"services,omitempty"`
+	ExplicitDependencies []ResourceDependencySpec `json:"explicit_dependencies,omitempty"`
+	Source               SourceRef                `json:"source"`
 }
 
 type MovedSpec struct {
@@ -469,28 +476,29 @@ type PlatformSpec struct {
 }
 
 type ComponentInstanceSpec struct {
-	Name            string                        `json:"name"`
-	PhysicalName    string                        `json:"-"`
-	Template        string                        `json:"template"`
-	ArtifactType    string                        `json:"artifact_type,omitempty"`
-	Version         string                        `json:"version,omitempty"`
-	SelectedSource  *ComponentArtifactSourceSpec  `json:"selected_source,omitempty"`
-	Extract         *ComponentArtifactExtractSpec `json:"extract,omitempty"`
-	Install         *ComponentArtifactInstallSpec `json:"install,omitempty"`
-	Build           *ComponentBuildSpec           `json:"build,omitempty"`
-	Scripts         map[string]ScriptSpec         `json:"scripts,omitempty"`
-	OpenRC          []OpenRCServiceSpec           `json:"openrc,omitempty"`
-	Files           []ManagedFileSpec             `json:"files,omitempty"`
-	Directories     []ManagedDirectorySpec        `json:"directories,omitempty"`
-	Groups          []ManagedGroupSpec            `json:"groups,omitempty"`
-	Users           []ManagedUserSpec             `json:"users,omitempty"`
-	Packages        []PackageSpec                 `json:"packages,omitempty"`
-	Services        []ServiceSpec                 `json:"services,omitempty"`
-	InputNames      []string                      `json:"input_names,omitempty"`
-	ProtectedInputs []string                      `json:"protected_inputs,omitempty"`
-	DependsOn       []string                      `json:"depends_on,omitempty"`
-	Lifecycle       LifecycleSpec                 `json:"lifecycle"`
-	Source          SourceRef                     `json:"source"`
+	Name                 string                        `json:"name"`
+	PhysicalName         string                        `json:"-"`
+	Template             string                        `json:"template"`
+	ArtifactType         string                        `json:"artifact_type,omitempty"`
+	Version              string                        `json:"version,omitempty"`
+	SelectedSource       *ComponentArtifactSourceSpec  `json:"selected_source,omitempty"`
+	Extract              *ComponentArtifactExtractSpec `json:"extract,omitempty"`
+	Install              *ComponentArtifactInstallSpec `json:"install,omitempty"`
+	Build                *ComponentBuildSpec           `json:"build,omitempty"`
+	Scripts              map[string]ScriptSpec         `json:"scripts,omitempty"`
+	OpenRC               []OpenRCServiceSpec           `json:"openrc,omitempty"`
+	Files                []ManagedFileSpec             `json:"files,omitempty"`
+	Directories          []ManagedDirectorySpec        `json:"directories,omitempty"`
+	Groups               []ManagedGroupSpec            `json:"groups,omitempty"`
+	Users                []ManagedUserSpec             `json:"users,omitempty"`
+	Packages             []PackageSpec                 `json:"packages,omitempty"`
+	Services             []ServiceSpec                 `json:"services,omitempty"`
+	InputNames           []string                      `json:"input_names,omitempty"`
+	ProtectedInputs      []string                      `json:"protected_inputs,omitempty"`
+	DependsOn            []string                      `json:"depends_on,omitempty"`
+	ExplicitDependencies []ResourceDependencySpec      `json:"explicit_dependencies,omitempty"`
+	Lifecycle            LifecycleSpec                 `json:"lifecycle"`
+	Source               SourceRef                     `json:"source"`
 }
 
 type LifecycleSpec struct {
