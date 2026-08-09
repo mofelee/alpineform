@@ -87,12 +87,18 @@ func TestPlanNormalizesRelationshipsWithoutMutatingGraph(t *testing.T) {
 	online := NewOnline(engine.Plan{Hosts: []engine.HostPlan{{
 		Host: ir.HostSpec{Name: "node"},
 		Steps: []engine.Step{{
-			Address: node.Address,
-			Action:  engine.ActionUpdate,
-			Node:    node,
+			Address:     node.Address,
+			Action:      engine.ActionUpdate,
+			Node:        node,
+			TriggeredBy: []string{"host.node.z", "host.node.z"},
 		}},
 	}}}, Options{})
-	assertRelationships("online", online.Graph[0], online.Changes[0])
+	if !reflect.DeepEqual(online.Graph[0].DependsOn, wantDependsOn) || !reflect.DeepEqual(online.Changes[0].DependsOn, wantDependsOn) {
+		t.Fatalf("online depends_on = %#v / %#v", online.Graph[0].DependsOn, online.Changes[0].DependsOn)
+	}
+	if !reflect.DeepEqual(online.Graph[0].TriggeredBy, wantTriggeredBy) || !reflect.DeepEqual(online.Changes[0].TriggeredBy, []string{"host.node.z"}) {
+		t.Fatalf("online structural/active triggered_by = %#v / %#v", online.Graph[0].TriggeredBy, online.Changes[0].TriggeredBy)
+	}
 
 	if !reflect.DeepEqual(dependsOn, []string{"host.node.z", "host.node.a", "host.node.z"}) || !reflect.DeepEqual(triggeredBy, []string{"host.node.z", "host.node.a", "host.node.a"}) {
 		t.Fatalf("plan construction mutated graph relationships: depends_on=%#v triggered_by=%#v", dependsOn, triggeredBy)

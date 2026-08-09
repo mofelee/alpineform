@@ -149,7 +149,7 @@ func NewOnline(actionPlan engine.Plan, options Options) Document {
 				Summary:     summary,
 				Source:      step.Node.Source,
 				DependsOn:   sortedUniqueAddresses(step.Node.DependsOn),
-				TriggeredBy: sortedUniqueAddresses(step.Node.TriggeredBy),
+				TriggeredBy: sortedUniqueAddresses(step.TriggeredBy),
 				Desired:     desired,
 			}
 			if step.IsNetworkDisrupting() {
