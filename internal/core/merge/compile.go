@@ -59,7 +59,7 @@ func CompileWithOptions(config *parser.Config, options CompileOptions) (*ir.Prog
 	if err := validateComponentDefaults(config.Components); err != nil {
 		return nil, err
 	}
-	if err := validateComponentArtifacts(config.Components); err != nil {
+	if err := validateComponentArtifactTemplates(config.Components); err != nil {
 		return nil, err
 	}
 	baseContext, err := configEvalContext(config)
@@ -463,7 +463,8 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 	if !exists {
 		return ir.ComponentInstanceSpec{}, fmt.Errorf("%s:%d:%s: unknown component.%s", instance.Source.File, instance.Source.Line, instance.Source.Path, instance.Template)
 	}
-	for name, value := range instance.Inputs {
+	for _, name := range sortedComponentInputValueNames(instance.Inputs) {
+		value := instance.Inputs[name]
 		if _, exists := template.Inputs[name]; !exists {
 			return ir.ComponentInstanceSpec{}, fmt.Errorf("%s:%d:%s.inputs: unknown input %q for component.%s", value.Source.File, value.Source.Line, instance.Source.Path, name, template.Name)
 		}
@@ -475,16 +476,16 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 		value, exists := instance.Inputs[name]
 		if !exists {
 			if input.Default == nil {
-				return ir.ComponentInstanceSpec{}, fmt.Errorf("%s:%d:%s: component.%s input %q is required", instance.Source.File, instance.Source.Line, instance.Source.Path, template.Name, name)
+				return ir.ComponentInstanceSpec{}, componentMountedError(input.Source, instance.Source, fmt.Sprintf("component.%s input %q is required", template.Name, name))
 			}
 			value = *input.Default
 		}
 		normalized, err := parser.NormalizeComponentInputValue(input, value)
 		if err != nil {
-			if input.Sensitive || input.Ephemeral {
-				return ir.ComponentInstanceSpec{}, fmt.Errorf("%s:%d:%s: invalid protected input %q for component.%s", instance.Source.File, instance.Source.Line, instance.Source.Path, name, template.Name)
+			if input.Sensitive || input.Ephemeral || value.ContainsSensitive() || value.ContainsEphemeral() {
+				return ir.ComponentInstanceSpec{}, componentMountedError(input.Source, instance.Source, fmt.Sprintf("invalid protected input %q for component.%s", name, template.Name))
 			}
-			return ir.ComponentInstanceSpec{}, err
+			return ir.ComponentInstanceSpec{}, componentMountedError(input.Source, instance.Source, fmt.Sprintf("invalid input %q for component.%s: %v", name, template.Name, err))
 		}
 		values[name] = normalized
 		if normalized.ContainsSensitive() || normalized.ContainsEphemeral() {
@@ -498,16 +499,20 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 	for _, name := range sortedInputNames(template.Inputs) {
 		input := template.Inputs[name]
 		if err := requireExpressionPlatform(input.Validations, host, facts); err != nil {
-			return ir.ComponentInstanceSpec{}, err
+			return ir.ComponentInstanceSpec{}, componentMountedError(input.Source, instance.Source, err.Error())
 		}
 		if err := evaluateInputValidations(input, values[name], inputContext, template.Name); err != nil {
-			return ir.ComponentInstanceSpec{}, err
+			return ir.ComponentInstanceSpec{}, componentMountedError(input.Source, instance.Source, err.Error())
 		}
 	}
 	for _, assertion := range template.Asserts {
-		if err := evaluateHostAssert(assertion, host, facts, inputContext, fmt.Sprintf("component.%s instance %s on host %s", template.Name, instance.Name, host.Name)); err != nil {
+		if err := evaluateComponentAssert(assertion, host, facts, inputContext, template, instance); err != nil {
 			return ir.ComponentInstanceSpec{}, err
 		}
+	}
+	resolvedSources, err := resolveComponentArtifactSources(template, inputContext, instance)
+	if err != nil {
+		return ir.ComponentInstanceSpec{}, err
 	}
 	inputNames := make([]string, 0, len(values))
 	for name := range values {
@@ -517,13 +522,18 @@ func compileComponentInstance(config *parser.Config, host parser.Host, facts *ir
 	sort.Strings(protected)
 	dependencies := append([]string(nil), instance.DependsOn...)
 	sort.Strings(dependencies)
-	selectedSource, err := selectComponentArtifactSource(template, host, facts, instance)
+	selectedSource, err := selectComponentArtifactSource(template, resolvedSources, host, facts, instance)
 	if err != nil {
 		return ir.ComponentInstanceSpec{}, err
 	}
 	extract := componentArtifactExtractSpec(template.Extract)
-	if extract != nil && extract.Format == "" {
-		extract.Format = inferComponentArtifactFormat(template.Sources)
+	if extract != nil && extract.Format == "" && selectedSource != nil {
+		extract.Format = inferComponentArtifactFormat(selectedSource.URL)
+		if template.ArtifactType == "archive" && extract.Format != "tar.gz" {
+			formatSource := extract.Source
+			formatSource.Path += ".format"
+			return ir.ComponentInstanceSpec{}, componentMountedError(formatSource, instance.Source, "archive extraction supports only tar.gz in v0.1")
+		}
 	}
 	scripts, err := compileEvaluatedScripts(template.Scripts, inputContext, func(name string) string {
 		return "component." + instance.Name + ".script[" + strconv.Quote(name) + "]"
@@ -654,6 +664,27 @@ func evaluateHostAssert(assertion parser.Assert, host parser.Host, facts *ir.Hos
 		return err
 	}
 	return evaluateAssert(assertion, ctx, scope)
+}
+
+func evaluateComponentAssert(assertion parser.Assert, host parser.Host, facts *ir.HostFacts, ctx parser.EvalContext, template parser.Component, instance parser.ComponentInstance) error {
+	if err := requirePlatformForExpression(assertion.Condition, assertion.ConditionSource, host, facts); err != nil {
+		return componentMountedError(assertion.ConditionSource, instance.Source, err.Error())
+	}
+	ctx.ModuleDir = filepath.Dir(assertion.Source.File)
+	result, err := parser.EvaluateExpression(assertion.Condition, ctx, assertion.ConditionSource)
+	if err != nil {
+		if expressionReferencesProtectedValue(assertion.Condition, ctx) {
+			return componentMountedError(assertion.ConditionSource, instance.Source, "protected component assertion condition failed to evaluate")
+		}
+		return componentMountedError(assertion.ConditionSource, instance.Source, fmt.Sprintf("component.%s assertion condition: %v", template.Name, err))
+	}
+	if result.Kind != parser.KindBool {
+		return componentMountedError(assertion.ConditionSource, instance.Source, fmt.Sprintf("component.%s assertion condition must evaluate to a boolean", template.Name))
+	}
+	if !result.Bool {
+		return componentMountedError(assertion.Source, instance.Source, fmt.Sprintf("component.%s assertion failed: %s", template.Name, assertion.Message))
+	}
+	return nil
 }
 
 func requireExpressionPlatform(validations []parser.ComponentInputValidation, host parser.Host, facts *ir.HostFacts) error {
@@ -897,6 +928,15 @@ func sortedComponentNames(values map[string]parser.Component) []string {
 }
 
 func sortedInputNames(values map[string]parser.ComponentInput) []string {
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func sortedComponentInputValueNames(values map[string]parser.Value) []string {
 	names := make([]string, 0, len(values))
 	for name := range values {
 		names = append(names, name)

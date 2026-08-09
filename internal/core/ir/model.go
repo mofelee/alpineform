@@ -1,5 +1,7 @@
 package ir
 
+import "encoding/json"
+
 type Program struct {
 	Hosts      []HostSpec                       `json:"hosts"`
 	Variables  map[string]VariableSpec          `json:"variables,omitempty"`
@@ -87,10 +89,32 @@ type ComponentBuildCommandSpec struct {
 }
 
 type ComponentArtifactSourceSpec struct {
-	Architecture string    `json:"architecture,omitempty"`
-	URL          string    `json:"url"`
-	SHA256       string    `json:"sha256"`
-	Source       SourceRef `json:"source"`
+	Architecture    string    `json:"architecture,omitempty"`
+	URL             string    `json:"url"`
+	SHA256          string    `json:"sha256"`
+	URLSensitive    bool      `json:"url_sensitive,omitempty"`
+	SHA256Sensitive bool      `json:"sha256_sensitive,omitempty"`
+	URLEphemeral    bool      `json:"url_ephemeral,omitempty"`
+	SHA256Ephemeral bool      `json:"sha256_ephemeral,omitempty"`
+	URLSource       SourceRef `json:"url_source"`
+	SHA256Source    SourceRef `json:"sha256_source"`
+	Source          SourceRef `json:"source"`
+}
+
+func (source ComponentArtifactSourceSpec) MarshalJSON() ([]byte, error) {
+	type encodedSource ComponentArtifactSourceSpec
+	encoded := encodedSource(source)
+	if source.URLSensitive {
+		encoded.URL = "<sensitive>"
+	} else if source.URLEphemeral {
+		encoded.URL = "<ephemeral>"
+	}
+	if source.SHA256Sensitive {
+		encoded.SHA256 = "<sensitive>"
+	} else if source.SHA256Ephemeral {
+		encoded.SHA256 = "<ephemeral>"
+	}
+	return json.Marshal(encoded)
 }
 
 type ComponentArtifactExtractSpec struct {

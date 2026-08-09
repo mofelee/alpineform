@@ -390,3 +390,424 @@ host "node" {
 		t.Fatalf("certificate packages = %#v", certificate.Packages)
 	}
 }
+
+func TestCompileResolvesPrebuiltArtifactSourcesPerInstance(t *testing.T) {
+	shaAlpha := strings.Repeat("A", 64)
+	shaBeta := strings.Repeat("B", 64)
+	tests := []struct {
+		name       string
+		kind       string
+		urlAlpha   string
+		urlBeta    string
+		extra      string
+		install    string
+		wantFormat string
+	}{
+		{name: "binary", kind: "binary", urlAlpha: "https://alpha.invalid/tool", urlBeta: "https://beta.invalid/tool", install: `install { path = "/usr/local/bin/tool" }`},
+		{name: "file", kind: "file", urlAlpha: "https://alpha.invalid/tool.conf", urlBeta: "https://beta.invalid/tool.conf", install: `install { path = "/etc/tool.conf" }`},
+		{name: "archive", kind: "archive", urlAlpha: "https://alpha.invalid/tool.tar.gz?mirror=alpha", urlBeta: "https://beta.invalid/tool.tgz?mirror=beta", extra: `extract { strip_components = 1 }`, install: `install { path = "/opt/tool" }`, wantFormat: "tar.gz"},
+		{name: "ca certificate", kind: "ca_certificate", urlAlpha: "https://alpha.invalid/root.crt", urlBeta: "https://beta.invalid/root.crt", install: `install { path = "/usr/local/share/ca-certificates/root.crt" }`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := compileConfig(t, fmt.Sprintf(`
+component "payload" {
+  input "url" {
+    type      = string
+    sensitive = true
+  }
+  input "sha256" {
+    type      = string
+    ephemeral = true
+  }
+  type = %q
+  source {
+    url    = input.url
+    sha256 = input.sha256
+  }
+  %s
+  %s
+}
+host "alpha" {
+  component "payload" {
+    source = component.payload
+    inputs = { url = %q, sha256 = %q }
+  }
+}
+host "beta" {
+  component "payload" {
+    source = component.payload
+    inputs = { url = %q, sha256 = %q }
+  }
+}
+`, test.kind, test.extra, test.install, test.urlAlpha, shaAlpha, test.urlBeta, shaBeta))
+			if err != nil {
+				t.Fatal(err)
+			}
+			program, err := Compile(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(program.Hosts) != 2 {
+				t.Fatalf("hosts = %#v", program.Hosts)
+			}
+			wantURLs := map[string]string{"alpha": test.urlAlpha, "beta": test.urlBeta}
+			wantSHAs := map[string]string{"alpha": strings.ToLower(shaAlpha), "beta": strings.ToLower(shaBeta)}
+			for _, host := range program.Hosts {
+				component := host.Components[0]
+				source := component.SelectedSource
+				if source == nil || source.URL != wantURLs[host.Name] || source.SHA256 != wantSHAs[host.Name] {
+					t.Fatalf("host %s source = %#v", host.Name, source)
+				}
+				if !source.URLSensitive || source.URLEphemeral || source.SHA256Sensitive || !source.SHA256Ephemeral {
+					t.Fatalf("host %s source marks = %#v", host.Name, source)
+				}
+				if source.URLSource.Path != `component["payload"].source.url` || source.SHA256Source.Path != `component["payload"].source.sha256` {
+					t.Fatalf("host %s source refs = %#v / %#v", host.Name, source.URLSource, source.SHA256Source)
+				}
+				if test.wantFormat != "" && (component.Extract == nil || component.Extract.Format != test.wantFormat) {
+					t.Fatalf("host %s extract = %#v", host.Name, component.Extract)
+				}
+			}
+			templateSource := program.Components["payload"].Sources[""]
+			if templateSource.URL != "" || templateSource.SHA256 != "" || templateSource.URLSource.Path == "" || templateSource.SHA256Source.Path == "" {
+				t.Fatalf("unresolved template source = %#v", templateSource)
+			}
+		})
+	}
+}
+
+func TestCompileSelectsResolvedSourcesForOfflineAndObservedArchitectures(t *testing.T) {
+	compileBody := func(platformAlpha, platformBeta string) string {
+		return `
+component "tool" {
+  input "base_url" { type = string }
+  type = "binary"
+  source "amd64" {
+    url    = "${input.base_url}/tool-amd64"
+    sha256 = "` + artifactSHA + `"
+  }
+  source "arm64" {
+    url    = "${input.base_url}/tool-arm64"
+    sha256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  }
+  install { path = "/usr/local/bin/tool" }
+}
+host "alpha" {
+  ` + platformAlpha + `
+  component "tool" {
+    source = component.tool
+    inputs = { base_url = "https://alpha.invalid" }
+  }
+}
+host "beta" {
+  ` + platformBeta + `
+  component "tool" {
+    source = component.tool
+    inputs = { base_url = "https://beta.invalid" }
+  }
+}
+`
+	}
+	tests := []struct {
+		name          string
+		platformAlpha string
+		platformBeta  string
+		facts         map[string]ir.HostFacts
+	}{
+		{
+			name:          "offline declared",
+			platformAlpha: `platform { architecture = "x86_64" }`,
+			platformBeta:  `platform { architecture = "aarch64" }`,
+		},
+		{
+			name: "online observed",
+			facts: map[string]ir.HostFacts{
+				"alpha": {OSID: "alpine", Version: "3.24.1", Branch: "v3.24", Architecture: "amd64", NativeArchitecture: "x86_64", KernelArchitecture: "x86_64", Libc: "musl"},
+				"beta":  {OSID: "alpine", Version: "3.24.1", Branch: "v3.24", Architecture: "arm64", NativeArchitecture: "aarch64", KernelArchitecture: "aarch64", Libc: "musl"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := compileConfig(t, compileBody(test.platformAlpha, test.platformBeta))
+			if err != nil {
+				t.Fatal(err)
+			}
+			program, err := CompileWithOptions(config, CompileOptions{HostFacts: test.facts})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantArchitecture := map[string]string{"alpha": "amd64", "beta": "arm64"}
+			for _, host := range program.Hosts {
+				source := host.Components[0].SelectedSource
+				wantURL := "https://" + host.Name + ".invalid/tool-" + wantArchitecture[host.Name]
+				if source == nil || source.Architecture != wantArchitecture[host.Name] || source.URL != wantURL {
+					t.Fatalf("host %s selected source = %#v", host.Name, source)
+				}
+			}
+		})
+	}
+}
+
+func TestCompileArtifactSourceDiagnosticsIncludeTemplateFieldAndMount(t *testing.T) {
+	const sentinel = "not-a-real-protected-artifact-sentinel"
+	configBody := func(inputs, urlExpression, shaExpression, mountedInputs string) string {
+		return fmt.Sprintf(`
+component "tool" {
+  %s
+  type = "file"
+  source {
+    url    = %s
+    sha256 = %s
+  }
+  install { path = "/etc/tool" }
+}
+host "node" {
+  component "mounted" {
+    source = component.tool
+    %s
+  }
+}
+`, inputs, urlExpression, shaExpression, mountedInputs)
+	}
+	validURL := `"https://example.invalid/tool"`
+	validSHA := `"` + artifactSHA + `"`
+	tests := []struct {
+		name          string
+		inputs        string
+		urlExpression string
+		shaExpression string
+		mountedInputs string
+		field         string
+		want          string
+	}{
+		{name: "missing required input", inputs: `input "value" { type = string }`, urlExpression: `input.value`, shaExpression: validSHA, field: `component["tool"].input["value"]`, want: `input "value" is required`},
+		{name: "mistyped URL", inputs: `input "value" { type = any }`, urlExpression: `input.value`, shaExpression: validSHA, mountedInputs: `inputs = { value = 42 }`, field: `component["tool"].source.url`, want: "url must be a string"},
+		{name: "null URL", inputs: `input "value" { type = string }`, urlExpression: `input.value`, shaExpression: validSHA, mountedInputs: `inputs = { value = null }`, field: `component["tool"].source.url`, want: "url must not be null"},
+		{name: "empty URL", inputs: `input "value" { type = string }`, urlExpression: `input.value`, shaExpression: validSHA, mountedInputs: `inputs = { value = "" }`, field: `component["tool"].source.url`, want: "url must be a non-empty string"},
+		{name: "mistyped SHA", inputs: `input "value" { type = any }`, urlExpression: validURL, shaExpression: `input.value`, mountedInputs: `inputs = { value = 42 }`, field: `component["tool"].source.sha256`, want: "sha256 must be a string"},
+		{name: "null SHA", inputs: `input "value" { type = string }`, urlExpression: validURL, shaExpression: `input.value`, mountedInputs: `inputs = { value = null }`, field: `component["tool"].source.sha256`, want: "sha256 must not be null"},
+		{name: "empty SHA", inputs: `input "value" { type = string }`, urlExpression: validURL, shaExpression: `input.value`, mountedInputs: `inputs = { value = "" }`, field: `component["tool"].source.sha256`, want: "sha256 must be a non-empty string"},
+		{name: "unknown traversal", urlExpression: `input.missing`, shaExpression: validSHA, field: `component["tool"].source.url`, want: "artifact source expression failed to evaluate"},
+		{name: "malformed URL", inputs: `input "value" { type = string }`, urlExpression: `input.value`, shaExpression: validSHA, mountedInputs: `inputs = { value = "not-an-http-url" }`, field: `component["tool"].source.url`, want: "absolute http(s) URL"},
+		{name: "malformed SHA", inputs: `input "value" { type = string }`, urlExpression: validURL, shaExpression: `input.value`, mountedInputs: `inputs = { value = "bad" }`, field: `component["tool"].source.sha256`, want: "exactly 64 hexadecimal"},
+		{name: "nested protected failure", inputs: `input "payload" {
+  type      = object({ token = string })
+  sensitive = true
+}`, urlExpression: `tonumber(input.payload.token)`, shaExpression: validSHA, mountedInputs: `inputs = { payload = { token = "` + sentinel + `" } }`, field: `component["tool"].source.url`, want: "protected artifact source expression failed to evaluate"},
+		{name: "dynamic protected failure", inputs: `input "secrets" {
+  type      = map(string)
+  ephemeral = true
+}
+input "key" { type = string }`, urlExpression: `tonumber(input.secrets[input.key])`, shaExpression: validSHA, mountedInputs: `inputs = { secrets = { token = "` + sentinel + `" }, key = "token" }`, field: `component["tool"].source.url`, want: "protected artifact source expression failed to evaluate"},
+		{name: "validation before source", inputs: `input "value" {
+  type      = string
+  sensitive = true
+  validation {
+    condition     = startswith(input.value, "https://")
+    error_message = "must use https"
+  }
+}`, urlExpression: `input.value`, shaExpression: `"bad"`, mountedInputs: `inputs = { value = "` + sentinel + `" }`, field: `component["tool"].input["value"]`, want: "validation failed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := compileConfig(t, configBody(test.inputs, test.urlExpression, test.shaExpression, test.mountedInputs))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Compile(config)
+			if err == nil || !strings.Contains(err.Error(), test.field) || !strings.Contains(err.Error(), `host["node"].component["mounted"]`) || !strings.Contains(err.Error(), test.want) || strings.Contains(err.Error(), sentinel) {
+				t.Fatalf("Compile() error = %v, want field %q, mount, and %q without sentinel", err, test.field, test.want)
+			}
+		})
+	}
+}
+
+func TestCompileRedactsProtectedComponentAssertionEvaluationFailure(t *testing.T) {
+	const sentinel = "not-a-real-protected-assertion-sentinel"
+	config, err := compileConfig(t, `
+component "tool" {
+  input "token" {
+    type      = string
+    sensitive = true
+  }
+  assert {
+    condition     = tonumber(input.token) > 0
+    error_message = "token must be numeric"
+  }
+  type = "file"
+  source {
+    url    = "not-an-http-url"
+    sha256 = "`+artifactSHA+`"
+  }
+  install { path = "/etc/tool" }
+}
+host "node" {
+  component "mounted" {
+    source = component.tool
+    inputs = { token = "`+sentinel+`" }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Compile(config)
+	if err == nil || !strings.Contains(err.Error(), `component["tool"].assert.condition`) || !strings.Contains(err.Error(), `host["node"].component["mounted"]`) || !strings.Contains(err.Error(), "protected component assertion condition failed to evaluate") || strings.Contains(err.Error(), sentinel) || strings.Contains(err.Error(), "absolute http(s) URL") {
+		t.Fatalf("Compile() error = %v", err)
+	}
+}
+
+func TestCompileAllowsUnmountedArtifactInputTemplateAndChecksStaticShape(t *testing.T) {
+	config, err := compileConfig(t, `
+component "tool" {
+  input "url" { type = string }
+  input "sha256" { type = string }
+  type = "file"
+  source {
+    url    = input.url
+    sha256 = input.sha256
+  }
+  install { path = "/etc/tool" }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := program.Components["tool"].Sources[""]
+	if source.URL != "" || source.SHA256 != "" || source.URLSource.Path != `component["tool"].source.url` || source.SHA256Source.Path != `component["tool"].source.sha256` {
+		t.Fatalf("unmounted template source = %#v", source)
+	}
+
+	for _, test := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "missing URL", body: `sha256 = "` + artifactSHA + `"`, want: `component["tool"].source.url`},
+		{name: "missing SHA", body: `url = "https://example.invalid/tool"`, want: `component["tool"].source.sha256`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := compileConfig(t, `
+component "tool" {
+  type = "file"
+  source { `+test.body+` }
+  install { path = "/etc/tool" }
+}
+`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Compile(config)
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "is required") {
+				t.Fatalf("Compile() error = %v, want static field %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestCompileValidatesAllResolvedSourcesBeforeSelection(t *testing.T) {
+	tests := []struct {
+		name  string
+		arm64 string
+		field string
+		want  string
+	}{
+		{name: "unselected URL", arm64: `url    = "not-an-http-url"
+sha256 = "` + artifactSHA + `"`, field: `source["arm64"].url`, want: "absolute http(s) URL"},
+		{name: "unselected SHA", arm64: `url    = "https://example.invalid/tool-arm64"
+sha256 = "bad"`, field: `source["arm64"].sha256`, want: "exactly 64 hexadecimal"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := compileConfig(t, `
+component "tool" {
+  type = "binary"
+  source "amd64" {
+    url    = "https://example.invalid/tool-amd64"
+    sha256 = "`+artifactSHA+`"
+  }
+  source "arm64" {
+    `+test.arm64+`
+  }
+  install { path = "/usr/local/bin/tool" }
+}
+host "node" {
+  platform { architecture = "x86_64" }
+  component "mounted" { source = component.tool }
+}
+`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Compile(config)
+			if err == nil || !strings.Contains(err.Error(), test.field) || !strings.Contains(err.Error(), `host["node"].component["mounted"]`) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Compile() error = %v, want %q and %q", err, test.field, test.want)
+			}
+		})
+	}
+}
+
+func TestCompileInfersArchiveFormatOnlyFromSelectedResolvedSource(t *testing.T) {
+	config, err := compileConfig(t, `
+component "bundle" {
+  type = "archive"
+  source "amd64" {
+    url    = "https://example.invalid/bundle.tar.gz?mirror=amd64"
+    sha256 = "`+artifactSHA+`"
+  }
+  source "arm64" {
+    url    = "https://example.invalid/unselected.zip"
+    sha256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  }
+  extract { strip_components = 1 }
+  install { path = "/opt/bundle" }
+}
+host "node" {
+  platform { architecture = "x86_64" }
+  component "bundle" { source = component.bundle }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	component := program.Hosts[0].Components[0]
+	if component.SelectedSource == nil || component.SelectedSource.Architecture != "amd64" || component.Extract == nil || component.Extract.Format != "tar.gz" {
+		t.Fatalf("compiled archive = %#v", component)
+	}
+}
+
+func TestCompileSortsUnknownMountedInputs(t *testing.T) {
+	config, err := compileConfig(t, `
+component "tool" {
+  type = "file"
+  source {
+    url    = "https://example.invalid/tool"
+    sha256 = "`+artifactSHA+`"
+  }
+  install { path = "/etc/tool" }
+}
+host "node" {
+  component "tool" {
+    source = component.tool
+    inputs = { zeta = 1, alpha = 2 }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Compile(config)
+	if err == nil || !strings.Contains(err.Error(), `unknown input "alpha"`) {
+		t.Fatalf("Compile() error = %v, want alphabetically first unknown input", err)
+	}
+}
