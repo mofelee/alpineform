@@ -105,6 +105,28 @@ func validateComponentArtifactTemplates(components map[string]parser.Component) 
 	return nil
 }
 
+func validateEagerComponentArtifactSources(components map[string]parser.Component) error {
+	for _, name := range sortedComponentNames(components) {
+		component := components[name]
+		for _, architecture := range sortedComponentArtifactSourceArchitectures(component.Sources) {
+			source := component.Sources[architecture]
+			if source.URLExpr != nil && !componentArtifactExpressionReferencesInput(source.URLExpr) {
+				if !validComponentArtifactURL(source.URL) {
+					field := componentArtifactSourceField(source, "url")
+					return fmt.Errorf("%s:%d:%s: source URL must be an absolute http(s) URL without credentials or a fragment", field.File, field.Line, field.Path)
+				}
+			}
+			if source.SHA256Expr != nil && !componentArtifactExpressionReferencesInput(source.SHA256Expr) {
+				if !componentSHA256Pattern.MatchString(source.SHA256) {
+					field := componentArtifactSourceField(source, "sha256")
+					return fmt.Errorf("%s:%d:%s: source SHA-256 must be exactly 64 hexadecimal characters", field.File, field.Line, field.Path)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func componentArtifactSourceSpec(source parser.ComponentArtifactSource) ir.ComponentArtifactSourceSpec {
 	return ir.ComponentArtifactSourceSpec{
 		Architecture:    source.Architecture,
@@ -192,11 +214,15 @@ func evaluateResolvedComponentArtifactString(name string, expr hcl.Expression, c
 
 func validateResolvedComponentArtifactURL(source parser.ComponentArtifactSource, mount ir.SourceRef) error {
 	urlSource := componentArtifactSourceField(source, "url")
-	parsed, err := url.Parse(source.URL)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil || parsed.Fragment != "" {
+	if !validComponentArtifactURL(source.URL) {
 		return componentMountedError(urlSource, mount, "source URL must be an absolute http(s) URL without credentials or a fragment")
 	}
 	return nil
+}
+
+func validComponentArtifactURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	return err == nil && parsed.Host != "" && (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.User == nil && parsed.Fragment == ""
 }
 
 func validateResolvedComponentArtifactSHA256(source parser.ComponentArtifactSource, mount ir.SourceRef) error {
@@ -283,6 +309,16 @@ func componentArtifactTraversalRoot(traversal hcl.Traversal) (string, bool) {
 	}
 	root, ok := traversal[0].(hcl.TraverseRoot)
 	return root.Name, ok
+}
+
+func componentArtifactExpressionReferencesInput(expr hcl.Expression) bool {
+	for _, traversal := range expr.Variables() {
+		root, ok := componentArtifactTraversalRoot(traversal)
+		if ok && root == "input" {
+			return true
+		}
+	}
+	return false
 }
 
 func componentArtifactTraversalFirstName(traversal hcl.Traversal) (string, bool) {

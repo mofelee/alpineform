@@ -149,11 +149,11 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 	case "nftables_service":
 		return applyNftablesService(ctx, runner, step.Node)
 	case "component_artifact_source":
-		return applyComponentSource(ctx, runner, step.Node)
+		return applyComponentSource(ctx, runner, step)
 	case "component_binary", "component_file":
 		return applyComponentInstall(ctx, runner, step.Node)
 	case "component_ca_certificate":
-		return applyComponentCACertificate(ctx, runner, step.Node)
+		return applyComponentCACertificate(ctx, runner, step)
 	case "component_archive":
 		return applyComponentArchive(ctx, runner, step.Node)
 	case "component_script":
@@ -173,6 +173,14 @@ func (provider Native) Apply(ctx context.Context, step engine.Step) (engine.Obse
 	default:
 		return engine.ObservedResource{}, fmt.Errorf("no Alpine provider is registered for resource kind %q", step.Node.Kind)
 	}
+}
+
+func (provider Native) MigrateProtectedPrior(ctx context.Context, step engine.Step) error {
+	runner, err := provider.runner(step.Host)
+	if err != nil {
+		return err
+	}
+	return migrateProtectedComponentPrior(ctx, runner, step)
 }
 
 func (provider Native) Delete(ctx context.Context, step engine.Step) error {

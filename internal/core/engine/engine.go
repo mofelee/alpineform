@@ -51,6 +51,12 @@ type Provider interface {
 	Delete(ctx context.Context, step Step) error
 }
 
+// ProtectedPriorMigrator moves a public artifact identity to its safe protected
+// identity before state containing the public identity is scrubbed.
+type ProtectedPriorMigrator interface {
+	MigrateProtectedPrior(ctx context.Context, step Step) error
+}
+
 type safeOperationError struct {
 	message string
 }
@@ -102,22 +108,24 @@ type Plan struct {
 const RiskNetworkDisruption = "network_disruption"
 
 type HostPlan struct {
-	Host        ir.HostSpec
-	Steps       []Step
-	Moves       []corestate.RealizedMove
-	PriorState  corestate.State
-	Fingerprint string `json:"-"`
+	Host          ir.HostSpec
+	Steps         []Step
+	Moves         []corestate.RealizedMove
+	PriorState    corestate.State
+	StatePrewrite bool   `json:"-"`
+	Fingerprint   string `json:"-"`
 }
 
 type Step struct {
-	Host        string
-	Address     string
-	Action      string
-	Summary     string
-	Node        graph.Node
-	Prior       *corestate.Resource
-	Observed    ObservedResource
-	TriggeredBy []string
+	Host                  string
+	Address               string
+	Action                string
+	Summary               string
+	Node                  graph.Node
+	Prior                 *corestate.Resource
+	Observed              ObservedResource
+	TriggeredBy           []string
+	ReclassifiedProtected bool `json:"-"`
 }
 
 func (step Step) MarshalJSON() ([]byte, error) {
@@ -328,7 +336,7 @@ func (engine Engine) planBuilt(ctx context.Context, program *ir.Program, resourc
 }
 
 func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []graph.Node, prior corestate.State, moves []corestate.RealizedMove) (HostPlan, error) {
-	hostPlan := HostPlan{Host: host, Moves: append([]corestate.RealizedMove(nil), moves...), PriorState: prior}
+	hostPlan := HostPlan{Host: planSafeHost(host), Moves: append([]corestate.RealizedMove(nil), moves...), PriorState: copyState(prior)}
 	current := map[string]bool{}
 	plannedActions := map[string]string{}
 	for _, node := range nodes {
@@ -341,7 +349,41 @@ func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []gra
 			return HostPlan{}, fmt.Errorf("inspect %s: %w", node.Address, err)
 		}
 		priorResource, exists := prior.Resources[node.Address]
+		priorDeletePath := ""
+		priorTrustMarker := ""
+		reclassified := false
+		if exists && (node.Sensitive || node.Ephemeral) {
+			reclassified = !resourceIsProtected(&priorResource)
+			if reclassified {
+				switch node.Kind {
+				case "component_artifact_source":
+					priorDeletePath, _ = priorResource.Delete["path"].(string)
+				case "component_ca_certificate":
+					priorTrustMarker, _ = priorResource.Delete["trust_marker"].(string)
+				}
+			}
+			priorResource = planProtectedPrior(priorResource, node, reclassified)
+			hostPlan.PriorState.Resources[node.Address] = priorResource
+			hostPlan.StatePrewrite = hostPlan.StatePrewrite || reclassified
+		}
 		step := planNode(node, priorResource, exists, observed)
+		step.ReclassifiedProtected = reclassified
+		if priorDeletePath != "" {
+			step.Node.Payload = copyMap(step.Node.Payload)
+			step.Node.Payload["prior_delete_path"] = priorDeletePath
+		}
+		if priorTrustMarker != "" {
+			step.Node.Payload = copyMap(step.Node.Payload)
+			step.Node.Payload["prior_trust_marker"] = priorTrustMarker
+		}
+		if stepRequiresProtectedPriorMigration(step) {
+			if _, ok := protectedPriorMigrationIdentity(step); !ok {
+				return HostPlan{}, fmt.Errorf("protected resource %q cannot migrate prior identity because prior state has no recorded cleanup identity", step.Address)
+			}
+		}
+		if componentPriorIdentityCleanupPending(step) && (step.Action == ActionNoOp || step.Action == ActionAdopt) {
+			step.Action = ActionUpdate
+		}
 		if node.Kind == "nftables_table" && !exists && observed.Exists && !observed.Managed && !desiredBool(node.Desired, "adopt_existing") {
 			return HostPlan{}, fmt.Errorf("%s:%d:%s: refusing to take ownership of untracked nftables table %s; set adopt_existing = true to authorize adoption", node.Source.File, node.Source.Line, node.Source.Path, node.Address)
 		}
@@ -354,7 +396,9 @@ func (engine Engine) planHost(ctx context.Context, host ir.HostSpec, nodes []gra
 		}
 		step.TriggeredBy = changedRemoteTriggers(node.TriggeredBy, plannedActions)
 		if len(step.TriggeredBy) > 0 && (step.Action == ActionNoOp || step.Action == ActionAdopt) {
-			if observed.Exists {
+			if protectedArtifactInstallUsesIndependentVerification(step.Node) {
+				step.TriggeredBy = nil
+			} else if observed.Exists {
 				step.Action = ActionUpdate
 			} else {
 				step.Action = ActionCreate
@@ -428,6 +472,46 @@ func apkDependenciesChanged(dependencies []string, actions map[string]string) bo
 	return false
 }
 
+func planProtectedPrior(resource corestate.Resource, node graph.Node, reclassified bool) corestate.Resource {
+	resource.Desired = nil
+	resource.Observed = nil
+	resource.Protected = true
+	resource.Sensitive = node.Sensitive
+	resource.Ephemeral = node.Ephemeral
+	resource.DigestSafe = node.DigestSafe
+	if reclassified {
+		resource.DesiredDigest = ""
+		resource.Delete = nil
+		if deletion, ok := node.Desired["delete"].(map[string]any); ok {
+			resource.Delete = copyMap(deletion)
+		}
+	}
+	return resource
+}
+
+func planSafeHost(host ir.HostSpec) ir.HostSpec {
+	out := host
+	out.Components = append([]ir.ComponentInstanceSpec(nil), host.Components...)
+	for index := range out.Components {
+		source := out.Components[index].SelectedSource
+		if source == nil {
+			continue
+		}
+		if !source.URLSensitive && !source.URLEphemeral && !source.SHA256Sensitive && !source.SHA256Ephemeral {
+			continue
+		}
+		safe := *source
+		if safe.URLSensitive || safe.URLEphemeral {
+			safe.URL = ""
+		}
+		if safe.SHA256Sensitive || safe.SHA256Ephemeral {
+			safe.SHA256 = ""
+		}
+		out.Components[index].SelectedSource = &safe
+	}
+	return out
+}
+
 func changedRemoteTriggers(triggers []string, actions map[string]string) []string {
 	changed := make([]string, 0, len(triggers))
 	for _, trigger := range triggers {
@@ -437,6 +521,51 @@ func changedRemoteTriggers(triggers []string, actions map[string]string) []strin
 		}
 	}
 	return changed
+}
+
+func protectedArtifactInstallUsesIndependentVerification(node graph.Node) bool {
+	if !desiredBool(node.Desired, "content_verified") ||
+		(!desiredBool(node.Desired, "content_sha256_sensitive") && !desiredBool(node.Desired, "content_sha256_ephemeral")) {
+		return false
+	}
+	switch node.Kind {
+	case "component_binary", "component_file", "component_archive", "component_ca_certificate":
+		return true
+	default:
+		return false
+	}
+}
+
+func componentPriorIdentityCleanupPending(step Step) bool {
+	currentName := ""
+	payloadName := ""
+	deleteName := ""
+	switch step.Node.Kind {
+	case "component_artifact_source":
+		currentName = "path"
+		payloadName = "prior_delete_path"
+		deleteName = "path"
+	case "component_ca_certificate":
+		currentName = "trust_marker"
+		payloadName = "prior_trust_marker"
+		deleteName = "trust_marker"
+	default:
+		return false
+	}
+	current, _ := step.Node.Desired[currentName].(string)
+	if raw, exists := step.Node.Payload[payloadName]; exists {
+		prior, ok := raw.(string)
+		return !ok || prior == "" || prior != current
+	}
+	if step.Prior == nil {
+		return false
+	}
+	raw, exists := step.Prior.Delete[deleteName]
+	if !exists {
+		return false
+	}
+	prior, ok := raw.(string)
+	return !ok || prior == "" || prior != current
 }
 
 func planNode(node graph.Node, prior corestate.Resource, hasPrior bool, observed ObservedResource) Step {
@@ -506,9 +635,31 @@ func planFingerprint(plan HostPlan) string {
 		parts = append(parts, strings.Join([]string{"move", move.Host, move.From, move.To}, "\x00"))
 	}
 	for _, step := range plan.Steps {
-		parts = append(parts, strings.Join([]string{step.Address, step.Action, corestate.Digest(step.Node.Desired), step.Node.ProtectedIntentDigest, step.Observed.Digest, strconvBool(step.Observed.Exists)}, "\x00"))
+		parts = append(parts, strings.Join([]string{
+			step.Address,
+			step.Action,
+			corestate.Digest(step.Node.Desired),
+			step.Node.ProtectedIntentDigest,
+			step.Observed.Digest,
+			strconvBool(step.Observed.Exists),
+			strconvBool(step.ReclassifiedProtected),
+			stepCleanupIdentityFingerprint(step),
+		}, "\x00"))
 	}
 	return corestate.Digest(parts)
+}
+
+func stepCleanupIdentityFingerprint(step Step) string {
+	identity := map[string]any{}
+	for _, name := range []string{"prior_delete_path", "prior_trust_marker"} {
+		if value, exists := step.Node.Payload[name]; exists {
+			identity[name] = value
+		}
+	}
+	if step.Prior != nil && len(step.Prior.Delete) > 0 {
+		identity["prior_delete"] = step.Prior.Delete
+	}
+	return corestate.Digest(identity)
 }
 
 func factsFingerprint(facts *ir.HostFacts) string {
@@ -547,7 +698,27 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 			state.Resources[step.Address] = resource
 		}
 	}
-	if len(plan.Moves) > 0 {
+	if plan.StatePrewrite {
+		migrator, ok := engine.Provider.(ProtectedPriorMigrator)
+		for _, step := range plan.Steps {
+			if !stepRequiresProtectedPriorMigration(step) {
+				continue
+			}
+			if _, valid := protectedPriorMigrationIdentity(step); !valid {
+				return fmt.Errorf("protected resource %q cannot migrate prior identity because the reviewed plan has no recorded cleanup identity", step.Address)
+			}
+			if !ok {
+				return fmt.Errorf("provider cannot migrate prior identity for protected resource %q", step.Address)
+			}
+			if err := migrator.MigrateProtectedPrior(ctx, step); err != nil {
+				if message, safe := SafeOperationMessage(err); safe {
+					return fmt.Errorf("migrate prior identity for protected resource %q failed: %s", step.Address, message)
+				}
+				return fmt.Errorf("migrate prior identity for protected resource %q failed", step.Address)
+			}
+		}
+	}
+	if len(plan.Moves) > 0 || plan.StatePrewrite {
 		written, err := engine.Backend.Write(ctx, plan.Host, state)
 		if err != nil {
 			return err
@@ -595,6 +766,32 @@ func (engine Engine) executeHost(ctx context.Context, plan HostPlan) error {
 	}
 	_, err := engine.Backend.Write(ctx, plan.Host, state)
 	return err
+}
+
+func stepRequiresProtectedPriorMigration(step Step) bool {
+	if !step.ReclassifiedProtected {
+		return false
+	}
+	switch step.Node.Kind {
+	case "component_artifact_source", "component_ca_certificate":
+		return true
+	default:
+		return false
+	}
+}
+
+func protectedPriorMigrationIdentity(step Step) (string, bool) {
+	name := ""
+	switch step.Node.Kind {
+	case "component_artifact_source":
+		name = "prior_delete_path"
+	case "component_ca_certificate":
+		name = "prior_trust_marker"
+	default:
+		return "", false
+	}
+	identity, ok := step.Node.Payload[name].(string)
+	return identity, ok && identity != ""
 }
 
 func hostPlanHasResourceChanges(plan HostPlan) bool {

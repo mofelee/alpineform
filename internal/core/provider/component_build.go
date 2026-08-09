@@ -570,7 +570,7 @@ func applyComponentBuildInput(ctx context.Context, runner backend.Runner, step e
 		if url == "" {
 			return engine.ObservedResource{}, fmt.Errorf("source-build URL input is empty")
 		}
-		command.Script, command.Arguments = componentSourceApplyScript, []string{url, digest, path}
+		command.Script, command.Arguments = componentSourceApplyScript, []string{url, digest, path, "shared"}
 	case "source", "content":
 		content, ok := node.Payload["content"].([]byte)
 		if !ok {

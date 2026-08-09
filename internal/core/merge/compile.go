@@ -97,6 +97,9 @@ func CompileWithOptions(config *parser.Config, options CompileOptions) (*ir.Prog
 		}
 		program.Hosts = append(program.Hosts, host)
 	}
+	if err := validateEagerComponentArtifactSources(config.Components); err != nil {
+		return nil, err
+	}
 	return program, nil
 }
 
@@ -384,6 +387,9 @@ func compileHost(config *parser.Config, profiles map[string]resolvedProfile, hos
 			return ir.HostSpec{}, err
 		}
 		out.Components = append(out.Components, compiled)
+	}
+	if err := ensureProtectedArtifactDownloaderPackage(&out); err != nil {
+		return ir.HostSpec{}, err
 	}
 	if err := validateComponentResourceCollisions(out); err != nil {
 		return ir.HostSpec{}, err

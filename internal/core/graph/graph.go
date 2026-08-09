@@ -430,11 +430,18 @@ func appendComponentArtifactNodes(resourceGraph *ResourceGraph, host ir.HostSpec
 		sourceDesired["url"] = source.URL
 		sourceDesired["sha256"] = source.SHA256
 	}
+	sourceDependencies := []string{componentAddress}
+	if sourceProtected {
+		if packageAddress, exists := componentArtifactPackageAddress(host, "wget"); exists {
+			sourceDependencies = append(sourceDependencies, packageAddress)
+		}
+		sort.Strings(sourceDependencies)
+	}
 	resourceGraph.Nodes = append(resourceGraph.Nodes, Node{
 		Host: host.Name, Address: sourceAddress, Kind: "component_artifact_source", Managed: true,
 		Summary: "download and verify component " + component.Name + " artifact for " + sourceLabel,
 		Source:  source.Source, Lifecycle: &component.Lifecycle,
-		Desired: sourceDesired, Payload: sourcePayload, DependsOn: []string{componentAddress},
+		Desired: sourceDesired, Payload: sourcePayload, DependsOn: sourceDependencies,
 		Sensitive: source.URLSensitive || source.SHA256Sensitive,
 		Ephemeral: source.URLEphemeral || source.SHA256Ephemeral, DigestSafe: true,
 		ProtectedIntentDigest: componentArtifactProtectedIntentDigest(
@@ -490,6 +497,22 @@ func appendComponentArtifactNodes(resourceGraph *ResourceGraph, host ir.HostSpec
 		TriggeredBy: componentArtifactInstallTriggers(sourceAddress, shaProtected),
 		Sensitive:   source.SHA256Sensitive, Ephemeral: source.SHA256Ephemeral, DigestSafe: true,
 	})
+}
+
+func componentArtifactPackageAddress(host ir.HostSpec, name string) (string, bool) {
+	for _, pkg := range host.Packages {
+		if pkg.Name == name && pkg.Ensure == "present" {
+			return packageResourceAddress(host.Name, name), true
+		}
+	}
+	for _, component := range host.Components {
+		for _, pkg := range component.Packages {
+			if pkg.Name == name && pkg.Ensure == "present" {
+				return componentPackageAddress("host."+host.Name+".component."+component.Name, name), true
+			}
+		}
+	}
+	return "", false
 }
 
 type componentArtifactIntentField struct {

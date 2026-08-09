@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -57,6 +58,54 @@ func TestCompileArtifactSourceAndInstallNodes(t *testing.T) {
 	}
 	if installNode.Payload != nil || installNode.Sensitive || installNode.Ephemeral || installNode.ProtectedIntentDigest != "" || installNode.TriggeredBy != nil {
 		t.Fatalf("public install protection metadata = %#v", installNode)
+	}
+}
+
+func TestCompileProtectedArtifactSourceDependsOnDownloaderPackage(t *testing.T) {
+	tests := []struct {
+		name              string
+		hostPackages      []ir.PackageSpec
+		componentPackages []ir.PackageSpec
+		wantPackage       string
+	}{
+		{
+			name: "host package", hostPackages: []ir.PackageSpec{{Name: "wget", WorldIntent: "wget", Ensure: "present", Source: source(2)}},
+			wantPackage: `host.node.packages.package["wget"]`,
+		},
+		{
+			name: "component package", componentPackages: []ir.PackageSpec{{Name: "wget", WorldIntent: "wget", Ensure: "present", Source: source(2)}},
+			wantPackage: `host.node.component.cli.packages.package["wget"]`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			component := ir.ComponentInstanceSpec{
+				Name: "cli", Template: "tool", ArtifactType: "binary", Source: source(2), Packages: test.componentPackages,
+				SelectedSource: &ir.ComponentArtifactSourceSpec{
+					URL: "https://example.invalid/tool", SHA256: componentArtifactSHA, SHA256Sensitive: true, Source: source(3),
+				},
+				Install: &ir.ComponentArtifactInstallSpec{Path: "/usr/local/bin/tool", Owner: "root", Group: "root", Mode: "0755", Source: source(4)},
+			}
+			resourceGraph, err := Compile(&ir.Program{Hosts: []ir.HostSpec{{
+				Name: "node", Source: source(1), Packages: test.hostPackages, Components: []ir.ComponentInstanceSpec{component},
+			}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sourceAddress := `host.node.component.cli.artifact.source["any"]`
+			for _, node := range resourceGraph.Nodes {
+				if node.Address != sourceAddress {
+					continue
+				}
+				want := []string{"host.node.component.cli", test.wantPackage}
+				sort.Strings(want)
+				if !reflect.DeepEqual(node.DependsOn, want) {
+					t.Fatalf("protected source dependencies = %#v, want %#v", node.DependsOn, want)
+				}
+				return
+			}
+			t.Fatal("protected source node not found")
+		})
 	}
 }
 

@@ -33,6 +33,52 @@ func ensureComponentArtifactPackages(component, host []ir.PackageSpec, template 
 	}), nil
 }
 
+func ensureProtectedArtifactDownloaderPackage(host *ir.HostSpec) error {
+	var source ir.SourceRef
+	required := false
+	for _, component := range host.Components {
+		selected := component.SelectedSource
+		if selected == nil || (!selected.URLSensitive && !selected.URLEphemeral && !selected.SHA256Sensitive && !selected.SHA256Ephemeral) {
+			continue
+		}
+		required = true
+		source = selected.Source
+		break
+	}
+	if !required {
+		return nil
+	}
+
+	found := false
+	check := func(packages []ir.PackageSpec) error {
+		for _, pkg := range packages {
+			if pkg.Name != "wget" {
+				continue
+			}
+			if pkg.Ensure != "present" {
+				return resourceError(pkg.Source, "protected component artifact sources require APK package wget to be present")
+			}
+			found = true
+		}
+		return nil
+	}
+	if err := check(host.Packages); err != nil {
+		return err
+	}
+	for _, component := range host.Components {
+		if err := check(component.Packages); err != nil {
+			return err
+		}
+	}
+	if found {
+		return nil
+	}
+	host.Packages = append(host.Packages, ir.PackageSpec{
+		Name: "wget", WorldIntent: "wget", Ensure: "present", Source: source,
+	})
+	return nil
+}
+
 func validateComponentResourceCollisions(host ir.HostSpec) error {
 	type owner struct {
 		kind   string

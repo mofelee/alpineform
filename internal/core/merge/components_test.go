@@ -44,6 +44,30 @@ host "node" {
 	}
 }
 
+func TestCompileReportsNormalizedArchitectureWithoutMatchingSource(t *testing.T) {
+	config, err := compileConfig(t, `
+component "tool" {
+  type = "binary"
+  source "arm64" {
+    url    = "https://example.invalid/tool-arm64"
+    sha256 = "`+artifactSHA+`"
+  }
+  install { path = "/usr/local/bin/tool" }
+}
+host "node" {
+  platform { architecture = "x86_64" }
+  component "cli" { source = component.tool }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Compile(config)
+	if err == nil || !strings.Contains(err.Error(), `component["tool"].source`) || !strings.Contains(err.Error(), `host["node"].component["cli"]`) || !strings.Contains(err.Error(), `no source for normalized architecture "amd64"`) || strings.Contains(err.Error(), `normalized architecture "x86_64"`) {
+		t.Fatalf("Compile() error = %v, want normalized amd64 source-selection diagnostic", err)
+	}
+}
+
 func TestCompileScriptsResolveReferencesAndRedactPayloads(t *testing.T) {
 	secret := "not-a-real-script-secret"
 	config, err := compileConfig(t, `
@@ -477,6 +501,153 @@ host "beta" {
 	}
 }
 
+func TestCompileProtectedArtifactSourcesShareOneHostDownloaderPackage(t *testing.T) {
+	config, err := compileConfig(t, `
+component "first" {
+  input "url" {
+    type      = string
+    sensitive = true
+  }
+  type = "binary"
+  source {
+    url    = input.url
+    sha256 = "`+artifactSHA+`"
+  }
+  install { path = "/usr/local/bin/first" }
+}
+component "second" {
+  input "sha256" {
+    type      = string
+    ephemeral = true
+  }
+  type = "file"
+  source {
+    url    = "https://example.invalid/second"
+    sha256 = input.sha256
+  }
+  install { path = "/etc/second" }
+}
+host "node" {
+  component "first" {
+    source = component.first
+    inputs = { url = "https://example.invalid/first?token=protected" }
+  }
+  component "second" {
+    source = component.second
+    inputs = { sha256 = "`+artifactSHA+`" }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := program.Hosts[0]
+	if len(host.Packages) != 1 || host.Packages[0].Name != "wget" || host.Packages[0].WorldIntent != "wget" || host.Packages[0].Ensure != "present" || host.Packages[0].RepositoryTag != "" {
+		t.Fatalf("protected artifact downloader packages = %#v", host.Packages)
+	}
+	for _, component := range host.Components {
+		for _, pkg := range component.Packages {
+			if pkg.Name == "wget" {
+				t.Fatalf("protected artifact downloader duplicated in component %q: %#v", component.Name, component.Packages)
+			}
+		}
+	}
+}
+
+func TestCompileProtectedArtifactSourceReusesComponentDownloaderPackage(t *testing.T) {
+	config, err := compileConfig(t, `
+component "tool" {
+  input "url" {
+    type      = string
+    sensitive = true
+  }
+  type = "binary"
+  source {
+    url    = input.url
+    sha256 = "`+artifactSHA+`"
+  }
+  install { path = "/usr/local/bin/tool" }
+  packages {
+    package "wget" {}
+  }
+}
+host "node" {
+  component "tool" {
+    source = component.tool
+    inputs = { url = "https://example.invalid/tool?token=protected" }
+  }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := Compile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := program.Hosts[0]
+	if len(host.Packages) != 0 || len(host.Components) != 1 || len(host.Components[0].Packages) != 1 || host.Components[0].Packages[0].Name != "wget" || host.Components[0].Packages[0].Ensure != "present" {
+		t.Fatalf("reused protected artifact downloader = host %#v, component %#v", host.Packages, host.Components)
+	}
+}
+
+func TestCompileProtectedArtifactSourceRejectsAbsentDownloaderPackage(t *testing.T) {
+	tests := []struct {
+		name       string
+		component  string
+		host       string
+		wantSource string
+	}{
+		{name: "host declaration", host: `packages {
+    package "wget" {
+      ensure = "absent"
+    }
+  }`, wantSource: `host["node"].packages.package["wget"]`},
+		{name: "component declaration", component: `packages {
+    package "wget" {
+      ensure = "absent"
+    }
+  }`, wantSource: `component["tool"].packages.package["wget"]`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := compileConfig(t, `
+component "tool" {
+  input "url" {
+    type      = string
+    sensitive = true
+  }
+  type = "binary"
+  source {
+    url    = input.url
+    sha256 = "`+artifactSHA+`"
+  }
+  install { path = "/usr/local/bin/tool" }
+  `+test.component+`
+}
+host "node" {
+  `+test.host+`
+  component "tool" {
+    source = component.tool
+    inputs = { url = "https://example.invalid/tool?token=protected" }
+  }
+}
+`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Compile(config)
+			if err == nil || !strings.Contains(err.Error(), "protected component artifact sources require APK package wget to be present") || !strings.Contains(err.Error(), test.wantSource) {
+				t.Fatalf("Compile() error = %v, want absent downloader diagnostic at %q", err, test.wantSource)
+			}
+		})
+	}
+}
+
 func TestCompileSelectsResolvedSourcesForOfflineAndObservedArchitectures(t *testing.T) {
 	compileBody := func(platformAlpha, platformBeta string) string {
 		return `
@@ -708,6 +879,86 @@ component "tool" {
 				t.Fatalf("Compile() error = %v, want static field %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestCompileValidatesEagerArtifactSourcesOnUnmountedTemplates(t *testing.T) {
+	tests := []struct {
+		name      string
+		prefix    string
+		url       string
+		sha256    string
+		fieldName string
+		want      string
+	}{
+		{
+			name: "literal URL", url: `"relative/tool"`, sha256: `"` + artifactSHA + `"`,
+			fieldName: "url", want: "source URL must be an absolute http(s) URL without credentials or a fragment",
+		},
+		{
+			name: "eager local URL", prefix: `locals { artifact_url = "https://user@example.invalid/tool" }`, url: `local.artifact_url`, sha256: `"` + artifactSHA + `"`,
+			fieldName: "url", want: "source URL must be an absolute http(s) URL without credentials or a fragment",
+		},
+		{
+			name: "literal SHA", url: `"https://example.invalid/tool"`, sha256: `"bad"`,
+			fieldName: "sha256", want: "source SHA-256 must be exactly 64 hexadecimal characters",
+		},
+		{
+			name: "deferred URL does not defer eager SHA", url: `input.url`, sha256: `"bad"`,
+			fieldName: "sha256", want: "source SHA-256 must be exactly 64 hexadecimal characters",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := compileConfig(t, test.prefix+`
+component "tool" {
+  input "url" {
+    type    = string
+    default = "relative/default"
+  }
+  type = "file"
+  source {
+    url    = `+test.url+`
+    sha256 = `+test.sha256+`
+  }
+  install { path = "/etc/tool" }
+}
+`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Compile(config)
+			field := componentArtifactSourceField(config.Components["tool"].Sources[""], test.fieldName)
+			want := fmt.Sprintf("%s:%d:%s: %s", field.File, field.Line, field.Path, test.want)
+			if err == nil || err.Error() != want {
+				t.Fatalf("Compile() error = %v, want %q", err, want)
+			}
+		})
+	}
+
+	config, err := compileConfig(t, `
+component "tool" {
+  input "url" {
+    type    = string
+    default = "relative/default"
+  }
+  input "sha256" {
+    type    = string
+    default = "bad"
+  }
+  type = "file"
+  source {
+    url    = input.url
+    sha256 = lower(input.sha256)
+  }
+  install { path = "/etc/tool" }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Compile(config); err != nil {
+		t.Fatalf("Compile() rejected unmounted input-dependent source: %v", err)
 	}
 }
 

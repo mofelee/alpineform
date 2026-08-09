@@ -749,6 +749,182 @@ func TestProtectedPlanJSONDoesNotRetainObservedContent(t *testing.T) {
 	}
 }
 
+func TestProtectedArtifactValuesExistOnlyInNodePayloadAfterPlanning(t *testing.T) {
+	secretURL := "https://example.invalid/tool?token=not-a-real-plan-secret"
+	secretSHA := strings.Repeat("b", 64)
+	host := testHost()
+	host.Components = []ir.ComponentInstanceSpec{{
+		Name: "tool",
+		SelectedSource: &ir.ComponentArtifactSourceSpec{
+			URL: secretURL, SHA256: secretSHA, URLSensitive: true, SHA256Ephemeral: true,
+		},
+	}}
+	node := testNode(map[string]any{"verified": true, "url_sensitive": true, "sha256_ephemeral": true})
+	node.Sensitive = true
+	node.Ephemeral = true
+	node.Payload = map[string]any{"url": secretURL, "sha256": secretSHA}
+	plan, err := (Engine{Backend: newMemoryBackend(), Provider: newMemoryProvider()}).Plan(context.Background(), staticBuild(host, node))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := plan.Hosts[0].Host.Components[0].SelectedSource
+	if source == nil || source.URL != "" || source.SHA256 != "" || !source.URLSensitive || !source.SHA256Ephemeral {
+		t.Fatalf("plan-safe host source = %#v", source)
+	}
+	if plan.Hosts[0].Steps[0].Node.Payload["url"] != secretURL || plan.Hosts[0].Steps[0].Node.Payload["sha256"] != secretSHA {
+		t.Fatalf("provider payload = %#v", plan.Hosts[0].Steps[0].Node.Payload)
+	}
+}
+
+func TestPublicArtifactPriorIsScrubbedWhenSourceBecomesProtected(t *testing.T) {
+	secretURL := "https://example.invalid/tool?token=not-a-real-prior-secret"
+	secretSHA := strings.Repeat("c", 64)
+	stablePath := "/var/cache/alpineform/components/tool/protected/amd64/artifact"
+	node := testNode(map[string]any{
+		"path": stablePath, "verified": true, "url_sensitive": true, "sha256_ephemeral": true,
+		"delete": map[string]any{"path": stablePath},
+	})
+	node.Kind = "component_artifact_source"
+	node.Sensitive = true
+	node.Ephemeral = true
+	node.DigestSafe = true
+	node.Payload = map[string]any{"url": secretURL, "sha256": secretSHA}
+	priorResource := corestate.Resource{
+		Host: "node", Kind: node.Kind, Ownership: "managed",
+		Desired:       map[string]any{"url": secretURL, "sha256": secretSHA},
+		Observed:      map[string]any{"url": secretURL, "sha256": secretSHA},
+		DesiredDigest: corestate.Digest(map[string]any{"url": secretURL, "sha256": secretSHA}),
+		Delete:        map[string]any{"path": "/var/cache/alpineform/components/tool/" + secretSHA + "/artifact"},
+	}
+	backend := newMemoryBackend()
+	backend.states["node"] = corestate.State{
+		Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node",
+		Resources: map[string]corestate.Resource{node.Address: priorResource},
+	}
+	provider := newMemoryProvider()
+	provider.set(node.Address, ObservedResource{Exists: true, Digest: corestate.Digest(node.Desired), Protected: true})
+	plan, err := (Engine{Backend: backend, Provider: provider}).Plan(context.Background(), staticBuild(testHost(), node))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plannedPrior := plan.Hosts[0].PriorState.Resources[node.Address]
+	step := plan.Hosts[0].Steps[0]
+	stepPrior := step.Prior
+	if step.Action != ActionUpdate || !plannedPrior.Protected || plannedPrior.Desired != nil || plannedPrior.Observed != nil || plannedPrior.DesiredDigest != "" || plannedPrior.Delete["path"] != stablePath ||
+		stepPrior == nil || !stepPrior.Protected || stepPrior.Desired != nil || stepPrior.Observed != nil || stepPrior.DesiredDigest != "" || stepPrior.Delete["path"] != stablePath {
+		t.Fatalf("reclassified prior was not scrubbed: host=%#v step=%#v", plannedPrior, stepPrior)
+	}
+	wantPriorPath := "/var/cache/alpineform/components/tool/" + secretSHA + "/artifact"
+	if step.Node.Payload["prior_delete_path"] != wantPriorPath {
+		t.Fatalf("reclassified prior cleanup payload = %#v", step.Node.Payload)
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), secretURL) || strings.Contains(string(encoded), secretSHA) {
+		t.Fatalf("reclassified prior leaked through plan JSON: %s", encoded)
+	}
+	stored, _ := backend.snapshot("node")
+	if stored.Resources[node.Address].Observed["url"] != secretURL {
+		t.Fatalf("planning mutated backend state: %#v", stored.Resources[node.Address])
+	}
+}
+
+func TestPublicCAMarkerPriorMovesToPayloadWhenChecksumBecomesProtected(t *testing.T) {
+	secretSHA := strings.Repeat("d", 64)
+	path := "/usr/local/share/ca-certificates/tool.crt"
+	marker := "/var/lib/alpineform/ca-certificates/" + secretSHA + ".updated"
+	stableMarker := "/var/lib/alpineform/ca-certificates/tool/protected/any.updated"
+	node := testNode(map[string]any{
+		"path": path, "trust_marker": stableMarker,
+		"content_verified": true, "content_sha256_sensitive": true,
+		"delete": map[string]any{"path": path, "trust_marker": stableMarker},
+	})
+	node.Kind = "component_ca_certificate"
+	node.Sensitive = true
+	node.DigestSafe = true
+	node.Payload = map[string]any{"content_sha256": secretSHA}
+	backend := newMemoryBackend()
+	backend.states["node"] = corestate.State{
+		Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node",
+		Resources: map[string]corestate.Resource{node.Address: {
+			Host: "node", Kind: node.Kind, Ownership: "managed",
+			Observed:      map[string]any{"content_sha256": secretSHA, "trust_marker": marker},
+			DesiredDigest: corestate.Digest(map[string]any{"content_sha256": secretSHA, "trust_marker": marker}),
+			Delete:        map[string]any{"path": path, "trust_marker": marker},
+		}},
+	}
+	provider := newMemoryProvider()
+	provider.set(node.Address, ObservedResource{Exists: true, Digest: corestate.Digest(node.Desired), Protected: true})
+	plan, err := (Engine{Backend: backend, Provider: provider}).Plan(context.Background(), staticBuild(testHost(), node))
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := plan.Hosts[0].Steps[0]
+	plannedPrior := plan.Hosts[0].PriorState.Resources[node.Address]
+	if step.Action != ActionUpdate || step.Prior == nil || step.Prior.Delete["path"] != path || plannedPrior.Delete["path"] != path ||
+		step.Prior.Delete["trust_marker"] != stableMarker || plannedPrior.Delete["trust_marker"] != stableMarker ||
+		step.Node.Payload["prior_trust_marker"] != marker {
+		t.Fatalf("reclassified CA prior: host=%#v step=%#v payload=%#v", plannedPrior, step.Prior, step.Node.Payload)
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), secretSHA) || strings.Contains(string(encoded), marker) {
+		t.Fatalf("reclassified CA marker leaked through plan JSON: %s", encoded)
+	}
+}
+
+func TestPendingComponentPriorIdentityCleanupForcesRetryableUpdate(t *testing.T) {
+	tests := []struct {
+		name        string
+		kind        string
+		identityKey string
+		current     string
+		prior       string
+		wantAction  string
+	}{
+		{
+			name: "source prior cache differs", kind: "component_artifact_source", identityKey: "path",
+			current: "/var/cache/alpineform/components/tool/current/artifact", prior: "/var/cache/alpineform/components/tool/prior/artifact", wantAction: ActionUpdate,
+		},
+		{
+			name: "CA prior marker differs", kind: "component_ca_certificate", identityKey: "trust_marker",
+			current: "/var/lib/alpineform/ca-certificates/current.updated", prior: "/var/lib/alpineform/ca-certificates/prior.updated", wantAction: ActionUpdate,
+		},
+		{
+			name: "source identity already current", kind: "component_artifact_source", identityKey: "path",
+			current: "/var/cache/alpineform/components/tool/current/artifact", prior: "/var/cache/alpineform/components/tool/current/artifact", wantAction: ActionNoOp,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			desired := map[string]any{test.identityKey: test.current}
+			priorDesired := map[string]any{test.identityKey: test.prior}
+			node := testNode(desired)
+			node.Kind = test.kind
+			backend := newMemoryBackend()
+			backend.states["node"] = corestate.State{
+				Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node",
+				Resources: map[string]corestate.Resource{node.Address: {
+					Kind: test.kind, DesiredDigest: corestate.Digest(priorDesired), Delete: map[string]any{test.identityKey: test.prior},
+				}},
+			}
+			provider := newMemoryProvider()
+			provider.set(node.Address, ObservedResource{Exists: true, Digest: corestate.Digest(desired)})
+			plan, err := (Engine{Backend: backend, Provider: provider}).Plan(context.Background(), staticBuild(testHost(), node))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := plan.Hosts[0].Steps[0].Action; got != test.wantAction {
+				t.Fatalf("pending prior identity action = %q, want %q", got, test.wantAction)
+			}
+		})
+	}
+}
+
 func TestProtectedIntentChangeIsDurableNoOpButRequiresLockedReview(t *testing.T) {
 	publicSHA := strings.Repeat("a", 64)
 	desired := map[string]any{
@@ -807,7 +983,7 @@ func TestProtectedIntentChangeIsDurableNoOpButRequiresLockedReview(t *testing.T)
 	}
 }
 
-func TestProtectedSourceRepairTriggersOtherwiseCleanInstall(t *testing.T) {
+func TestProtectedSourceRepairUsesIndependentInstallVerification(t *testing.T) {
 	sourceAddress := `host.node.component.cli.artifact.source["amd64"]`
 	installAddress := `host.node.component.cli.artifact.install["/usr/local/bin/tool"]`
 	source := graph.Node{
@@ -817,29 +993,55 @@ func TestProtectedSourceRepairTriggersOtherwiseCleanInstall(t *testing.T) {
 	}
 	install := graph.Node{
 		Host: "node", Address: installAddress, Kind: "component_binary", Managed: true,
-		Desired:   map[string]any{"path": "/usr/local/bin/tool", "content_verified": true},
+		Desired:   map[string]any{"path": "/usr/local/bin/tool", "content_verified": true, "content_sha256_sensitive": true},
 		DependsOn: []string{sourceAddress}, TriggeredBy: []string{sourceAddress}, Sensitive: true, DigestSafe: true,
 	}
-	backend := newMemoryBackend()
-	backend.states["node"] = corestate.State{
-		Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node",
-		Resources: map[string]corestate.Resource{
-			sourceAddress:  {DesiredDigest: corestate.Digest(source.Desired), Protected: true},
-			installAddress: {DesiredDigest: corestate.Digest(install.Desired), Protected: true},
-		},
+	tests := []struct {
+		name            string
+		sourceObserved  ObservedResource
+		installObserved ObservedResource
+		wantSource      string
+		wantInstall     string
+		wantTrigger     bool
+	}{
+		{name: "missing cache clean install", installObserved: ObservedResource{Exists: true, Digest: corestate.Digest(install.Desired), Protected: true}, wantSource: ActionCreate, wantInstall: ActionNoOp},
+		{name: "corrupt cache clean install", sourceObserved: ObservedResource{Exists: true, Digest: "drift", Protected: true}, installObserved: ObservedResource{Exists: true, Digest: corestate.Digest(install.Desired), Protected: true}, wantSource: ActionUpdate, wantInstall: ActionNoOp},
+		{name: "missing cache dirty install", installObserved: ObservedResource{Exists: true, Digest: "drift", Protected: true}, wantSource: ActionCreate, wantInstall: ActionUpdate, wantTrigger: true},
+		{name: "missing cache missing install", wantSource: ActionCreate, wantInstall: ActionCreate, wantTrigger: true},
 	}
-	provider := newMemoryProvider()
-	provider.set(installAddress, ObservedResource{Exists: true, Digest: corestate.Digest(install.Desired), Protected: true})
-	plan, err := (Engine{Backend: backend, Provider: provider}).Plan(context.Background(), staticBuild(testHost(), source, install))
-	if err != nil {
-		t.Fatal(err)
-	}
-	steps := map[string]Step{}
-	for _, step := range plan.Hosts[0].Steps {
-		steps[step.Address] = step
-	}
-	if steps[sourceAddress].Action != ActionCreate || steps[installAddress].Action != ActionUpdate || !reflect.DeepEqual(steps[installAddress].TriggeredBy, []string{sourceAddress}) {
-		t.Fatalf("protected source repair plan = %#v", plan.Hosts[0].Steps)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := newMemoryBackend()
+			backend.states["node"] = corestate.State{
+				Product: corestate.Product, SchemaVersion: corestate.SchemaVersion, Host: "node",
+				Resources: map[string]corestate.Resource{
+					sourceAddress:  {DesiredDigest: corestate.Digest(source.Desired), Protected: true},
+					installAddress: {DesiredDigest: corestate.Digest(install.Desired), Protected: true},
+				},
+			}
+			provider := newMemoryProvider()
+			provider.set(sourceAddress, test.sourceObserved)
+			provider.set(installAddress, test.installObserved)
+			plan, err := (Engine{Backend: backend, Provider: provider}).Plan(context.Background(), staticBuild(testHost(), source, install))
+			if err != nil {
+				t.Fatal(err)
+			}
+			steps := map[string]Step{}
+			for _, step := range plan.Hosts[0].Steps {
+				steps[step.Address] = step
+			}
+			installStep := steps[installAddress]
+			if steps[sourceAddress].Action != test.wantSource || installStep.Action != test.wantInstall || !reflect.DeepEqual(installStep.Node.TriggeredBy, []string{sourceAddress}) {
+				t.Fatalf("protected source repair plan = %#v", plan.Hosts[0].Steps)
+			}
+			wantTriggers := []string(nil)
+			if test.wantTrigger {
+				wantTriggers = []string{sourceAddress}
+			}
+			if !reflect.DeepEqual(installStep.TriggeredBy, wantTriggers) {
+				t.Fatalf("protected install active triggers = %#v, want %#v", installStep.TriggeredBy, wantTriggers)
+			}
+		})
 	}
 }
 

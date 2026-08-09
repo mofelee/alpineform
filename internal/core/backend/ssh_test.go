@@ -136,6 +136,51 @@ func TestSSHRunnerRedactsProtectedErrors(t *testing.T) {
 	}
 }
 
+func TestSSHRunnerKeepsProtectedStdinOutOfCommandAndErrors(t *testing.T) {
+	sentinel := "not-a-real-protected-stdin-sentinel"
+	executor := &fakeSSHExecutor{
+		stderr: []byte("remote failure: " + sentinel),
+		err:    errors.New("exit status 1"),
+	}
+	runner, err := NewSSHRunner(sshHost(), SSHOptions{Executor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = runner.Run(context.Background(), Command{
+		Name:         "protected.apply",
+		Script:       `IFS= read -r protected_value && false`,
+		Stdin:        []byte(sentinel + "\n"),
+		RedactStdin:  true,
+		RedactOutput: true,
+	})
+	if err == nil {
+		t.Fatal("protected command unexpectedly succeeded")
+	}
+	if len(executor.invocations) != 1 {
+		t.Fatalf("invocations = %d, want 1", len(executor.invocations))
+	}
+
+	invocation := executor.invocations[0]
+	if got, want := string(invocation.stdin), sentinel+"\n"; got != want {
+		t.Fatalf("executor stdin = %q, want %q", got, want)
+	}
+	if strings.Contains(invocation.binary, sentinel) {
+		t.Fatalf("SSH binary contains protected sentinel: %q", invocation.binary)
+	}
+	for _, argument := range invocation.args {
+		if strings.Contains(argument, sentinel) {
+			t.Fatalf("SSH argument contains protected sentinel: %q", argument)
+		}
+	}
+	if strings.Contains(err.Error(), sentinel) || strings.Contains(err.Error(), "remote failure") {
+		t.Fatalf("protected error contains redacted stderr: %v", err)
+	}
+	if !strings.Contains(err.Error(), `SSH command "protected.apply" failed`) {
+		t.Fatalf("protected error = %v", err)
+	}
+}
+
 func TestSSHRunnerPropagatesCancellation(t *testing.T) {
 	executor := &fakeSSHExecutor{}
 	runner, err := NewSSHRunner(sshHost(), SSHOptions{Executor: executor})
