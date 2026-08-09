@@ -1,11 +1,21 @@
-assert_remote "selected amd64 tool digest and mode are converged" \
-  "test \"\$(sha256sum /usr/local/bin/apf-ci-tool | awk '{print \$1}')\" = '$APF_TOOL_SHA' && test \"\$(stat -c %a /usr/local/bin/apf-ci-tool)\" = 755"
-assert_remote "archive tree and manifest are converged" \
-  "grep -qx 'AlpineForm archive integration fixture' /opt/apf-ci-bundle/bin/message.txt && grep -qx 'libc=musl' /opt/apf-ci-bundle/share/platform.txt && test ! -e /opt/apf-ci-bundle/unmanaged"
+source "$CASE_DIR/assertions.sh"
+
+ensure_component_fixture_server
+assert_selected_amd64_sources "$LOG_DIR/1.offline-plan.json" offline
+assert_selected_amd64_sources "$LOG_DIR/1.pre-apply-plan.json" online
+assert_component_runtime
+assert_literal_component_runtime
+assert_component_state "configuration 1 persists the exact combined resource identities"
+assert_mirror_a_selection
+assert_literal_source_requests
+assert_remote "protected component fixture server remains available for lifecycle probes" \
+  "test -s /var/tmp/apf-component-http/server.pid && kill -0 \"\$(cat /var/tmp/apf-component-http/server.pid)\""
+
 if [[ "$APF_TEST_PHASE" == applied ]]; then
-  assert_remote "two first-apply triggers execute one shared script" \
-    "test \"\$(wc -l < /var/lib/alpineform/component-ci-runs | tr -d ' ')\" = 1 && test \"\$(wc -l < /var/lib/alpineform/component-ci-triggers | tr -d ' ')\" = 2"
-else
-  assert_remote "drift repair executes the shared script only once more" \
-    "test \"\$(wc -l < /var/lib/alpineform/component-ci-runs | tr -d ' ')\" = 2 && test \"\$(wc -l < /var/lib/alpineform/component-ci-triggers | tr -d ' ')\" = 2"
+  assert_wrong_checksum_preserves_runtime
+elif [[ "$APF_TEST_PHASE" == repaired ]]; then
+  assert_four_install_repair_plan "$LOG_DIR/1.install-repair-plan.json"
+  assert_combined_component_repair_plan "$LOG_DIR/1.combined-repair-plan.json"
 fi
+
+assert_all_protected_surfaces

@@ -25,6 +25,8 @@ type archiveEntry struct {
 	typeflag byte
 	linkname string
 	content  string
+	mode     int64
+	modTime  time.Time
 }
 
 func writeTestTarGZ(t *testing.T, path string, entries []archiveEntry) string {
@@ -40,7 +42,11 @@ func writeTestTarGZ(t *testing.T, path string, entries []archiveEntry) string {
 		if typeflag == 0 {
 			typeflag = tar.TypeReg
 		}
-		header := &tar.Header{Name: entry.name, Typeflag: typeflag, Linkname: entry.linkname, Mode: 0644, Size: int64(len(entry.content))}
+		mode := entry.mode
+		if mode == 0 {
+			mode = 0644
+		}
+		header := &tar.Header{Name: entry.name, Typeflag: typeflag, Linkname: entry.linkname, Mode: mode, ModTime: entry.modTime, Size: int64(len(entry.content))}
 		if typeflag != tar.TypeReg {
 			header.Size = 0
 		}
@@ -192,7 +198,7 @@ func TestProtectedComponentArchiveMarkerDriftChecksumRollbackAndRetry(t *testing
 		t.Fatal(err)
 	}
 	drifted, err := provider.Inspect(context.Background(), node)
-	if err != nil || drifted.Values["tree_integrity"] != "drift" || drifted.Values["content_verified"] != true {
+	if err != nil || drifted.Values["tree_integrity"] != "drift" || drifted.Values["content_verified"] != false {
 		t.Fatalf("protected archive drift = %#v, %v", drifted, err)
 	}
 	if _, err := provider.Apply(context.Background(), engine.Step{Host: "node", Action: engine.ActionUpdate, Node: node}); err != nil {
@@ -215,8 +221,19 @@ func TestProtectedComponentArchiveMarkerDriftChecksumRollbackAndRetry(t *testing
 	if err := os.Rename(nextCache, cache); err != nil {
 		t.Fatal(err)
 	}
+	var beforeRotation syscall.Stat_t
+	if err := syscall.Stat(target, &beforeRotation); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := provider.Apply(context.Background(), engine.Step{Host: "node", Action: engine.ActionUpdate, Node: node}); err != nil {
 		t.Fatal(err)
+	}
+	var afterRotation syscall.Stat_t
+	if err := syscall.Stat(target, &afterRotation); err != nil {
+		t.Fatal(err)
+	}
+	if beforeRotation.Dev == afterRotation.Dev && beforeRotation.Ino == afterRotation.Ino {
+		t.Fatalf("rotated protected archive did not replace target: before=%#v after=%#v", beforeRotation, afterRotation)
 	}
 	if data, err := os.ReadFile(toolPath); err != nil || string(data) != "tool-v2" {
 		t.Fatalf("rotated protected archive = %q, %v", data, err)
@@ -252,11 +269,322 @@ func TestProtectedComponentArchiveMarkerDriftChecksumRollbackAndRetry(t *testing
 	}
 }
 
+func TestProtectedComponentArchiveEquivalentApplyPreservesInstalledTree(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "bundle.tar.gz")
+	target := filepath.Join(root, "bundle")
+	entries := []archiveEntry{
+		{name: "bundle/bin/tool", content: "tool-v1"},
+		{name: "bundle/empty", typeflag: tar.TypeDir, mode: 0755},
+	}
+	digest := writeTestTarGZ(t, cache, entries)
+	node := testProtectedArchiveNode(cache, target, digest, 1)
+	provider := Native{NewRunner: func(string) (backend.Runner, error) { return localRunner{}, nil }}
+	if _, err := provider.Apply(context.Background(), engine.Step{Host: "node", Action: engine.ActionCreate, Node: node}); err != nil {
+		t.Fatal(err)
+	}
+
+	paths := []string{target, filepath.Join(target, "bin", "tool"), filepath.Join(target, "empty")}
+	before := make([]syscall.Stat_t, len(paths))
+	for index, path := range paths {
+		if err := syscall.Stat(path, &before[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	equivalentCache := filepath.Join(root, "bundle-equivalent.tar.gz")
+	equivalentEntries := append([]archiveEntry(nil), entries...)
+	equivalentEntries[0].modTime = time.Unix(1700000000, 0).UTC()
+	equivalentDigest := writeTestTarGZ(t, equivalentCache, equivalentEntries)
+	if equivalentDigest == digest {
+		t.Fatal("semantically equivalent archive retained the prior checksum")
+	}
+	if err := os.Remove(cache); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(equivalentCache, cache); err != nil {
+		t.Fatal(err)
+	}
+	node.Payload["content_sha256"] = equivalentDigest
+	inspected, err := provider.Inspect(context.Background(), node)
+	if err != nil || !inspected.Exists || inspected.Values["content_verified"] != true || inspected.Values["tree_integrity"] != "clean" {
+		t.Fatalf("semantically equivalent protected archive inspection = %#v, %v", inspected, err)
+	}
+
+	observed, err := provider.Apply(context.Background(), engine.Step{Host: "node", Action: engine.ActionUpdate, Node: node})
+	if err != nil || !observed.Exists || observed.Values["content_verified"] != true || observed.Values["tree_integrity"] != "clean" {
+		t.Fatalf("equivalent protected archive apply = %#v, %v", observed, err)
+	}
+	for index, path := range paths {
+		var after syscall.Stat_t
+		if err := syscall.Stat(path, &after); err != nil {
+			t.Fatal(err)
+		}
+		if before[index].Dev != after.Dev || before[index].Ino != after.Ino || before[index].Ctim != after.Ctim {
+			t.Fatalf("equivalent protected archive replaced %q: before=%#v after=%#v", path, before[index], after)
+		}
+	}
+	if matches, _ := filepath.Glob(filepath.Join(root, ".alpineform-archive-*")); len(matches) != 0 {
+		t.Fatalf("equivalent protected archive left transaction paths: %#v", matches)
+	}
+}
+
+func TestProtectedComponentArchiveSemanticDriftStillReplacesInstalledTree(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, string)
+		verify func(*testing.T, string)
+	}{
+		{
+			name: "file mode",
+			mutate: func(t *testing.T, target string) {
+				t.Helper()
+				if err := os.Chmod(filepath.Join(target, "bin", "tool"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			verify: func(t *testing.T, target string) {
+				t.Helper()
+				info, err := os.Stat(filepath.Join(target, "bin", "tool"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != 0644 {
+					t.Fatalf("repaired file mode = %v", info.Mode().Perm())
+				}
+			},
+		},
+		{
+			name: "directory mode",
+			mutate: func(t *testing.T, target string) {
+				t.Helper()
+				if err := os.Chmod(filepath.Join(target, "bin"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			},
+			verify: func(t *testing.T, target string) {
+				t.Helper()
+				info, err := os.Stat(filepath.Join(target, "bin"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != 0755 {
+					t.Fatalf("repaired directory mode = %v", info.Mode().Perm())
+				}
+			},
+		},
+		{
+			name: "entry type",
+			mutate: func(t *testing.T, target string) {
+				t.Helper()
+				path := filepath.Join(target, "bin", "tool")
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(path, 0755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			verify: func(t *testing.T, target string) {
+				t.Helper()
+				info, err := os.Stat(filepath.Join(target, "bin", "tool"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !info.Mode().IsRegular() {
+					t.Fatalf("repaired entry type = %v", info.Mode())
+				}
+			},
+		},
+		{
+			name: "hard link",
+			mutate: func(t *testing.T, target string) {
+				t.Helper()
+				copyPath := filepath.Join(target, "bin", "tool-copy")
+				if err := os.Remove(copyPath); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Link(filepath.Join(target, "bin", "tool"), copyPath); err != nil {
+					t.Fatal(err)
+				}
+			},
+			verify: func(t *testing.T, target string) {
+				t.Helper()
+				var tool syscall.Stat_t
+				var copy syscall.Stat_t
+				if err := syscall.Stat(filepath.Join(target, "bin", "tool"), &tool); err != nil {
+					t.Fatal(err)
+				}
+				if err := syscall.Stat(filepath.Join(target, "bin", "tool-copy"), &copy); err != nil {
+					t.Fatal(err)
+				}
+				if tool.Dev == copy.Dev && tool.Ino == copy.Ino {
+					t.Fatalf("repaired files remain hard linked: tool=%#v copy=%#v", tool, copy)
+				}
+			},
+		},
+		{
+			name: "missing empty directory",
+			mutate: func(t *testing.T, target string) {
+				t.Helper()
+				if err := os.Remove(filepath.Join(target, "empty")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			verify: func(t *testing.T, target string) {
+				t.Helper()
+				info, err := os.Stat(filepath.Join(target, "empty"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !info.IsDir() {
+					t.Fatalf("repaired empty directory = %v", info)
+				}
+			},
+		},
+		{
+			name: "extra empty directory",
+			mutate: func(t *testing.T, target string) {
+				t.Helper()
+				if err := os.Mkdir(filepath.Join(target, "unmanaged"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			verify: func(t *testing.T, target string) {
+				t.Helper()
+				if _, err := os.Stat(filepath.Join(target, "unmanaged")); !os.IsNotExist(err) {
+					t.Fatalf("unmanaged empty directory survived: %v", err)
+				}
+			},
+		},
+	}
+	if os.Geteuid() == 0 {
+		tests = append(tests, struct {
+			name   string
+			mutate func(*testing.T, string)
+			verify func(*testing.T, string)
+		}{
+			name: "ownership",
+			mutate: func(t *testing.T, target string) {
+				t.Helper()
+				if err := os.Chown(filepath.Join(target, "bin", "tool"), 1, 1); err != nil {
+					t.Fatal(err)
+				}
+			},
+			verify: func(t *testing.T, target string) {
+				t.Helper()
+				var stat syscall.Stat_t
+				if err := syscall.Stat(filepath.Join(target, "bin", "tool"), &stat); err != nil || stat.Uid != uint32(os.Getuid()) || stat.Gid != uint32(os.Getgid()) {
+					t.Fatalf("repaired ownership = %d:%d, %v", stat.Uid, stat.Gid, err)
+				}
+			},
+		})
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			cache := filepath.Join(root, "bundle.tar.gz")
+			target := filepath.Join(root, "bundle")
+			digest := writeTestTarGZ(t, cache, []archiveEntry{
+				{name: "bundle/bin/tool", content: "tool-v1"},
+				{name: "bundle/bin/tool-copy", content: "tool-v1"},
+				{name: "bundle/empty", typeflag: tar.TypeDir},
+			})
+			node := testProtectedArchiveNode(cache, target, digest, 1)
+			provider := Native{NewRunner: func(string) (backend.Runner, error) { return localRunner{}, nil }}
+			if _, err := provider.Apply(context.Background(), engine.Step{Host: "node", Action: engine.ActionCreate, Node: node}); err != nil {
+				t.Fatal(err)
+			}
+			var before syscall.Stat_t
+			if err := syscall.Stat(target, &before); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(t, target)
+			drifted, err := provider.Inspect(context.Background(), node)
+			if err != nil || drifted.Values["content_verified"] != false {
+				t.Fatalf("semantic drift inspection = %#v, %v", drifted, err)
+			}
+			if _, err := provider.Apply(context.Background(), engine.Step{Host: "node", Action: engine.ActionUpdate, Node: node}); err != nil {
+				t.Fatal(err)
+			}
+			var after syscall.Stat_t
+			if err := syscall.Stat(target, &after); err != nil {
+				t.Fatal(err)
+			}
+			if before.Dev == after.Dev && before.Ino == after.Ino {
+				t.Fatalf("semantic drift did not replace target: before=%#v after=%#v", before, after)
+			}
+			test.verify(t, target)
+		})
+	}
+}
+
+func TestProtectedComponentArchiveInspectRejectsMetadataOnlyCandidateChanges(t *testing.T) {
+	tests := []struct {
+		name      string
+		candidate []archiveEntry
+	}{
+		{
+			name: "file mode",
+			candidate: []archiveEntry{
+				{name: "bundle/bin", typeflag: tar.TypeDir, mode: 0755},
+				{name: "bundle/bin/tool", content: "tool-v1", mode: 0600},
+				{name: "bundle/empty", typeflag: tar.TypeDir, mode: 0755},
+			},
+		},
+		{
+			name: "directory mode",
+			candidate: []archiveEntry{
+				{name: "bundle/bin", typeflag: tar.TypeDir, mode: 0700},
+				{name: "bundle/bin/tool", content: "tool-v1", mode: 0644},
+				{name: "bundle/empty", typeflag: tar.TypeDir, mode: 0755},
+			},
+		},
+		{
+			name: "empty directory set",
+			candidate: []archiveEntry{
+				{name: "bundle/bin", typeflag: tar.TypeDir, mode: 0755},
+				{name: "bundle/bin/tool", content: "tool-v1", mode: 0644},
+				{name: "bundle/other-empty", typeflag: tar.TypeDir, mode: 0755},
+			},
+		},
+	}
+	baseline := []archiveEntry{
+		{name: "bundle/bin", typeflag: tar.TypeDir, mode: 0755},
+		{name: "bundle/bin/tool", content: "tool-v1", mode: 0644},
+		{name: "bundle/empty", typeflag: tar.TypeDir, mode: 0755},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			cache := filepath.Join(root, "bundle.tar.gz")
+			target := filepath.Join(root, "bundle")
+			digest := writeTestTarGZ(t, cache, baseline)
+			node := testProtectedArchiveNode(cache, target, digest, 1)
+			provider := Native{NewRunner: func(string) (backend.Runner, error) { return localRunner{}, nil }}
+			if _, err := provider.Apply(context.Background(), engine.Step{Host: "node", Action: engine.ActionCreate, Node: node}); err != nil {
+				t.Fatal(err)
+			}
+
+			candidateDigest := writeTestTarGZ(t, cache, test.candidate)
+			if candidateDigest == digest {
+				t.Fatal("metadata-only candidate retained the prior checksum")
+			}
+			node.Payload["content_sha256"] = candidateDigest
+			observed, err := provider.Inspect(context.Background(), node)
+			if err != nil || !observed.Exists || observed.Values["content_verified"] != false || observed.Values["tree_integrity"] != "clean" {
+				t.Fatalf("metadata-only candidate inspection = %#v, %v", observed, err)
+			}
+		})
+	}
+}
+
 func TestProtectedComponentArchiveChecksumUsesOnlyRedactedStdin(t *testing.T) {
 	digest := strings.Repeat("a", 64)
 	node := testProtectedArchiveNode("/var/cache/alpineform/components/tool/protected/any/artifact", "/opt/tool", digest, 1)
 	runner := &commandRunner{outputs: map[string][]byte{
-		"inspect.component_archive": []byte("directory\nroot\n0\nroot\n0\n755\nverified\nclean\n"),
+		"inspect.component_archive": []byte("directory\nowner\n" + strconv.Itoa(os.Getuid()) + "\ngroup\n" + strconv.Itoa(os.Getgid()) + "\n755\nverified\nclean\n"),
 	}}
 	observed, err := applyComponentArchive(context.Background(), runner, node)
 	if err != nil || !observed.Exists || len(runner.commands) != 2 {
@@ -361,6 +689,86 @@ func TestProtectedComponentArchiveCleanupFailuresRollbackOrCommitCleanly(t *test
 			}
 			if matches, _ := filepath.Glob(filepath.Join(root, ".alpineform-archive-*")); len(matches) != 0 {
 				t.Fatalf("archive cleanup failure left transaction paths: %#v", matches)
+			}
+		})
+	}
+}
+
+func TestProtectedComponentArchiveEquivalentCleanupFailureAndSignalPreserveTarget(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		inject    func(*testing.T) string
+		wantError bool
+	}{
+		{
+			name: "cleanup fails before removal",
+			inject: func(t *testing.T) string {
+				return installCommandFailure(t, "rm", ".alpineform-archive-work.", "contains", false)
+			},
+			wantError: true,
+		},
+		{
+			name: "cleanup reports failure after removal",
+			inject: func(t *testing.T) string {
+				return installCommandFailure(t, "rm", ".alpineform-archive-work.", "contains", true)
+			},
+		},
+		{
+			name: "cleanup signal is deferred",
+			inject: func(t *testing.T) string {
+				return installSignalAfterCommand(t, "rm", 2, ".alpineform-archive-work.", "contains")
+			},
+			wantError: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			cache := filepath.Join(root, "bundle.tar.gz")
+			target := filepath.Join(root, "bundle")
+			digest := writeTestTarGZ(t, cache, []archiveEntry{{name: "bundle/tool", content: "same"}})
+			node := testProtectedArchiveNode(cache, target, digest, 1)
+			provider := Native{NewRunner: func(string) (backend.Runner, error) { return localRunner{}, nil }}
+			if _, err := provider.Apply(context.Background(), engine.Step{Node: node}); err != nil {
+				t.Fatal(err)
+			}
+			var before syscall.Stat_t
+			if err := syscall.Stat(target, &before); err != nil {
+				t.Fatal(err)
+			}
+
+			marker := test.inject(t)
+			observed, err := provider.Apply(context.Background(), engine.Step{Action: engine.ActionUpdate, Node: node})
+			if _, markerErr := os.Stat(marker); markerErr != nil {
+				t.Fatalf("equivalent cleanup boundary was not exercised: %v", markerErr)
+			}
+			if test.wantError {
+				if err == nil {
+					t.Fatal("equivalent cleanup boundary unexpectedly succeeded")
+				}
+			} else if err != nil || !observed.Exists || observed.Values["content_verified"] != true {
+				t.Fatalf("equivalent removed-work cleanup = %#v, %v", observed, err)
+			}
+			var after syscall.Stat_t
+			if err := syscall.Stat(target, &after); err != nil {
+				t.Fatal(err)
+			}
+			if before.Dev != after.Dev || before.Ino != after.Ino || before.Ctim != after.Ctim {
+				t.Fatalf("equivalent cleanup boundary replaced target: before=%#v after=%#v", before, after)
+			}
+			if matches, _ := filepath.Glob(filepath.Join(root, ".alpineform-archive-*")); len(matches) != 0 {
+				t.Fatalf("equivalent cleanup boundary left transaction paths: %#v", matches)
+			}
+
+			retried, err := provider.Apply(context.Background(), engine.Step{Action: engine.ActionUpdate, Node: node})
+			if err != nil || !retried.Exists || retried.Values["content_verified"] != true {
+				t.Fatalf("equivalent cleanup retry = %#v, %v", retried, err)
+			}
+			var afterRetry syscall.Stat_t
+			if err := syscall.Stat(target, &afterRetry); err != nil {
+				t.Fatal(err)
+			}
+			if before.Dev != afterRetry.Dev || before.Ino != afterRetry.Ino || before.Ctim != afterRetry.Ctim {
+				t.Fatalf("equivalent cleanup retry replaced target: before=%#v after=%#v", before, afterRetry)
 			}
 		})
 	}

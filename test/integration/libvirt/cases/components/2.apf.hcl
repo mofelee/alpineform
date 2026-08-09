@@ -205,8 +205,8 @@ host "cihost" {
   component "binary" {
     source = component.protected_binary
     inputs = {
-      mirror        = "http://127.0.0.1:18080/mirror-a"
-      query         = "alpineform-ci-component-query-a-sentinel"
+      mirror        = "http://127.0.0.1:18080/mirror-b"
+      query         = "alpineform-ci-component-query-b-sentinel"
       amd64_sha256  = "0000000000000000000000000000000000000000000000000000000000000000"
       arm64_sha256  = "1111111111111111111111111111111111111111111111111111111111111111"
     }
@@ -215,8 +215,8 @@ host "cihost" {
   component "config_file" {
     source = component.protected_file
     inputs = {
-      mirror = "http://127.0.0.1:18080/mirror-a"
-      query  = "alpineform-ci-component-query-a-sentinel"
+      mirror = "http://127.0.0.1:18080/mirror-b"
+      query  = "alpineform-ci-component-query-b-sentinel"
       sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
     }
   }
@@ -224,8 +224,8 @@ host "cihost" {
   component "protected_archive" {
     source = component.protected_archive
     inputs = {
-      mirror        = "http://127.0.0.1:18080/mirror-a"
-      query         = "alpineform-ci-component-query-a-sentinel"
+      mirror        = "http://127.0.0.1:18080/mirror-b"
+      query         = "alpineform-ci-component-query-b-sentinel"
       amd64_sha256  = "3333333333333333333333333333333333333333333333333333333333333333"
       arm64_sha256  = "4444444444444444444444444444444444444444444444444444444444444444"
     }
@@ -234,8 +234,8 @@ host "cihost" {
   component "root_ca" {
     source = component.protected_ca
     inputs = {
-      mirror = "http://127.0.0.1:18080/mirror-a"
-      query  = "alpineform-ci-component-query-a-sentinel"
+      mirror = "http://127.0.0.1:18080/mirror-b"
+      query  = "alpineform-ci-component-query-b-sentinel"
       sha256 = "5555555555555555555555555555555555555555555555555555555555555555"
     }
   }

@@ -200,6 +200,8 @@ collect_diagnostics() {
     -e 's/[0-9a-f]{64}/<redacted-sha256>/g' \
     -e 's/(active|persistent|marker|arming)\.snapshot[^[:space:]]*/<redacted-snapshot>/g' \
     -e 's/alpineform-ci-secret-sentinel/<redacted-sensitive>/g' \
+    -e 's/alpineform-ci-component-query-[ab]-sentinel/<redacted-sensitive>/g' \
+    -e 's#http://127\.0\.0\.1:18080/mirror-[ab]#<redacted-artifact-mirror>#g' \
     {} + 2>/dev/null || true
 }
 

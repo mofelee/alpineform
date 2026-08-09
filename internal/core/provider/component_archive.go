@@ -184,11 +184,58 @@ rm -rf "$work"
 
 const componentProtectedArchiveMarkerValue = "alpineform-protected-archive-v1"
 
+const componentProtectedArchiveSemanticInventoryScript = `write_semantic_inventory() {
+  inventory_root=$1
+  inventory_output=$2
+  inventory_paths="$inventory_output.paths"
+  if [ ! -d "$inventory_root" ] || [ -L "$inventory_root" ]; then return 1; fi
+  if find "$inventory_root" -type l -print -quit | grep -q . || find "$inventory_root" ! -type f ! -type d -print -quit | grep -q .; then return 1; fi
+  inventory_line_count=$(find "$inventory_root" -mindepth 1 -print | wc -l | tr -d ' ') || return 1
+  inventory_nul_count=$(find "$inventory_root" -mindepth 1 -print0 | tr -cd '\000' | wc -c | tr -d ' ') || return 1
+  if [ "$inventory_line_count" != "$inventory_nul_count" ]; then return 1; fi
+  (
+    cd "$inventory_root" || exit 1
+    find . -mindepth 1 -print >"$inventory_paths.unsorted" || exit 1
+    LC_ALL=C sort "$inventory_paths.unsorted" >"$inventory_paths" || exit 1
+    inventory_uid=$(stat -c '%u' .) || exit 1
+    inventory_gid=$(stat -c '%g' .) || exit 1
+    inventory_mode=$(stat -c '%a' .) || exit 1
+    {
+      printf '.\tdirectory\t%s\t%s\t%s\t-\n' "$inventory_uid" "$inventory_gid" "$inventory_mode"
+      while IFS= read -r inventory_entry; do
+        case "$inventory_entry" in *[[:space:]\\:]*) exit 1 ;; esac
+        if [ -f "$inventory_entry" ] && [ ! -L "$inventory_entry" ]; then
+          inventory_type=file
+          inventory_links=$(stat -c '%h' "$inventory_entry") || exit 1
+          if [ "$inventory_links" != 1 ]; then exit 1; fi
+          inventory_checksum=$(sha256sum "$inventory_entry") || exit 1
+          inventory_digest=${inventory_checksum%% *}
+        elif [ -d "$inventory_entry" ] && [ ! -L "$inventory_entry" ]; then
+          inventory_type=directory
+          inventory_digest=-
+        else
+          exit 1
+        fi
+        inventory_uid=$(stat -c '%u' "$inventory_entry") || exit 1
+        inventory_gid=$(stat -c '%g' "$inventory_entry") || exit 1
+        inventory_mode=$(stat -c '%a' "$inventory_entry") || exit 1
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+          "$inventory_entry" "$inventory_type" \
+          "$inventory_uid" "$inventory_gid" "$inventory_mode" "$inventory_digest"
+      done <"$inventory_paths"
+    } >"$inventory_output"
+  )
+}
+`
+
 const componentProtectedArchiveInspectScript = `set -eu
 path=$1
 cache=$2
-strip=$3
-if ! IFS= read -r want; then
+owner=$3
+group=$4
+mode=$5
+strip=$6
+` + componentProtectedArchiveSemanticInventoryScript + `if ! IFS= read -r want; then
   echo 'protected archive verification input is missing' >&2
   exit 1
 fi
@@ -257,13 +304,21 @@ if [ -e "$cache" ] || [ -L "$cache" ]; then
       elif find "$work/staging" -type l -print -quit | grep -q . || find "$work/staging" ! -type f ! -type d -print -quit | grep -q .; then
         content=unverified
       else
+        chown -R "$owner:$group" "$work/staging"
+        chmod "$mode" "$work/staging"
         (
           cd "$work/staging"
           find . -type f | LC_ALL=C sort >"$work/files.list"
-          : >"$work/cache-manifest.sha256"
-          while IFS= read -r file; do sha256sum "$file" >>"$work/cache-manifest.sha256"; done <"$work/files.list"
+          : >.alpineform-manifest.sha256
+          while IFS= read -r file; do sha256sum "$file" >>.alpineform-manifest.sha256; done <"$work/files.list"
+          printf '%s' '` + componentProtectedArchiveMarkerValue + `' >.alpineform-artifact.sha256
+          chmod 0600 .alpineform-manifest.sha256 .alpineform-artifact.sha256
         )
-        if cmp -s "$path/.alpineform-manifest.sha256" "$work/cache-manifest.sha256"; then content=verified; fi
+        if write_semantic_inventory "$work/staging" "$work/cache.semantic" && \
+           write_semantic_inventory "$path" "$work/installed.semantic" && \
+           cmp -s "$work/cache.semantic" "$work/installed.semantic"; then
+          content=verified
+        fi
       fi
     fi
     rm -rf "$work"
@@ -322,6 +377,7 @@ resume_signals() {
   arm_signals
   if [ "$code" != 0 ]; then exit "$code"; fi
 }
+` + componentProtectedArchiveSemanticInventoryScript + `
 cleanup() {
   status=$?
   trap - EXIT
@@ -408,6 +464,22 @@ chmod "$mode" "$staging"
   printf '%s' '` + componentProtectedArchiveMarkerValue + `' >.alpineform-artifact.sha256
   chmod 0600 .alpineform-manifest.sha256 .alpineform-artifact.sha256
 )
+if write_semantic_inventory "$staging" "$work/staging.semantic" && \
+   write_semantic_inventory "$path" "$work/installed.semantic" && \
+   cmp -s "$work/staging.semantic" "$work/installed.semantic"; then
+  defer_signals
+  if ! rm -rf "$work"; then
+    if [ -e "$work" ]; then
+      resume_signals
+      exit 1
+    fi
+  fi
+  work=
+  staging=
+  resume_signals
+  trap - EXIT
+  exit 0
+fi
 defer_signals
 old=$(mktemp -d "$parent/.alpineform-archive-old.XXXXXX")
 resume_signals
@@ -458,8 +530,14 @@ func inspectComponentArchive(ctx context.Context, runner backend.Runner, node gr
 		if !ok || strip < 0 {
 			return engine.ObservedResource{}, fmt.Errorf("component archive has invalid strip_components metadata")
 		}
+		owner := stringValue(node.Desired, "owner")
+		group := stringValue(node.Desired, "group")
+		mode := stringValue(node.Desired, "mode")
+		if !providerAccountPattern.MatchString(owner) || !providerAccountPattern.MatchString(group) || !validMode(mode) {
+			return engine.ObservedResource{}, fmt.Errorf("component archive %q has invalid owner, group, or mode metadata", path)
+		}
 		command.Script = componentProtectedArchiveInspectScript
-		command.Arguments = []string{path, cachePath, strconv.Itoa(strip)}
+		command.Arguments = []string{path, cachePath, owner, group, mode, strconv.Itoa(strip)}
 		command.Stdin = []byte(digest + "\n")
 		command.RedactStdin = true
 		command.RedactOutput = true

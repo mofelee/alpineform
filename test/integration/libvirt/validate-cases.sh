@@ -22,6 +22,12 @@ done
 for helper in assert-moved-plan.py assert-noop-plan.py assert-source-rebuild-plan.py; do
   python3 -c 'import sys; compile(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1], "exec")' "$SCRIPT_DIR/$helper"
 done
+while IFS= read -r helper; do
+  python3 -c 'import sys; compile(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1], "exec")' "$helper"
+done < <(find "$CASES_DIR" -type f -name '*.py' | sort)
+while IFS= read -r helper; do
+  bash -n "$helper"
+done < <(find "$CASES_DIR" -type f -name '*.sh' | sort)
 
 while read -r branch version sha512; do
   target="$(APF_INTEGRATION_ALPINE_BRANCH="$branch" bash "$SCRIPT_DIR/alpine-target.sh")"
