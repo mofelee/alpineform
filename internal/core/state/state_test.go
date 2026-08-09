@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +14,7 @@ func TestDecodeEmptyReturnsCurrentAlpineFormState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Product != Product || got.SchemaVersion != SchemaVersion || got.Host != "server1" || got.Resources == nil {
+	if got.Product != Product || got.SchemaVersion != SchemaVersion || got.Host != "server1" || got.ComponentIdentities == nil || got.Resources == nil {
 		t.Fatalf("Decode(nil) = %#v", got)
 	}
 }
@@ -28,7 +29,7 @@ func TestDecodeRejectsForeignNewerAndWrongHostState(t *testing.T) {
 		{name: "DebianForm legacy state", data: `{"version":2,"host":"server1","resources":{}}`, wantErr: "no product marker"},
 		{name: "foreign product", data: `{"product":"debianform","schema_version":1,"host":"server1","resources":{}}`, wantErr: "refusing foreign state"},
 		{name: "older schema", data: `{"product":"alpineform","host":"server1","resources":{}}`, wantErr: "unsupported schema 0"},
-		{name: "newer schema", data: `{"product":"alpineform","schema_version":2,"host":"server1","resources":{}}`, wantErr: "newer schema 2"},
+		{name: "newer schema", data: `{"product":"alpineform","schema_version":3,"host":"server1","resources":{}}`, wantErr: "newer schema 3"},
 		{name: "wrong host", data: `{"product":"alpineform","schema_version":1,"host":"server2","resources":{}}`, wantErr: `host "server2" does not match requested host "server1"`},
 		{name: "wrong resource host", data: `{"product":"alpineform","schema_version":1,"host":"server1","resources":{"file.example":{"host":"server2","kind":"file"}}}`, wantErr: `belongs to host "server2", expected "server1"`},
 	}
@@ -39,6 +40,53 @@ func TestDecodeRejectsForeignNewerAndWrongHostState(t *testing.T) {
 				t.Fatalf("Decode() error = %v, want containing %q", err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestDecodeV1AndEncodeV2ComponentIdentities(t *testing.T) {
+	decoded, err := Decode([]byte(`{
+  "product": "alpineform",
+  "schema_version": 1,
+  "host": "edge",
+  "serial": 4,
+  "resources": {
+    "host.edge.component.old.files.file[\"/etc/app\"]": {
+      "host": "edge",
+      "kind": "file",
+      "ownership": "managed",
+      "desired_digest": "digest",
+      "order": 1
+    }
+  }
+}`), "edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.SchemaVersion != SchemaVersion || decoded.ComponentIdentities == nil || decoded.Serial != 4 {
+		t.Fatalf("decoded v1 state = %#v", decoded)
+	}
+
+	decoded.ComponentIdentities["host.edge.component.current"] = ComponentIdentity{PhysicalName: "old"}
+	data, err := Encode(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header struct {
+		SchemaVersion       int                          `json:"schema_version"`
+		ComponentIdentities map[string]ComponentIdentity `json:"component_identities"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		t.Fatal(err)
+	}
+	if header.SchemaVersion != 2 || header.ComponentIdentities["host.edge.component.current"].PhysicalName != "old" {
+		t.Fatalf("encoded v2 state = %s", data)
+	}
+	roundTrip, err := Decode(data, "edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip.ComponentIdentities["host.edge.component.current"].PhysicalName != "old" {
+		t.Fatalf("round-trip component identities = %#v", roundTrip.ComponentIdentities)
 	}
 }
 

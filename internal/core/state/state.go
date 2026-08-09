@@ -6,24 +6,31 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/mofelee/alpineform/internal/core/ir"
 )
 
 const (
-	Product       = "alpineform"
-	SchemaVersion = 1
+	Product                      = "alpineform"
+	SchemaVersion                = 2
+	minimumReadableSchemaVersion = 1
 )
 
 type State struct {
-	Product       string              `json:"product"`
-	SchemaVersion int                 `json:"schema_version"`
-	Host          string              `json:"host"`
-	Serial        uint64              `json:"serial"`
-	UpdatedAt     string              `json:"updated_at,omitempty"`
-	Facts         *ir.HostFacts       `json:"facts,omitempty"`
-	Resources     map[string]Resource `json:"resources"`
+	Product             string                       `json:"product"`
+	SchemaVersion       int                          `json:"schema_version"`
+	Host                string                       `json:"host"`
+	Serial              uint64                       `json:"serial"`
+	UpdatedAt           string                       `json:"updated_at,omitempty"`
+	Facts               *ir.HostFacts                `json:"facts,omitempty"`
+	ComponentIdentities map[string]ComponentIdentity `json:"component_identities,omitempty"`
+	Resources           map[string]Resource          `json:"resources"`
+}
+
+type ComponentIdentity struct {
+	PhysicalName string `json:"physical_name"`
 }
 
 type Resource struct {
@@ -68,7 +75,13 @@ func (resource Resource) MarshalJSON() ([]byte, error) {
 }
 
 func Empty(host string) State {
-	return State{Product: Product, SchemaVersion: SchemaVersion, Host: host, Resources: map[string]Resource{}}
+	return State{
+		Product:             Product,
+		SchemaVersion:       SchemaVersion,
+		Host:                host,
+		ComponentIdentities: map[string]ComponentIdentity{},
+		Resources:           map[string]Resource{},
+	}
 }
 
 func Decode(data []byte, expectedHost string) (State, error) {
@@ -98,7 +111,7 @@ func Normalize(input State, expectedHost string) (State, error) {
 	if input.SchemaVersion > SchemaVersion {
 		return State{}, fmt.Errorf("AlpineForm state for host %q uses newer schema %d; this build supports schema %d", expectedHost, input.SchemaVersion, SchemaVersion)
 	}
-	if input.SchemaVersion != SchemaVersion {
+	if input.SchemaVersion < minimumReadableSchemaVersion {
 		return State{}, fmt.Errorf("AlpineForm state for host %q uses unsupported schema %d; no migration to schema %d is available", expectedHost, input.SchemaVersion, SchemaVersion)
 	}
 	if input.Host == "" {
@@ -109,6 +122,15 @@ func Normalize(input State, expectedHost string) (State, error) {
 	}
 
 	normalized := input
+	normalized.SchemaVersion = SchemaVersion
+	if input.Facts != nil {
+		facts := *input.Facts
+		normalized.Facts = &facts
+	}
+	normalized.ComponentIdentities = make(map[string]ComponentIdentity, len(input.ComponentIdentities))
+	for logicalRoot, identity := range input.ComponentIdentities {
+		normalized.ComponentIdentities[logicalRoot] = identity
+	}
 	normalized.Resources = make(map[string]Resource, len(input.Resources))
 	for address, resource := range input.Resources {
 		if resource.Host == "" {
@@ -116,7 +138,10 @@ func Normalize(input State, expectedHost string) (State, error) {
 		} else if resource.Host != expectedHost {
 			return State{}, fmt.Errorf("AlpineForm state resource %q belongs to host %q, expected %q", address, resource.Host, expectedHost)
 		}
-		normalized.Resources[address] = resource
+		normalized.Resources[address] = cloneResource(resource)
+	}
+	if err := validateComponentIdentityMappings(normalized); err != nil {
+		return State{}, err
 	}
 	return normalized, nil
 }
@@ -126,6 +151,7 @@ func PrepareWrite(input State, expectedHost string, now time.Time) (State, error
 	if err != nil {
 		return State{}, err
 	}
+	normalized = pruneComponentIdentities(normalized)
 	normalized.Serial++
 	normalized.UpdatedAt = now.UTC().Format(time.RFC3339)
 	return normalized, nil
@@ -154,4 +180,93 @@ func mapMarkedEphemeral(value map[string]any) bool {
 	}
 	ephemeral, _ := value["ephemeral"].(bool)
 	return ephemeral
+}
+
+func cloneState(input State) State {
+	out := input
+	if input.Facts != nil {
+		facts := *input.Facts
+		out.Facts = &facts
+	}
+	out.ComponentIdentities = make(map[string]ComponentIdentity, len(input.ComponentIdentities))
+	for logicalRoot, identity := range input.ComponentIdentities {
+		out.ComponentIdentities[logicalRoot] = identity
+	}
+	out.Resources = make(map[string]Resource, len(input.Resources))
+	for address, resource := range input.Resources {
+		out.Resources[address] = cloneResource(resource)
+	}
+	return out
+}
+
+func cloneResource(resource Resource) Resource {
+	out := resource
+	out.Desired = cloneMap(resource.Desired)
+	out.Observed = cloneMap(resource.Observed)
+	out.Delete = cloneMap(resource.Delete)
+	return out
+}
+
+func cloneMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = cloneValue(value)
+	}
+	return out
+}
+
+func cloneValue(value any) any {
+	if value == nil {
+		return nil
+	}
+	return cloneReflectValue(reflect.ValueOf(value)).Interface()
+}
+
+func cloneReflectValue(value reflect.Value) reflect.Value {
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		out := reflect.New(value.Type()).Elem()
+		out.Set(cloneReflectValue(value.Elem()))
+		return out
+	case reflect.Map:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		out := reflect.MakeMapWithSize(value.Type(), value.Len())
+		iterator := value.MapRange()
+		for iterator.Next() {
+			out.SetMapIndex(cloneReflectValue(iterator.Key()), cloneReflectValue(iterator.Value()))
+		}
+		return out
+	case reflect.Pointer:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		out := reflect.New(value.Type().Elem())
+		out.Elem().Set(cloneReflectValue(value.Elem()))
+		return out
+	case reflect.Slice:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		out := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		for index := 0; index < value.Len(); index++ {
+			out.Index(index).Set(cloneReflectValue(value.Index(index)))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(value.Type()).Elem()
+		for index := 0; index < value.Len(); index++ {
+			out.Index(index).Set(cloneReflectValue(value.Index(index)))
+		}
+		return out
+	default:
+		return value
+	}
 }
