@@ -251,11 +251,13 @@ EOF
   "${unprivileged_chown[@]}" -R "$(id -u):$(id -g)" "$WORK/unreadable-prefix"
 
   mkdir -p "$WORK/cross-user-prefix/.alpineform-install-locks"
-  "${unprivileged_chown[@]}" -R "nobody:${nobody_group}" "$WORK/cross-user-prefix"
   sleep 2 &
   CROSS_USER_PID=$!
   process_identity "$CROSS_USER_PID" \
     >"$WORK/cross-user-prefix/.alpineform-install-locks/ticket.1.${CROSS_USER_PID}"
+  chmod 0644 \
+    "$WORK/cross-user-prefix/.alpineform-install-locks/ticket.1.${CROSS_USER_PID}"
+  "${unprivileged_chown[@]}" -R "nobody:${nobody_group}" "$WORK/cross-user-prefix"
   "${unprivileged_run[@]}" env \
     APF_RELEASE_BASE_URL="file://$WORK/release" \
     "$WORK/install.sh" --version "$VERSION" --prefix "$WORK/cross-user-prefix" \
@@ -267,6 +269,7 @@ EOF
   wait "$CROSS_USER_PID"
   CROSS_USER_PID=""
   test "$("$WORK/cross-user-prefix/bin/apf" --version)" = "apf $VERSION"
+  "${unprivileged_chown[@]}" -R "$(id -u):$(id -g)" "$WORK/cross-user-prefix"
 else
   printf 'unreadable-document installer test requires runuser or passwordless sudo\n' >&2
   exit 1
