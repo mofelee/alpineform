@@ -4,21 +4,23 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-for file in README.md LICENSE NOTICE.md CHANGELOG.md .goreleaser.yaml \
+for file in LICENSE .goreleaser.yaml \
   scripts/install.sh scripts/check-attestation-eligibility.sh \
   scripts/check-docs.py scripts/test-check-docs.py \
+  scripts/check-documentation-package.sh \
+  scripts/documentation-package-files.txt \
   scripts/test-attestation-eligibility.sh \
   scripts/build-release-verification-matrix.sh \
-  scripts/test-release-verification-matrix.sh \
-  docs/support-matrix.md docs/compatibility-policy.md \
-  docs/security-model.md docs/operations-runbook.md docs/release-process.md \
-  docs/releases/v0.1.0-alpha.1.md docs/releases/v0.1.0-alpha.2.md \
-  docs/releases/v0.1.0-alpha.3.md docs/releases/v0.1.0-alpha.4.md \
-  docs/releases/v0.1.0-alpha.5.md; do
+  scripts/test-release-verification-matrix.sh; do
   test -s "$ROOT_DIR/$file"
 done
+while IFS= read -r document; do
+  test -n "$document" || continue
+  test -s "$ROOT_DIR/$document"
+done <"$ROOT_DIR/scripts/documentation-package-files.txt"
 
 bash -n "$ROOT_DIR/scripts/check-attestation-eligibility.sh" \
+  "$ROOT_DIR/scripts/check-documentation-package.sh" \
   "$ROOT_DIR/scripts/test-attestation-eligibility.sh" \
   "$ROOT_DIR/scripts/build-release-verification-matrix.sh" \
   "$ROOT_DIR/scripts/test-release-verification-matrix.sh" \
@@ -40,6 +42,18 @@ require_step_before "$ROOT_DIR/.github/workflows/release-dry-run.yml" \
   "Check GitHub attestation eligibility" "Build snapshot release"
 require_step_before "$ROOT_DIR/.github/workflows/release.yml" \
   "Check GitHub attestation eligibility" "Publish release"
+require_step_before "$ROOT_DIR/.github/workflows/release.yml" \
+  "Build and audit release candidate" "Publish release"
+require_step_before "$ROOT_DIR/.github/workflows/release.yml" \
+  "Publish release" "Audit published archives"
+require_step_before "$ROOT_DIR/.github/workflows/release.yml" \
+  "Audit published archives" "Sign checksums and generate SBOMs"
+test "$(grep -Fc 'check-documentation-package.sh snapshot dist' \
+  "$ROOT_DIR/.github/workflows/release-dry-run.yml")" -eq 1
+test "$(grep -Fc 'check-documentation-package.sh snapshot dist' \
+  "$ROOT_DIR/.github/workflows/release.yml")" -eq 2
+test "$(grep -Fc 'check-documentation-package.sh" snapshot .' \
+  "$ROOT_DIR/.github/workflows/release.yml")" -eq 1
 test "$(grep -Fc 'darwin-${{ matrix.arch }}.env' \
   "$ROOT_DIR/.github/workflows/release.yml")" -eq 2
 

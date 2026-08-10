@@ -12,10 +12,16 @@ on:
       - "internal/**"
       - "go.mod"
       - "go.sum"
+      - "*.md"
       - "README.md"
+      - "README.zh-CN.md"
       - "LICENSE"
       - "NOTICE.md"
+      - "NOTICE.zh-CN.md"
+      - "SECURITY.md"
+      - "SECURITY.zh-CN.md"
       - "CHANGELOG.md"
+      - "CHANGELOG.zh-CN.md"
       - "docs/**"
       - "examples/**"
       - "test/release/**"
@@ -30,10 +36,16 @@ on:
       - "internal/**"
       - "go.mod"
       - "go.sum"
+      - "*.md"
       - "README.md"
+      - "README.zh-CN.md"
       - "LICENSE"
       - "NOTICE.md"
+      - "NOTICE.zh-CN.md"
+      - "SECURITY.md"
+      - "SECURITY.zh-CN.md"
       - "CHANGELOG.md"
+      - "CHANGELOG.zh-CN.md"
       - "docs/**"
       - "examples/**"
       - "test/release/**"
@@ -91,11 +103,7 @@ jobs:
       - name: Verify snapshot artifacts
         run: |
           test -s dist/checksums.txt
-          for platform in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
-            archive="$(find dist -maxdepth 1 -name "apf_*_${platform}.tar.gz" -print -quit)"
-            test -n "$archive"
-            tar -tzf "$archive" > "${RUNNER_TEMP}/${platform}.files"
-            grep -Eq '(^|/)apf$' "${RUNNER_TEMP}/${platform}.files"
-            grep -Eq '(^|/)README.md$' "${RUNNER_TEMP}/${platform}.files"
-          done
+          python3 scripts/check-docs.py --list-package-files > "${RUNNER_TEMP}/documentation-package-files.txt"
+          cmp scripts/documentation-package-files.txt "${RUNNER_TEMP}/documentation-package-files.txt"
+          scripts/check-documentation-package.sh snapshot dist
           (cd dist && sha256sum --check checksums.txt)

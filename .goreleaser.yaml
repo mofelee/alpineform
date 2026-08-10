@@ -32,11 +32,17 @@ archives:
     name_template: "apf_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
+      - README.zh-CN.md
       - LICENSE
       - NOTICE.md
+      - NOTICE.zh-CN.md
+      - SECURITY.md
+      - SECURITY.zh-CN.md
       - CHANGELOG.md
+      - CHANGELOG.zh-CN.md
       - docs/**
       - examples/**
+      - scripts/documentation-package-files.txt
 
 checksum:
   name_template: checksums.txt

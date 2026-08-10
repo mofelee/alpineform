@@ -11,6 +11,16 @@ from urllib.parse import quote
 
 
 CHECKER = pathlib.Path(__file__).with_name("check-docs.py")
+ROOT_DOCS = (
+    "README.md",
+    "README.zh-CN.md",
+    "NOTICE.md",
+    "NOTICE.zh-CN.md",
+    "SECURITY.md",
+    "SECURITY.zh-CN.md",
+    "CHANGELOG.md",
+    "CHANGELOG.zh-CN.md",
+)
 
 
 class DocumentationGateTests(unittest.TestCase):
@@ -106,16 +116,58 @@ security boundary, and expected verification evidence. Return [home](../README.m
 """,
         )
 
+        package_files = [*ROOT_DOCS, "docs/guide.md", "docs/guide.zh.md"]
+        self.write(
+            "scripts/documentation-package-files.txt", "\n".join(package_files) + "\n"
+        )
+        self.write(
+            ".goreleaser.yaml",
+            "archives:\n  - files:\n"
+            + "".join(f"      - {path}\n" for path in (*ROOT_DOCS, "LICENSE"))
+            + "      - docs/**\n"
+            + "      - examples/**\n"
+            + "      - scripts/documentation-package-files.txt\n",
+        )
+        documentation_files = " ".join((*ROOT_DOCS, "LICENSE"))
+
         self.write(
             "Makefile",
+            f"DOCUMENTATION_FILES := {documentation_files}\n"
             "DOCS_CHECK_ARGS ?=\n\n"
+            "install:\n"
+            "\tcp $(DOCUMENTATION_FILES) output/\n"
+            "\tcp scripts/documentation-package-files.txt output/\n"
+            "\tcp -R docs/. output/docs/\n"
+            "\tcp -R examples/. output/examples/\n\n"
             "docs-check:\n\tpython3 scripts/check-docs.py $(DOCS_CHECK_ARGS)\n\n"
             "test-docs:\n\tpython3 scripts/test-check-docs.py\n\n"
             "check: docs-check test-docs\n",
         )
+        root_loop = " ".join((*ROOT_DOCS, "LICENSE"))
+        self.write(
+            "scripts/install.sh",
+            "#!/bin/sh\n"
+            "documentation_manifest=scripts/documentation-package-files.txt\n"
+            "validate_package_tree() { :; }\n"
+            "data_stage=stage\n"
+            f"for file in {root_loop}; do\n  :\ndone\n"
+            'copy_tree "${extract_dir}/docs" "${data_stage}/docs" docs.tar\n'
+            'copy_tree "${extract_dir}/examples" "${data_stage}/examples" examples.tar\n',
+        )
+        self.write(
+            "scripts/check-documentation-package.sh",
+            "documentation-package-files.txt\nexamples/quickstart.apf.hcl\n",
+        )
+        self.write(
+            "scripts/test-install.sh",
+            "python3 scripts/check-docs.py --list-package-files\n"
+            "printf 'installer accepted an unreadable Chinese document'\n",
+        )
         self.write(
             "scripts/validate-release.sh",
-            "python3 scripts/check-docs.py\npython3 scripts/test-check-docs.py\n",
+            "python3 scripts/check-docs.py\n"
+            "python3 scripts/test-check-docs.py\n"
+            "scripts/check-documentation-package.sh\n",
         )
         self.write(
             ".github/workflows/ci.yml",
@@ -123,6 +175,14 @@ security boundary, and expected verification evidence. Return [home](../README.m
             "env:\n  DOCS_CHANGED_FROM: base\n"
             "run: make docs-check DOCS_CHECK_ARGS=--changed-from\n"
             "run: make test-docs\n",
+        )
+        self.write(
+            ".github/workflows/release-dry-run.yml",
+            "paths:\n  - '*.md'\nrun: python3 scripts/check-docs.py --list-package-files\n",
+        )
+        self.write(
+            ".github/workflows/release.yml",
+            "run: scripts/check-documentation-package.sh tree output\n",
         )
 
     def check(
@@ -537,6 +597,66 @@ branch | current
         self.assertEqual(result.returncode, 0, result.stderr)
         self.replace("docs/table.zh.md", "分支 | 当前", "分支 | 当前 | 错误")
         self.assert_fails("structural mismatch")
+
+    def test_distribution_manifest_and_release_layout_drift_fail(self) -> None:
+        mutations = (
+            (
+                "scripts/documentation-package-files.txt",
+                "docs/guide.zh.md\n",
+                "",
+                "package manifest differs",
+            ),
+            (
+                ".goreleaser.yaml",
+                "      - SECURITY.zh-CN.md\n",
+                "",
+                "archive omits SECURITY.zh-CN.md",
+            ),
+            (
+                "Makefile",
+                " SECURITY.zh-CN.md",
+                "",
+                "DOCUMENTATION_FILES omits",
+            ),
+            (
+                "scripts/install.sh",
+                " SECURITY.zh-CN.md",
+                "",
+                "root copy loop omits",
+            ),
+            (
+                ".github/workflows/release-dry-run.yml",
+                "--list-package-files",
+                "--content-only",
+                "--list-package-files",
+            ),
+        )
+        for relative, old, new, expected in mutations:
+            with self.subTest(relative=relative):
+                self.build_fixture()
+                self.replace(relative, old, new)
+                self.assert_fails(expected, content_only=False)
+
+    def test_new_root_document_pair_must_enter_distribution_layout(self) -> None:
+        self.write(
+            "CONTRIBUTING.md",
+            """<p align="right"><strong>English</strong> | <a href="CONTRIBUTING.zh-CN.md">简体中文</a></p>
+
+# Contributing
+
+Complete maintainer contribution guidance.
+""",
+        )
+        self.write(
+            "CONTRIBUTING.zh-CN.md",
+            """<p align="right"><a href="CONTRIBUTING.md">English</a> | <strong>简体中文</strong></p>
+
+# 贡献指南
+
+完整的维护者贡献说明。
+""",
+        )
+        self.assert_fails("package manifest differs", content_only=False)
 
     def test_local_and_hosted_gate_wiring_is_required(self) -> None:
         mutations = (

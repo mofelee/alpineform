@@ -960,6 +960,119 @@ def package_files(root: Path, paths: list[Path]) -> list[str]:
     return expected
 
 
+def parse_make_variable(text: str, name: str) -> set[str]:
+    lines = text.splitlines()
+    values: list[str] = []
+    collecting = False
+    for line in lines:
+        if not collecting:
+            match = re.match(rf"^{re.escape(name)}\s*:?=\s*(.*)$", line)
+            if not match:
+                continue
+            value = match.group(1)
+            collecting = value.rstrip().endswith("\\")
+        else:
+            value = line.strip()
+            collecting = value.rstrip().endswith("\\")
+        values.extend(value.rstrip().removesuffix("\\").split())
+        if values and not collecting:
+            break
+    return set(values)
+
+
+def validate_distribution_layout(root: Path, paths: list[Path], errors: list[str]) -> None:
+    expected = package_files(root, paths)
+    root_documents = {path for path in expected if "/" not in path}
+    manifest_path = root / "scripts/documentation-package-files.txt"
+    if not manifest_path.is_file():
+        errors.append("scripts/documentation-package-files.txt: missing package manifest")
+    else:
+        manifest = [
+            line.strip()
+            for line in manifest_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if manifest != expected:
+            missing = sorted(set(expected) - set(manifest))
+            extra = sorted(set(manifest) - set(expected))
+            errors.append(
+                "scripts/documentation-package-files.txt: package manifest differs from maintained "
+                f"documentation (missing {missing}, extra {extra}, or wrong order)"
+            )
+
+    goreleaser = root / ".goreleaser.yaml"
+    if not goreleaser.is_file():
+        errors.append(".goreleaser.yaml: missing release configuration")
+    else:
+        text = goreleaser.read_text(encoding="utf-8")
+        for name in sorted(root_documents | {"LICENSE"}):
+            if not re.search(rf"^\s+-\s+{re.escape(name)}\s*$", text, re.MULTILINE):
+                errors.append(f".goreleaser.yaml: archive omits {name}")
+        for entry in ("docs/**", "examples/**", "scripts/documentation-package-files.txt"):
+            if not re.search(rf"^\s+-\s+{re.escape(entry)}\s*$", text, re.MULTILINE):
+                errors.append(f".goreleaser.yaml: archive omits {entry}")
+
+    makefile = root / "Makefile"
+    if not makefile.is_file():
+        errors.append("Makefile: missing build contract")
+    else:
+        text = makefile.read_text(encoding="utf-8")
+        declared = parse_make_variable(text, "DOCUMENTATION_FILES")
+        required = root_documents | {"LICENSE"}
+        if not required.issubset(declared):
+            errors.append(
+                f"Makefile: DOCUMENTATION_FILES omits {sorted(required - declared)}"
+            )
+        for token in (
+            "$(DOCUMENTATION_FILES)",
+            "documentation-package-files.txt",
+            "cp -R docs/.",
+            "cp -R examples/.",
+        ):
+            if token not in text:
+                errors.append(f"Makefile: install target omits {token}")
+
+    installer = root / "scripts/install.sh"
+    if not installer.is_file():
+        errors.append("scripts/install.sh: missing curl installer")
+    else:
+        text = installer.read_text(encoding="utf-8")
+        loop = re.search(r"for file in\s+(.+?); do", text, re.DOTALL)
+        declared = set(loop.group(1).replace("\\\n", " ").split()) if loop else set()
+        required = root_documents | {"LICENSE"}
+        if not required.issubset(declared):
+            errors.append(f"scripts/install.sh: root copy loop omits {sorted(required - declared)}")
+        for token in (
+            "documentation-package-files.txt",
+            "validate_package_tree",
+            "data_stage",
+            'copy_tree "${extract_dir}/docs"',
+            'copy_tree "${extract_dir}/examples"',
+        ):
+            if token not in text:
+                errors.append(f"scripts/install.sh: package installation omits {token}")
+
+    required_tokens = {
+        ".github/workflows/release-dry-run.yml": ("*.md", "--list-package-files"),
+        ".github/workflows/release.yml": ("check-documentation-package.sh tree",),
+        "scripts/check-documentation-package.sh": (
+            "documentation-package-files.txt",
+            "examples/quickstart.apf.hcl",
+        ),
+        "scripts/test-install.sh": (
+            "--list-package-files",
+            "unreadable Chinese document",
+        ),
+        "scripts/validate-release.sh": ("check-documentation-package.sh",),
+    }
+    for rel, tokens in required_tokens.items():
+        target = root / rel
+        text = target.read_text(encoding="utf-8") if target.is_file() else ""
+        for token in tokens:
+            if token not in text:
+                errors.append(f"{rel}: missing distribution layout assertion {token}")
+
+
 def validate_gate_wiring(root: Path, errors: list[str]) -> None:
     makefile = root / "Makefile"
     if not makefile.is_file():
@@ -1128,6 +1241,7 @@ def validate(
 
     if check_layout:
         validate_gate_wiring(root, errors)
+        validate_distribution_layout(root, paths, errors)
     if changed_from:
         validate_changed_pairs(root, changed_from, errors)
     return errors, len(pairs), len(package_files(root, paths))
@@ -1139,7 +1253,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--content-only",
         action="store_true",
-        help="skip repository gate-wiring checks (used by focused fixtures)",
+        help="skip repository gate-wiring and release/install layout checks",
     )
     parser.add_argument(
         "--list-package-files",
@@ -1162,7 +1276,7 @@ def main() -> int:
         print("\n".join(package_files(root, paths)))
         return 0
 
-    errors, pair_count, _package_count = validate(
+    errors, pair_count, package_count = validate(
         root,
         check_layout=not args.content_only,
         changed_from=args.changed_from,
@@ -1173,7 +1287,10 @@ def main() -> int:
             print(f"- {error}", file=sys.stderr)
         return 1
 
-    print(f"Documentation validation passed: {pair_count} English/Chinese pairs checked.")
+    print(
+        f"Documentation validation passed: {pair_count} English/Chinese pairs and "
+        f"{package_count} packaged Markdown files checked."
+    )
     return 0
 
 

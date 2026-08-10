@@ -73,6 +73,11 @@ jobs:
           make vulncheck
           make test-installer
           goreleaser check
+      - name: Build and audit release candidate
+        run: |
+          goreleaser release --snapshot --clean --skip publish
+          scripts/check-documentation-package.sh snapshot dist
+          (cd dist && sha256sum --check checksums.txt)
       - name: Publish release
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -80,6 +85,8 @@ jobs:
           notes="docs/releases/${GITHUB_REF_NAME}.md"
           test -s "$notes"
           goreleaser release --clean --release-notes "$notes"
+      - name: Audit published archives
+        run: scripts/check-documentation-package.sh snapshot dist
       - name: Sign checksums and generate SBOMs
         env:
           COSIGN_YES: "true"
@@ -128,6 +135,7 @@ jobs:
           scripts/install.sh --version "${{ needs.release.outputs.tag }}" --prefix "$prefix" --os linux --arch amd64 --force
           "$prefix/bin/apf" version | tee "${RUNNER_TEMP}/version.txt"
           grep -Fq "${{ needs.release.outputs.tag }}" "${RUNNER_TEMP}/version.txt"
+          scripts/check-documentation-package.sh tree "$prefix/share/alpineform"
           "$prefix/bin/apf" validate -f examples/quickstart.apf.hcl
           "$prefix/bin/apf" plan --offline -f examples/quickstart.apf.hcl
       - name: Verify checksums, signature, SBOM, and attestation
@@ -144,6 +152,7 @@ jobs:
             --dir "${RUNNER_TEMP}/supply-chain"
           cd "${RUNNER_TEMP}/supply-chain"
           sha256sum --check checksums.txt
+          "${GITHUB_WORKSPACE}/scripts/check-documentation-package.sh" snapshot .
           cosign verify-blob --bundle checksums.txt.sigstore.json \
             --certificate-identity-regexp 'https://github.com/mofelee/alpineform/.github/workflows/release.yml@refs/tags/v.*' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
@@ -186,6 +195,7 @@ jobs:
           scripts/install.sh --version "${{ needs.release.outputs.tag }}" --prefix "$prefix" --os darwin --arch "${{ matrix.arch }}" --force
           "$prefix/bin/apf" version | tee "${RUNNER_TEMP}/version.txt"
           grep -Fq "${{ needs.release.outputs.tag }}" "${RUNNER_TEMP}/version.txt"
+          scripts/check-documentation-package.sh tree "$prefix/share/alpineform"
           "$prefix/bin/apf" validate -f examples/quickstart.apf.hcl
           "$prefix/bin/apf" plan --offline -f examples/quickstart.apf.hcl
           printf 'darwin_%s_installer=yes\n' "${{ matrix.arch }}" \
