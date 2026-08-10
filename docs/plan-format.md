@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="plan-format.zh.md">简体中文</a></p>
+
 # Plan format
 
 AlpineForm offline and online plans use

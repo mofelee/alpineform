@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="operations-runbook.zh.md">简体中文</a></p>
+
 # Operations Runbook
 
 ## Before Apply
@@ -239,7 +241,7 @@ marker=/var/lib/alpineform/builds/0123456789abcdef0123456789abcdef.dependencies
 test -f "$marker"
 test "$(stat -c '%u:%a' "$marker")" = 0:600
 test "$(sed -n '1p' "$marker")" = "$virtual"
-apk info --exists "$virtual"
+apk info -e "$virtual"
 ```
 
 Current dependency markers have five lines: virtual package, owner ID, build

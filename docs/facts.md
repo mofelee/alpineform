@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="facts.zh.md">简体中文</a></p>
+
 # Alpine target facts
 
 AlpineForm discovers target identity through three read-only commands:

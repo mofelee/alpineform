@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="support-matrix.zh.md">简体中文</a></p>
+
 # Support Matrix
 
 Status meanings:

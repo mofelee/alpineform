@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="source-build-security.zh.md">简体中文</a></p>
+
 # Target-side source-build security
 
 Target-side component builds are a Preview capability. They execute as root on

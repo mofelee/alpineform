@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="state-backend.zh.md">简体中文</a></p>
+
 # Remote state backend
 
 The default remote state path is `/var/lib/alpineform/state.json`. Reads reject

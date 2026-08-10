@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="ssh.zh.md">简体中文</a></p>
+
 # Root SSH transport
 
 AlpineForm v0.1 manages targets only through root OpenSSH sessions. A host may

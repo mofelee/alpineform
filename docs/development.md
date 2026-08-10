@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="development.zh.md">简体中文</a></p>
+
 # Development baseline
 
 AlpineForm's core follows one-way package boundaries:
@@ -176,13 +178,17 @@ command-line `-var` values. Within one source class, later inputs win.
 
 ```sh
 make build
+make docs-check
 make check
 make vulncheck
 git diff --check
 ```
 
-`make check` includes the static layout gate for the Alpine 3.21-3.24 libvirt
-matrix. The matrix remains 12 cases crossed with four branches (48 jobs). Its
+`make check` includes the bilingual documentation gate and the static layout
+gate for the Alpine 3.21-3.24 libvirt matrix. The documentation gate requires
+every maintained Markdown change to update its counterpart and retain
+same-language navigation, structure, and technical meaning. The matrix remains
+12 cases crossed with four branches (48 jobs). Its
 blocking `components` case covers binary, file, archive, and CA-certificate
 artifacts; this is the runtime evidence boundary for their Beta status, while
 the per-instance source-expression syntax remains additive alpha. The existing

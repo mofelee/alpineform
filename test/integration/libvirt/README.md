@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="README.zh.md">简体中文</a></p>
+
 # Alpine 3.21-3.24 libvirt integration
 
 The blocking managed-target gate runs 12 cases on each supported branch,
@@ -25,14 +27,17 @@ architecture `x86_64`, and kernel architecture `x86_64` before invoking
 AlpineForm. It rewrites only the temporary case copy from the 3.24 fixture
 baseline to the selected branch.
 
-Every numbered configuration runs these blocking phases:
+Each numbered configuration runs the applicable blocking phases below in order.
+Drift injection and repair run only when that configuration defines a drift
+hook:
 
 1. validate and offline plan;
 2. online plan and reviewed `apply --auto-approve`;
 3. asserted JSON no-op plan and clean `check`;
 4. case-specific remote assertions;
-5. out-of-band drift, nonzero `check`, repair, no-op, and clean `check`;
-6. VM reboot, clean `check`, and persistence assertions.
+5. when defined, out-of-band drift, nonzero `check`, repair, no-op, and clean
+   `check`;
+6. the configured VM reboot, clean `check`, and persistence assertions.
 
 Later numbered configurations cover removal semantics. The APK case proves
 declaration removal is forget-only before an explicit `ensure = "absent"`.

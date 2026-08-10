@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="security-model.zh.md">简体中文</a></p>
+
 # Security Model
 
 AlpineForm is a root configuration manager. A successful apply can modify the

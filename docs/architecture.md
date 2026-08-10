@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="architecture.zh.md">简体中文</a></p>
+
 # Architecture
 
 AlpineForm uses one-way core boundaries:

@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="compatibility-policy.zh.md">简体中文</a></p>
+
 # Compatibility Policy
 
 AlpineForm `v0.1.0-alpha.5` is a prerelease. This policy defines what users can
