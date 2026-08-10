@@ -17,6 +17,8 @@ const (
 	DefaultInstallDir                  = "/usr/local/share/alpineform"
 	DefaultComponentBuildWorkspaceRoot = "/var/tmp/alpineform/builds"
 	ComponentBuildProtectedInputRoot   = "/run/alpineform/build-inputs"
+	ComponentBuildRuntimeRoot          = "/run/alpineform/build-runtime"
+	ComponentBuildRuntimeLockRoot      = "/run/alpineform/build-runtime-locks"
 	ComponentBuildStateRoot            = "/var/lib/alpineform/builds"
 	TargetOSID                         = "alpine"
 	MinimumSupportedBranch             = "v3.21"

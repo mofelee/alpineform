@@ -38,8 +38,9 @@ All notable user-visible changes to AlpineForm are recorded here.
   `staging_root` override for placing target-side build workspaces outside the
   default `/var/tmp/alpineform/builds`. Placement is runtime-only and
   identity-neutral; private owned workspaces, protected `/run` inputs, guarded
-  old-root cleanup, capacity diagnostics, and destination-adjacent prebuilt
-  archive staging retain their existing security and transaction boundaries.
+  old-root cleanup, generation-locked supervisor cancellation recovery,
+  capacity diagnostics, and destination-adjacent prebuilt archive staging
+  retain their existing security and transaction boundaries.
 - Add an eleventh Alpine 3.24.1 x86_64 VM case and dedicated Preview gate for
   musl compilation, no-op, source/build/output drift, reboot, checksum,
   compiler, missing/symlink output, cancellation, ENOSPC, secret redaction,

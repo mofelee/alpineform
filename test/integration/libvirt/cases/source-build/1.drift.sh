@@ -39,21 +39,51 @@ HOME="$APF_HOME" APF_SSH_CONFIG="$APF_HOME/.ssh/config" \
 cancel_pid=$!
 workspace_ready=0
 for attempt in $(seq 1 30); do
-  if ssh_vm "test \"\$(find /srv/alpineform-instance-builds -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')\" = 1"; then
+  if ssh_vm 'proc_metadata() { proc_line=$(cat "$1") || return 1; proc_pid=${proc_line%% *}; proc_fields=${proc_line##*) }; set -- $proc_fields; test "$#" -ge 20 || return 1; printf "%s %s %s %s %s\n" "$proc_pid" "$2" "$3" "$4" "${20}"; } && group_has_bwrap() { expected_pgid=$1; for group_stat in /proc/[0-9]*/stat; do group_metadata=$(proc_metadata "$group_stat") || continue; set -- $group_metadata; test "$#" = 5 || continue; if test "$3" = "$expected_pgid" && test "$(cat "/proc/$1/comm")" = bwrap; then return 0; fi; done; return 1; } && test "$(find /srv/alpineform-instance-builds -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d " ")" = 1 && workspace=$(find /srv/alpineform-instance-builds -mindepth 1 -maxdepth 1 -type d -print -quit) && test -f "$workspace/build/.alpineform-cancel-ready" && test "$(find /run/alpineform/build-runtime -mindepth 2 -maxdepth 2 -type f -name process 2>/dev/null | wc -l | tr -d " ")" = 1 && process_marker=$(find /run/alpineform/build-runtime -mindepth 2 -maxdepth 2 -type f -name process -print -quit) && process_pid=$(sed -n "7p" "$process_marker") && process_start=$(sed -n "9p" "$process_marker") && process_metadata=$(proc_metadata "/proc/$process_pid/stat") && set -- $process_metadata && test "$#" = 5 && test "$1:$3:$4:$5" = "$process_pid:$process_pid:$process_pid:$process_start" && group_has_bwrap "$process_pid"'; then
     workspace_ready=1
     break
   fi
   sleep 1
 done
-(( workspace_ready == 1 )) || fail "cancelled source build did not create its selected private workspace"
+(( workspace_ready == 1 )) || fail "cancelled source build did not enter its owned Bubblewrap process group"
 assert_remote "running build uses one private instance-root child without persisting its secret" \
   "test \"\$(find /srv/alpineform-instance-builds -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')\" = 1 && workspace=\$(find /srv/alpineform-instance-builds -mindepth 1 -maxdepth 1 -type d -print -quit) && test \"\$(stat -c '%U:%G:%a' \"\$workspace\")\" = root:root:700 && test -z \"\$(find /var/tmp/alpineform/builds /srv/alpineform-profile-builds /srv/alpineform-host-builds -mindepth 1 -print -quit 2>/dev/null)\" && ! grep -R -Fq alpineform-ci-secret-sentinel /srv/alpineform-instance-builds"
+read -r runtime_pid runtime_pgid runtime_start provider_pid provider_start < <(
+  ssh_vm 'proc_metadata() { proc_line=$(cat "$1") || return 1; proc_pid=${proc_line%% *}; proc_fields=${proc_line##*) }; set -- $proc_fields; test "$#" -ge 20 || return 1; printf "%s %s %s %s %s\n" "$proc_pid" "$2" "$3" "$4" "${20}"; } && process_marker=$(find /run/alpineform/build-runtime -mindepth 2 -maxdepth 2 -type f -name process -print -quit) && runtime_pid=$(sed -n "7p" "$process_marker") && runtime_pgid=$(sed -n "8p" "$process_marker") && runtime_start=$(sed -n "9p" "$process_marker") && runtime_metadata=$(proc_metadata "/proc/$runtime_pid/stat") && set -- $runtime_metadata && test "$#" = 5 && test "$1:$3:$5" = "$runtime_pid:$runtime_pgid:$runtime_start" && provider_pid=$2 && provider_metadata=$(proc_metadata "/proc/$provider_pid/stat") && set -- $provider_metadata && test "$#" = 5 && test "$1" = "$provider_pid" && provider_start=$5 && printf "%s %s %s %s %s\n" "$runtime_pid" "$runtime_pgid" "$runtime_start" "$provider_pid" "$provider_start"'
+)
+case "$runtime_pid:$runtime_pgid:$runtime_start:$provider_pid:$provider_start" in
+  *[!0-9:]*|:*|*::*|*:) fail "cancelled source build published invalid process identity metadata" ;;
+esac
+cancel_started=$SECONDS
 kill -TERM "$cancel_pid"
+cancel_timeout_marker=$LOG_DIR/cancellation-controller-timeout
+(
+  sleep 20
+  if kill -0 "$cancel_pid" 2>/dev/null; then
+    : >"$cancel_timeout_marker"
+    kill -KILL "$cancel_pid" 2>/dev/null || true
+  fi
+) &
+cancel_watchdog_pid=$!
+cancel_succeeded=false
 if wait "$cancel_pid"; then
+  cancel_succeeded=true
+fi
+kill "$cancel_watchdog_pid" 2>/dev/null || true
+wait "$cancel_watchdog_pid" 2>/dev/null || true
+if [[ -e "$cancel_timeout_marker" ]]; then
+  fail "cancelled source build controller did not exit within 20s"
+fi
+if [[ "$cancel_succeeded" == true ]]; then
   fail "cancelled source build unexpectedly succeeded"
 fi
+cancel_elapsed=$((SECONDS - cancel_started))
+(( cancel_elapsed <= 20 )) || fail "cancelled source build controller took ${cancel_elapsed}s to exit"
 cat "$LOG_DIR/failure-cancellation.log"
 wait_for_build_cleanup || fail "cancelled source build did not clean owned processes and workspace"
+if ! ssh_vm "proc_metadata() { proc_line=\$(cat \"\$1\") || return 1; proc_pid=\${proc_line%% *}; proc_fields=\${proc_line##*) }; set -- \$proc_fields; test \"\$#\" -ge 20 || return 1; printf '%s %s %s %s %s\\n' \"\$proc_pid\" \"\$2\" \"\$3\" \"\$4\" \"\${20}\"; } && if test -r /proc/$runtime_pid/stat; then if process_metadata=\$(proc_metadata /proc/$runtime_pid/stat); then set -- \$process_metadata && test \"\$#\" = 5 && test \"\$5\" != '$runtime_start'; else test ! -r /proc/$runtime_pid/stat; fi; fi && if test -r /proc/$provider_pid/stat; then if process_metadata=\$(proc_metadata /proc/$provider_pid/stat); then set -- \$process_metadata && test \"\$#\" = 5 && test \"\$5\" != '$provider_start'; else test ! -r /proc/$provider_pid/stat; fi; fi && for process_stat in /proc/[0-9]*/stat; do test -r \"\$process_stat\" || continue; if process_metadata=\$(proc_metadata \"\$process_stat\"); then set -- \$process_metadata && test \"\$#\" = 5 && test \"\$3\" != '$runtime_pgid' || exit 1; else test ! -r \"\$process_stat\" || exit 1; fi; done"; then
+  fail "cancelled source build left its recorded provider shell or process group alive"
+fi
 assert_v1_survives "cancelled source build leaves the previous installation and state intact"
 
 run_remote "mount a small selected workspace root to force ENOSPC" \

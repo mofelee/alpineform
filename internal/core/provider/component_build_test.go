@@ -11,8 +11,10 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/mofelee/alpineform/internal/core/backend"
 	"github.com/mofelee/alpineform/internal/core/engine"
@@ -25,8 +27,175 @@ import (
 const testBuildIdentity = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 const testBuildOwner = "0123456789abcdef0123456789abcdef"
 
+var localComponentBuildRuntimeLockRoot = filepath.Join(os.TempDir(), "alpineform-component-build-locks-"+strconv.Itoa(os.Getpid()))
+
+func TestMain(m *testing.M) {
+	status := m.Run()
+	_ = os.RemoveAll(localComponentBuildRuntimeLockRoot)
+	os.Exit(status)
+}
+
 func localComponentBuildScript(script string) string {
-	return strings.Replace(script, "workspace_uid=0", "workspace_uid="+strconv.Itoa(os.Getuid()), 1)
+	script = strings.Replace(script, "workspace_uid=0", "workspace_uid="+strconv.Itoa(os.Getuid()), 1)
+	assignment := "build_runtime_lock_root=" + product.ComponentBuildRuntimeLockRoot
+	quotedRoot := "'" + strings.ReplaceAll(localComponentBuildRuntimeLockRoot, "'", `'"'"'`) + "'"
+	return strings.Replace(script, assignment, "build_runtime_lock_root="+quotedRoot, 1)
+}
+
+func localComponentBuildScriptWithRuntimeRoot(script, runtimeRoot string) string {
+	script = localComponentBuildScript(script)
+	assignment := "build_runtime_root=" + product.ComponentBuildRuntimeRoot
+	lockAssignment := "build_runtime_lock_root='" + strings.ReplaceAll(localComponentBuildRuntimeLockRoot, "'", `'"'"'`) + "'"
+	quotedRoot := "'" + strings.ReplaceAll(runtimeRoot, "'", `'"'"'`) + "'"
+	quotedLockRoot := "'" + strings.ReplaceAll(runtimeRoot+"-locks", "'", `'"'"'`) + "'"
+	script = strings.Replace(script, assignment, "build_runtime_root="+quotedRoot, 1)
+	return strings.Replace(script, lockAssignment, "build_runtime_lock_root="+quotedLockRoot, 1)
+}
+
+type testProcessGroup struct {
+	pid       int
+	startTime string
+	done      chan error
+}
+
+type testProcessStat struct {
+	pid       int
+	state     string
+	pgid      int
+	session   int
+	startTime string
+}
+
+func readTestProcessStat(pid int) (testProcessStat, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return testProcessStat{}, err
+	}
+	contents := string(data)
+	delimiter := strings.LastIndex(contents, ") ")
+	firstSpace := strings.IndexByte(contents, ' ')
+	if firstSpace < 1 || delimiter < firstSpace {
+		return testProcessStat{}, fmt.Errorf("invalid process stat %q", contents)
+	}
+	actualPID, err := strconv.Atoi(contents[:firstSpace])
+	if err != nil {
+		return testProcessStat{}, err
+	}
+	fields := strings.Fields(contents[delimiter+2:])
+	if len(fields) < 20 {
+		return testProcessStat{}, fmt.Errorf("process stat has %d trailing fields", len(fields))
+	}
+	pgid, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return testProcessStat{}, err
+	}
+	session, err := strconv.Atoi(fields[3])
+	if err != nil {
+		return testProcessStat{}, err
+	}
+	return testProcessStat{pid: actualPID, state: fields[0], pgid: pgid, session: session, startTime: fields[19]}, nil
+}
+
+func startTestProcessGroup(t *testing.T, command string) testProcessGroup {
+	t.Helper()
+	setsid, err := exec.LookPath("setsid")
+	if err != nil {
+		t.Skip("setsid executable is unavailable")
+	}
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh executable is unavailable")
+	}
+	process := exec.Command(setsid, shell, "-c", command)
+	if err := process.Start(); err != nil {
+		t.Fatal(err)
+	}
+	group := testProcessGroup{pid: process.Process.Pid, done: make(chan error, 1)}
+	go func() { group.done <- process.Wait() }()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-group.pid, syscall.SIGKILL)
+		select {
+		case <-group.done:
+		case <-time.After(5 * time.Second):
+			t.Errorf("test process group %d did not exit", group.pid)
+		}
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stat, readErr := readTestProcessStat(group.pid)
+		if readErr == nil && stat.pid == group.pid && stat.pgid == group.pid && stat.session == group.pid {
+			group.startTime = stat.startTime
+			return group
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process %d did not become a session leader", group.pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func writeTestBuildRuntime(t *testing.T, runtimeRoot, workspaceRoot, workspace string, group testProcessGroup, owner, startTime string) string {
+	t.Helper()
+	if err := os.MkdirAll(runtimeRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(runtimeRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := filepath.Join(runtimeRoot, owner)
+	if err := os.Mkdir(runtimeDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{
+		"stdin":      "protected-runtime-value",
+		"supervisor": "#!/bin/sh\n",
+	} {
+		mode := os.FileMode(0600)
+		if path == "supervisor" {
+			mode = 0700
+		}
+		if err := os.WriteFile(filepath.Join(runtimeDir, path), []byte(content), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	generation := fmt.Sprintf("%d:%s", os.Getpid(), group.startTime)
+	writeTestBuildRuntimeIntent(t, runtimeDir, workspaceRoot, workspace, owner, generation)
+	marker := fmt.Sprintf("APFPROCESS1\n%s\n%s\n%s\n%s\n%s\n%d\n%d\n%s\n", generation, owner, testBuildIdentity, workspaceRoot, workspace, group.pid, group.pid, startTime)
+	markerPath := filepath.Join(runtimeDir, "process")
+	if err := os.WriteFile(markerPath, []byte(marker), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return markerPath
+}
+
+func writeTestBuildRuntimeIntent(t *testing.T, runtimeDir, workspaceRoot, workspace, owner, generation string) {
+	t.Helper()
+	intent := fmt.Sprintf("APFRUNTIME1\n%s\n%s\n%s\n%s\n%s\n", generation, owner, testBuildIdentity, workspaceRoot, workspace)
+	if err := os.WriteFile(filepath.Join(runtimeDir, "intent"), []byte(intent), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testProcessExists(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func testProcessGroupExists(pgid int) bool {
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func waitForTestProcessExit(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for testProcessExists(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("process %d remained alive", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func writeTestBuildDependencyMarker(t *testing.T, path, identity, root, workspace string) {
@@ -278,6 +447,61 @@ func TestComponentBuildWorkspaceUsesArgvAndProtectedManifest(t *testing.T) {
 		if strings.Contains(execute.Script, forbidden) {
 			t.Fatalf("build sandbox exposes forbidden host surface %q", forbidden)
 		}
+	}
+	markerValidation := strings.LastIndex(execute.Script, `if [ "$runtime_ready" != true ]`)
+	markerAcknowledgement := strings.LastIndex(execute.Script, `mv -f "$runtime_ready_pending" "$build_runtime_dir/process.ready"`)
+	lockRelease := strings.LastIndex(execute.Script, `release_owned_build_runtime_lock "$owner"`)
+	if !strings.Contains(execute.Script, `>/dev/null 2>&1 9>&- &`) || markerValidation < 0 || markerAcknowledgement < markerValidation || lockRelease < markerAcknowledgement {
+		t.Fatal("build supervisor does not close the inherited lock before launch and publish its marker before lock release")
+	}
+	if lockSetup := strings.Index(execute.Script, `acquire_owned_build_runtime_lock "$owner"`); lockSetup < 0 || strings.Index(execute.Script, "umask 077") > lockSetup {
+		t.Fatal("build runtime lock creation is not protected by a private umask")
+	}
+	if strings.Contains(componentBuildWorkspaceSafetyScript, "runtime_lock_owner=\numask 077") ||
+		!strings.Contains(componentBuildWorkspaceSafetyScript, `(umask 077; mkdir -p "$build_runtime_lock_root")`) ||
+		!strings.Contains(componentBuildWorkspaceSafetyScript, `(umask 077; : >"$build_runtime_lock")`) {
+		t.Fatal("runtime lock creation does not scope its private umask")
+	}
+}
+
+func TestComponentBuildCommandWaitsForFastSupervisorPublication(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspaces")
+	workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+	runtimeRoot := filepath.Join(base, "runtime")
+	fakeBin := filepath.Join(base, "bin")
+	if err := os.Mkdir(fakeBin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	fakeBwrap := `#!/bin/sh
+set -eu
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+[ "$#" -gt 0 ]
+shift
+exec "$@"
+`
+	if err := os.WriteFile(filepath.Join(fakeBin, "bwrap"), []byte(fakeBwrap), 0700); err != nil {
+		t.Fatal(err)
+	}
+	script := localComponentBuildScriptWithRuntimeRoot(componentBuildCommandScript, runtimeRoot)
+	defaultPath := "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	testPath := "export PATH='" + strings.ReplaceAll(fakeBin, "'", `'"'"'`) + "':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	script = strings.Replace(script, defaultPath, testPath, 1)
+	manifest := []byte("APFBUILD1\n\n")
+	started := time.Now()
+	_, err := (localRunner{}).Run(context.Background(), backend.Command{
+		Script:    script,
+		Arguments: []string{root, workspace, testBuildIdentity, testBuildOwner, ".", "true"},
+		Stdin:     manifest,
+	})
+	if err != nil {
+		t.Fatalf("fast source-build command failed publication: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("fast source-build command took %s", elapsed)
+	}
+	if _, statErr := os.Lstat(filepath.Join(runtimeRoot, testBuildOwner)); !os.IsNotExist(statErr) {
+		t.Fatalf("fast source-build command left runtime state: %v", statErr)
 	}
 }
 
@@ -1123,6 +1347,578 @@ func TestComponentBuildCleanupNeverDeletesUnownedOrMismatchedPaths(t *testing.T)
 	}
 }
 
+func TestComponentBuildCleanupTerminatesOwnedRuntimeProcessGroupWithMultilineName(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspaces")
+	workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+	runtimeRoot := filepath.Join(base, "runtime")
+	ready := filepath.Join(base, "process-ready")
+	group := startTestProcessGroup(t, fmt.Sprintf(`printf 'apf)\nleader' > /proc/self/comm; sh -c 'trap "" TERM; while :; do sleep 1; done' & child=$!; trap ':' TERM; : > %q; while kill -0 "$child" 2>/dev/null; do wait "$child" || true; done`, ready))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process %d did not install its TERM handler", group.pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	statContents, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", group.pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(statContents), "\n") < 2 {
+		t.Fatalf("process name fixture did not produce a multiline stat record: %q", statContents)
+	}
+	writeTestBuildRuntime(t, runtimeRoot, root, workspace, group, testBuildOwner, group.startTime)
+	arguments := []string{root, workspace, ".alpineform-build-0123456789abcdef01234567", filepath.Join(base, "absent.dependencies"), testBuildOwner, testBuildIdentity, product.DefaultComponentBuildWorkspaceRoot}
+	started := time.Now()
+	_, err = (localRunner{}).Run(context.Background(), backend.Command{
+		Script:    localComponentBuildScriptWithRuntimeRoot(componentBuildCleanupScript, runtimeRoot),
+		Arguments: arguments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed < 2*time.Second || elapsed > 10*time.Second {
+		t.Fatalf("TERM-to-KILL cleanup took %s", elapsed)
+	}
+	waitForTestProcessExit(t, group.pid)
+	if testProcessGroupExists(group.pid) {
+		t.Fatalf("owned process group %d survived cleanup", group.pid)
+	}
+	for _, path := range []string{workspace, filepath.Join(runtimeRoot, testBuildOwner)} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("owned runtime cleanup left %s: %v", path, err)
+		}
+	}
+}
+
+func TestComponentBuildCleanupRefusesLeaderlessRuntimeProcessGroup(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspaces")
+	workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+	runtimeRoot := filepath.Join(base, "runtime")
+	ready, release := filepath.Join(base, "child-ready"), filepath.Join(base, "release-leader")
+	group := startTestProcessGroup(t, fmt.Sprintf(`sh -c 'trap "" TERM; while :; do sleep 1; done' & : > %q; while [ ! -e %q ]; do sleep 0.01; done`, ready, release))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("leaderless runtime child did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	writeTestBuildRuntime(t, runtimeRoot, root, workspace, group, testBuildOwner, group.startTime)
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	waitForTestProcessExit(t, group.pid)
+	if !testProcessGroupExists(group.pid) {
+		t.Fatal("leaderless runtime child exited before cleanup")
+	}
+	arguments := []string{root, workspace, ".alpineform-build-0123456789abcdef01234567", filepath.Join(base, "absent.dependencies"), testBuildOwner, testBuildIdentity, product.DefaultComponentBuildWorkspaceRoot}
+	_, err := (localRunner{}).Run(context.Background(), backend.Command{
+		Script:    localComponentBuildScriptWithRuntimeRoot(componentBuildCleanupScript, runtimeRoot),
+		Arguments: arguments,
+	})
+	if err == nil {
+		t.Fatal("leaderless process group unexpectedly allowed cleanup")
+	}
+	if !testProcessGroupExists(group.pid) {
+		t.Fatalf("leaderless process group %d was signaled without generation proof", group.pid)
+	}
+	for _, path := range []string{workspace, filepath.Join(runtimeRoot, testBuildOwner, "process")} {
+		if _, statErr := os.Lstat(path); statErr != nil {
+			t.Fatalf("refused leaderless cleanup changed %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestComponentBuildCleanupIgnoresZombieOnlyOwnedRuntimeGroup(t *testing.T) {
+	setsid, err := exec.LookPath("setsid")
+	if err != nil {
+		t.Skip("setsid executable is unavailable")
+	}
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep executable is unavailable")
+	}
+	process := exec.Command(setsid, sleep, "1")
+	if err := process.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	t.Cleanup(func() {
+		if !waited {
+			_ = process.Process.Kill()
+			_ = process.Wait()
+		}
+	})
+	group := testProcessGroup{pid: process.Process.Pid}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stat, readErr := readTestProcessStat(group.pid)
+		if readErr == nil && stat.pgid == group.pid && stat.session == group.pid {
+			group.startTime = stat.startTime
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("zombie fixture did not become a session leader")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "workspaces")
+	workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+	runtimeRoot := filepath.Join(base, "runtime")
+	writeTestBuildRuntime(t, runtimeRoot, root, workspace, group, testBuildOwner, group.startTime)
+	for {
+		stat, readErr := readTestProcessStat(group.pid)
+		if readErr == nil && stat.state == "Z" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("runtime process did not become a zombie")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	arguments := []string{root, workspace, ".alpineform-build-0123456789abcdef01234567", filepath.Join(base, "absent.dependencies"), testBuildOwner, testBuildIdentity, product.DefaultComponentBuildWorkspaceRoot}
+	started := time.Now()
+	_, err = (localRunner{}).Run(context.Background(), backend.Command{
+		Script:    localComponentBuildScriptWithRuntimeRoot(componentBuildCleanupScript, runtimeRoot),
+		Arguments: arguments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("zombie-only cleanup took %s", elapsed)
+	}
+	if err := process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	waited = true
+}
+
+func TestComponentBuildCleanupRecoversMarkerlessRuntimeWithoutLiveSupervisor(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspaces")
+	workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+	runtimeRoot := filepath.Join(base, "runtime")
+	runtimeDir := filepath.Join(runtimeRoot, testBuildOwner)
+	if err := os.MkdirAll(runtimeDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(runtimeRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{"stdin": "protected-runtime-value", "supervisor": "#!/bin/sh\n"} {
+		if err := os.WriteFile(filepath.Join(runtimeDir, path), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestBuildRuntimeIntent(t, runtimeDir, root, workspace, testBuildOwner, fmt.Sprintf("%d:1", os.Getpid()))
+	arguments := []string{root, workspace, ".alpineform-build-0123456789abcdef01234567", filepath.Join(base, "absent.dependencies"), testBuildOwner, testBuildIdentity, product.DefaultComponentBuildWorkspaceRoot}
+	_, err := (localRunner{}).Run(context.Background(), backend.Command{
+		Script:    localComponentBuildScriptWithRuntimeRoot(componentBuildCleanupScript, runtimeRoot),
+		Arguments: arguments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{workspace, runtimeDir} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("markerless runtime recovery left %s: %v", path, err)
+		}
+	}
+}
+
+func TestComponentBuildCleanupRecoversIncompleteRuntimeBeforeIntentPublication(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		pendingContent string
+	}{
+		{name: "empty directory"},
+		{name: "partial pending intent", pendingContent: "APFRUNTIME1\npartial\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			root := filepath.Join(base, "workspaces")
+			workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+			runtimeRoot := filepath.Join(base, "runtime")
+			runtimeDir := filepath.Join(runtimeRoot, testBuildOwner)
+			if err := os.MkdirAll(runtimeDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(runtimeRoot, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if test.pendingContent != "" {
+				if err := os.WriteFile(filepath.Join(runtimeDir, "intent.pending"), []byte(test.pendingContent), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			arguments := []string{root, workspace, ".alpineform-build-0123456789abcdef01234567", filepath.Join(base, "absent.dependencies"), testBuildOwner, testBuildIdentity, product.DefaultComponentBuildWorkspaceRoot}
+			_, err := (localRunner{}).Run(context.Background(), backend.Command{
+				Script:    localComponentBuildScriptWithRuntimeRoot(componentBuildCleanupScript, runtimeRoot),
+				Arguments: arguments,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{workspace, runtimeDir} {
+				if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+					t.Fatalf("incomplete runtime recovery left %s: %v", path, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestComponentBuildCleanupRecoversSupervisorStalledBeforeMarkerPublication(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspaces")
+	workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+	runtimeRoot := filepath.Join(base, "runtime")
+	runtimeDir := filepath.Join(runtimeRoot, testBuildOwner)
+	if err := os.MkdirAll(runtimeDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(runtimeRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	supervisor := filepath.Join(runtimeDir, "supervisor")
+	if err := os.WriteFile(supervisor, []byte("#!/bin/sh\ntrap '' TERM\nwhile :; do sleep 1; done\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeDir, "stdin"), []byte("protected-runtime-value"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	generation := fmt.Sprintf("%d:1", os.Getpid())
+	writeTestBuildRuntimeIntent(t, runtimeDir, root, workspace, testBuildOwner, generation)
+	marker := filepath.Join(runtimeDir, "process")
+	group := startTestProcessGroup(t, fmt.Sprintf("exec sh %q %q %q %q %q %q %q", supervisor, marker, generation, testBuildOwner, testBuildIdentity, root, workspace))
+	arguments := []string{root, workspace, ".alpineform-build-0123456789abcdef01234567", filepath.Join(base, "absent.dependencies"), testBuildOwner, testBuildIdentity, product.DefaultComponentBuildWorkspaceRoot}
+	started := time.Now()
+	_, err := (localRunner{}).Run(context.Background(), backend.Command{
+		Script:    localComponentBuildScriptWithRuntimeRoot(componentBuildCleanupScript, runtimeRoot),
+		Arguments: arguments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed < 2*time.Second || elapsed > 10*time.Second {
+		t.Fatalf("stalled marker publication recovery took %s", elapsed)
+	}
+	waitForTestProcessExit(t, group.pid)
+	if testProcessGroupExists(group.pid) {
+		t.Fatal("markerless runtime cleanup left its authenticated supervisor group")
+	}
+	for _, path := range []string{workspace, runtimeDir} {
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("markerless runtime recovery left %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestComponentBuildCleanupIgnoresReusedLeaderPIDWhenRecordedGroupIsGone(t *testing.T) {
+	self, err := readTestProcessStat(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if self.pgid == self.pid {
+		t.Skip("test process is unexpectedly its process-group leader")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "workspaces")
+	workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+	runtimeRoot := filepath.Join(base, "runtime")
+	group := testProcessGroup{pid: self.pid, startTime: self.startTime}
+	writeTestBuildRuntime(t, runtimeRoot, root, workspace, group, testBuildOwner, "1")
+	arguments := []string{root, workspace, ".alpineform-build-0123456789abcdef01234567", filepath.Join(base, "absent.dependencies"), testBuildOwner, testBuildIdentity, product.DefaultComponentBuildWorkspaceRoot}
+	_, err = (localRunner{}).Run(context.Background(), backend.Command{
+		Script:    localComponentBuildScriptWithRuntimeRoot(componentBuildCleanupScript, runtimeRoot),
+		Arguments: arguments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{workspace, filepath.Join(runtimeRoot, testBuildOwner)} {
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("reused-PID cleanup left %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestComponentBuildCleanupRefusesTamperedRuntimeOwnership(t *testing.T) {
+	tests := []struct {
+		name        string
+		markerOwner string
+		startTime   func(testProcessGroup) string
+	}{
+		{name: "owner", markerOwner: strings.Repeat("f", 32), startTime: func(group testProcessGroup) string { return group.startTime }},
+		{name: "pid start time", markerOwner: testBuildOwner, startTime: func(group testProcessGroup) string {
+			value, err := strconv.ParseUint(group.startTime, 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return strconv.FormatUint(value+1, 10)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			root := filepath.Join(base, "workspaces")
+			workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+			runtimeRoot := filepath.Join(base, "runtime")
+			group := startTestProcessGroup(t, "sleep 300")
+			markerPath := writeTestBuildRuntime(t, runtimeRoot, root, workspace, group, test.markerOwner, test.startTime(group))
+			if test.markerOwner != testBuildOwner {
+				wrongRuntimeDir := filepath.Dir(markerPath)
+				correctRuntimeDir := filepath.Join(runtimeRoot, testBuildOwner)
+				if err := os.Rename(wrongRuntimeDir, correctRuntimeDir); err != nil {
+					t.Fatal(err)
+				}
+				markerPath = filepath.Join(correctRuntimeDir, "process")
+			}
+			arguments := []string{root, workspace, ".alpineform-build-0123456789abcdef01234567", filepath.Join(base, "absent.dependencies"), testBuildOwner, testBuildIdentity, product.DefaultComponentBuildWorkspaceRoot}
+			_, err := (localRunner{}).Run(context.Background(), backend.Command{
+				Script:    localComponentBuildScriptWithRuntimeRoot(componentBuildCleanupScript, runtimeRoot),
+				Arguments: arguments,
+			})
+			if err == nil {
+				t.Fatal("tampered runtime ownership unexpectedly allowed cleanup")
+			}
+			if !testProcessExists(group.pid) {
+				t.Fatal("tampered runtime ownership signaled an unverified process")
+			}
+			for _, path := range []string{workspace, markerPath} {
+				if _, statErr := os.Lstat(path); statErr != nil {
+					t.Fatalf("refused runtime cleanup changed %s: %v", path, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestComponentBuildCleanupRejectsWritableRuntimeAncestor(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspaces")
+	workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+	unsafeParent := filepath.Join(base, "unsafe-parent")
+	runtimeRoot := filepath.Join(unsafeParent, "runtime")
+	if err := os.Mkdir(unsafeParent, 0777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unsafeParent, 0777); err != nil {
+		t.Fatal(err)
+	}
+	group := startTestProcessGroup(t, "sleep 300")
+	markerPath := writeTestBuildRuntime(t, runtimeRoot, root, workspace, group, testBuildOwner, group.startTime)
+	arguments := []string{root, workspace, ".alpineform-build-0123456789abcdef01234567", filepath.Join(base, "absent.dependencies"), testBuildOwner, testBuildIdentity, product.DefaultComponentBuildWorkspaceRoot}
+	_, err := (localRunner{}).Run(context.Background(), backend.Command{
+		Script:    localComponentBuildScriptWithRuntimeRoot(componentBuildCleanupScript, runtimeRoot),
+		Arguments: arguments,
+	})
+	if err == nil {
+		t.Fatal("writable runtime ancestor unexpectedly allowed cleanup")
+	}
+	if !testProcessExists(group.pid) {
+		t.Fatal("unsafe runtime ancestor signaled the recorded process")
+	}
+	for _, path := range []string{workspace, markerPath} {
+		if _, statErr := os.Lstat(path); statErr != nil {
+			t.Fatalf("refused unsafe-ancestor cleanup changed %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestComponentBuildCleanupRetainsOwnershipMarkersUntilRetryCompletes(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspaces")
+	workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+	runtimeRoot := filepath.Join(base, "runtime")
+	group := startTestProcessGroup(t, "sleep 300")
+	processMarker := writeTestBuildRuntime(t, runtimeRoot, root, workspace, group, testBuildOwner, group.startTime)
+	unknownRuntimePath := filepath.Join(runtimeRoot, testBuildOwner, "unknown")
+	if err := os.WriteFile(unknownRuntimePath, []byte("retain"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dependencyMarker := filepath.Join(base, "dependencies")
+	writeTestBuildDependencyMarker(t, dependencyMarker, testBuildIdentity, root, workspace)
+	arguments := []string{root, workspace, ".alpineform-build-0123456789abcdef01234567", dependencyMarker, testBuildOwner, testBuildIdentity, product.DefaultComponentBuildWorkspaceRoot}
+	run := func() error {
+		_, err := (localRunner{}).Run(context.Background(), backend.Command{
+			Script:    localComponentBuildScriptWithRuntimeRoot(componentBuildCleanupScript, runtimeRoot),
+			Arguments: arguments,
+		})
+		return err
+	}
+	if err := run(); err == nil {
+		t.Fatal("runtime cleanup with unknown residue unexpectedly succeeded")
+	}
+	waitForTestProcessExit(t, group.pid)
+	for _, path := range []string{processMarker, dependencyMarker, unknownRuntimePath} {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("failed cleanup did not retain %s: %v", path, err)
+		}
+	}
+	if _, err := os.Lstat(workspace); !os.IsNotExist(err) {
+		t.Fatalf("failed cleanup did not remove the stopped workspace: %v", err)
+	}
+	if err := os.Remove(unknownRuntimePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(); err != nil {
+		t.Fatalf("runtime cleanup retry failed: %v", err)
+	}
+	for _, path := range []string{filepath.Join(runtimeRoot, testBuildOwner), dependencyMarker} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("runtime cleanup retry left %s: %v", path, err)
+		}
+	}
+}
+
+func TestComponentBuildCleanupSerializesConcurrentRetries(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspaces")
+	workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+	runtimeRoot := filepath.Join(base, "runtime")
+	group := startTestProcessGroup(t, "sleep 300")
+	writeTestBuildRuntime(t, runtimeRoot, root, workspace, group, testBuildOwner, group.startTime)
+	dependencyMarker := filepath.Join(base, "dependencies")
+	writeTestBuildDependencyMarker(t, dependencyMarker, testBuildIdentity, root, workspace)
+	arguments := []string{root, workspace, ".alpineform-build-0123456789abcdef01234567", dependencyMarker, testBuildOwner, testBuildIdentity, product.DefaultComponentBuildWorkspaceRoot}
+	start := make(chan struct{})
+	errorsByRetry := make(chan error, 2)
+	var retries sync.WaitGroup
+	for range 2 {
+		retries.Add(1)
+		go func() {
+			defer retries.Done()
+			<-start
+			_, runErr := (localRunner{}).Run(context.Background(), backend.Command{
+				Script:    localComponentBuildScriptWithRuntimeRoot(componentBuildCleanupScript, runtimeRoot),
+				Arguments: arguments,
+			})
+			errorsByRetry <- runErr
+		}()
+	}
+	close(start)
+	retries.Wait()
+	close(errorsByRetry)
+	for runErr := range errorsByRetry {
+		if runErr != nil {
+			t.Fatalf("serialized cleanup retry failed: %v", runErr)
+		}
+	}
+	waitForTestProcessExit(t, group.pid)
+	for _, path := range []string{workspace, filepath.Join(runtimeRoot, testBuildOwner), dependencyMarker} {
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("concurrent cleanup left %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestComponentBuildCleanupDoesNotSignalReplacementGenerationWhileWaiting(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspaces")
+	workspace := writeTestOwnedBuildWorkspace(t, root, testBuildIdentity)
+	runtimeRoot := filepath.Join(base, "runtime")
+	runtimeDir := filepath.Join(runtimeRoot, testBuildOwner)
+	if err := os.MkdirAll(runtimeDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(runtimeRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestBuildRuntimeIntent(t, runtimeDir, root, workspace, testBuildOwner, fmt.Sprintf("%d:1", os.Getpid()))
+
+	lockRoot := runtimeRoot + "-locks"
+	if err := os.Mkdir(lockRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(lockRoot, testBuildOwner+".lock")
+	if err := os.WriteFile(lockPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	lockFile, err := os.OpenFile(lockPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	locked := true
+	defer func() {
+		if locked {
+			_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		}
+	}()
+
+	captured := filepath.Join(base, "captured")
+	t.Setenv("APF_TEST_RUNTIME_CAPTURED", captured)
+	captureCall := `capture_owned_build_runtime "$apf_transaction_owner" || return 1`
+	script := strings.Replace(
+		componentBuildCleanupScript,
+		captureCall,
+		captureCall+`
+: >"$APF_TEST_RUNTIME_CAPTURED"`,
+		1,
+	)
+	arguments := []string{root, workspace, ".alpineform-build-0123456789abcdef01234567", filepath.Join(base, "absent.dependencies"), testBuildOwner, testBuildIdentity, product.DefaultComponentBuildWorkspaceRoot}
+	result := make(chan error, 1)
+	go func() {
+		_, runErr := (localRunner{}).Run(context.Background(), backend.Command{
+			Script:    localComponentBuildScriptWithRuntimeRoot(script, runtimeRoot),
+			Arguments: arguments,
+		})
+		result <- runErr
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, statErr := os.Stat(captured); statErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cleanup waiter did not capture the original runtime generation")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := os.RemoveAll(runtimeDir); err != nil {
+		t.Fatal(err)
+	}
+	replacement := startTestProcessGroup(t, "sleep 300")
+	writeTestBuildRuntime(t, runtimeRoot, root, workspace, replacement, testBuildOwner, replacement.startTime)
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	locked = false
+
+	select {
+	case runErr := <-result:
+		if runErr == nil || !strings.Contains(runErr.Error(), "runtime generation changed while waiting for its lock") {
+			t.Fatalf("replacement-generation cleanup error = %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("replacement-generation cleanup did not return")
+	}
+	if !testProcessExists(replacement.pid) {
+		t.Fatal("stale cleanup waiter signaled the replacement runtime")
+	}
+	for _, path := range []string{workspace, filepath.Join(runtimeDir, "process")} {
+		if _, statErr := os.Lstat(path); statErr != nil {
+			t.Fatalf("stale cleanup waiter changed %s: %v", path, statErr)
+		}
+	}
+}
+
 func TestComponentBuildCleanupOrderingPreservesRetryOwnership(t *testing.T) {
 	protectedCleanup := strings.LastIndex(componentBuildCleanupScript, `rm -f "$protected_path"`)
 	markerCleanup := strings.LastIndex(componentBuildCleanupScript, `rm -f "$marker"`)
@@ -1194,7 +1990,7 @@ func TestComponentBuildOutputRejectsMissingLinkedSpecialAndOversizedCandidates(t
 				"virtual_package": ".alpineform-build-0123456789abcdef01234567", "owner_id": testBuildOwner,
 				"dependency_marker": filepath.Join(root, "missing.dependencies"), "protected_input_paths": []string{},
 			}}
-			if _, err := applyComponentBuildOutput(context.Background(), localRunner{}, engine.Step{Node: node}); err == nil {
+			if _, err := applyComponentBuildOutput(context.Background(), localComponentBuildRunner{}, engine.Step{Node: node}); err == nil {
 				t.Fatal("invalid source-build output unexpectedly passed verification")
 			}
 			data, err := os.ReadFile(installed)

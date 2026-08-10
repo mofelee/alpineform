@@ -17,7 +17,7 @@ component "failure" {
       sha256      = "3764b3a8b3b7a021738231ecc9310011da67487f41d6f1732a02d53b6ef903e6"
       destination = "tool.c"
     }
-    command { argv = ["sleep", "300"] }
+    command { argv = ["sh", "-c", "printf ready > .alpineform-cancel-ready; exec sleep 300"] }
     environment         = { BUILD_TOKEN = input.token }
     environment_version = "failure-v1"
     output              = "build/tool"

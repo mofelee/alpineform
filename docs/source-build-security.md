@@ -80,11 +80,20 @@ removal is last so a cleanup failure remains retryable.
 
 Protected inline input files remain under `/run/alpineform/build-inputs`;
 per-command protected environment/stdin manifests remain under
-`/run/alpineform/build-runtime`. Neither moves below the configurable workspace
-root. Persistent dependency markers and verified output caches also keep their
-fixed state/cache locations. Prebuilt archives remain a separate provider path
-and continue to stage beside their install destination for same-filesystem
-atomic replacement.
+`/run/alpineform/build-runtime/<owner-id>`. That private mode-`0700` directory
+contains a mode-`0600` process marker binding the owner, build identity,
+workspace, runtime generation, process group, and Linux process start time. A
+supervisor remains the authenticated group/session leader while Bubblewrap or
+any live group member remains. Cancellation and retry serialize through a
+mode-`0600` per-owner lock in
+`/run/alpineform/build-runtime-locks`, validate the record, and use bounded
+TERM/KILL teardown. They refuse leaderless groups, PID reuse, marker tampering,
+and a changed runtime generation. Lock files contain no protected values and
+remain only on reboot-ephemeral storage. Neither runtime path moves below the
+configurable workspace root. Persistent dependency markers and verified output
+caches also keep their fixed state/cache locations. Prebuilt archives remain a
+separate provider path and continue to stage beside their install destination
+for same-filesystem atomic replacement.
 
 ## Protected values
 

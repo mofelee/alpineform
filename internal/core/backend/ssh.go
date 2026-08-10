@@ -12,7 +12,10 @@ import (
 	"github.com/mofelee/alpineform/internal/core/ir"
 )
 
-const maxSSHErrorOutput = 32 * 1024
+const (
+	maxSSHErrorOutput   = 32 * 1024
+	sshProcessWaitDelay = time.Second
+)
 
 type SSHOptions struct {
 	Binary         string
@@ -127,9 +130,12 @@ func (processSSHExecutor) Execute(ctx context.Context, binary string, args []str
 	var stderr limitedBuffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
+	command.WaitDelay = sshProcessWaitDelay
 	err := command.Run()
-	if contextErr := ctx.Err(); contextErr != nil {
-		err = contextErr
+	if err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			err = contextErr
+		}
 	}
 	return stdout.Bytes(), stderr.Bytes(), err
 }

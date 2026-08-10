@@ -3,8 +3,10 @@ package backend
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -211,6 +213,39 @@ func TestProcessSSHExecutorPropagatesRunningProcessTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("timed-out process returned after %s", elapsed)
+	}
+}
+
+func TestProcessSSHExecutorBoundsCancellationWithInheritedDescendantPipe(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh executable is unavailable")
+	}
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep executable is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+
+	stdout, _, err := (processSSHExecutor{}).Execute(ctx, shell, []string{
+		"-c", `"$1" 30 & printf '%s\n' "$!"`, "alpineform-test", sleep,
+	}, nil)
+	childPID, parseErr := strconv.Atoi(strings.TrimSpace(string(stdout)))
+	if parseErr != nil {
+		t.Fatalf("descendant PID output = %q: %v", stdout, parseErr)
+	}
+	child, findErr := os.FindProcess(childPID)
+	if findErr != nil {
+		t.Fatalf("find descendant process %d: %v", childPID, findErr)
+	}
+	t.Cleanup(func() { _ = child.Kill() })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("inherited-pipe timeout error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("inherited-pipe timeout returned after %s", elapsed)
 	}
 }
 

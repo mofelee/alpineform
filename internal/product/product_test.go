@@ -22,6 +22,8 @@ func TestProductContractNames(t *testing.T) {
 		"DefaultInstallDir":                  {DefaultInstallDir, "/usr/local/share/alpineform"},
 		"DefaultComponentBuildWorkspaceRoot": {DefaultComponentBuildWorkspaceRoot, "/var/tmp/alpineform/builds"},
 		"ComponentBuildProtectedInputRoot":   {ComponentBuildProtectedInputRoot, "/run/alpineform/build-inputs"},
+		"ComponentBuildRuntimeRoot":          {ComponentBuildRuntimeRoot, "/run/alpineform/build-runtime"},
+		"ComponentBuildRuntimeLockRoot":      {ComponentBuildRuntimeLockRoot, "/run/alpineform/build-runtime-locks"},
 		"ComponentBuildStateRoot":            {ComponentBuildStateRoot, "/var/lib/alpineform/builds"},
 		"TargetOSID":                         {TargetOSID, "alpine"},
 		"MinimumSupportedBranch":             {MinimumSupportedBranch, "v3.21"},

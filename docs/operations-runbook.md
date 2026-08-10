@@ -219,6 +219,17 @@ all succeed. After a failed or cancelled build, re-run `apf plan`; the owned
 verified-output marker are deterministic and the next apply can reconcile
 them.
 
+An active command also has a private
+`/run/alpineform/build-runtime/<owner-id>/process` marker. A stable supervisor
+publishes that marker before starting Bubblewrap and remains the process-group
+and session leader until every live member exits. AlpineForm validates its
+generation, PID, process group, session, start time, owner, identity, and
+workspace before terminating the group; it never signals a leaderless numeric
+group. Per-owner locks under `/run/alpineform/build-runtime-locks` serialize
+publication, retry, and cleanup and remain as non-secret, reboot-ephemeral lock
+files. Do not edit these paths or use broad `pkill` recovery; a mismatch is
+retained as a cleanup failure so an unrelated reused PID is never signaled.
+
 Do not run `apk del` on compiler/header packages individually. Confirm the
 virtual package and marker belong together before manual intervention:
 

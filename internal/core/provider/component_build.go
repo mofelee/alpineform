@@ -133,6 +133,8 @@ if ! valid_workspace_tuple "$root" "$workspace" "$identity" || ! valid_build_own
   echo 'invalid source-build dependency workspace metadata' >&2
   exit 1
 fi
+begin_owned_build_runtime_transaction "$owner"
+stop_owned_build_runtime_locked "$owner"
 if [ -L /etc/apk/world ] || { [ -e /etc/apk/world ] && [ ! -f /etc/apk/world ]; }; then
   echo 'refusing unsafe APK world path during source-build dependency apply' >&2
   exit 1
@@ -155,6 +157,8 @@ if apk info -e "$virtual" >/dev/null 2>&1; then
   fi
   apk --quiet del "$virtual"
 fi
+finish_owned_build_runtime_locked "$owner" "$runtime_transaction_generation"
+release_owned_build_runtime_lock "$owner"
 parent=${marker%/*}
 if ! no_symlink_boundaries "$parent"; then echo 'source-build dependency marker parent contains a symbolic link' >&2; exit 1; fi
 mkdir -p "$parent"
@@ -194,6 +198,9 @@ trap - EXIT HUP INT TERM
 
 const componentBuildWorkspaceSafetyScript = `
 workspace_uid=0
+build_runtime_root=` + product.ComponentBuildRuntimeRoot + `
+build_runtime_lock_root=` + product.ComponentBuildRuntimeLockRoot + `
+runtime_lock_owner=
 valid_build_identity() {
   [ "${#1}" -eq 64 ] || return 1
   case "$1" in *[!a-f0-9]*) return 1;; esac
@@ -308,6 +315,541 @@ remove_owned_workspace() {
   rm -rf -- "$apf_workspace"
   if [ -e "$apf_workspace" ] || [ -L "$apf_workspace" ]; then
     echo 'source-build workspace cleanup did not remove the owned path' >&2
+    return 1
+  fi
+}
+runtime_paths_for_owner() {
+  apf_runtime_owner=$1
+  valid_build_owner "$apf_runtime_owner" || return 1
+  build_runtime_dir=$build_runtime_root/$apf_runtime_owner
+  build_runtime_intent=$build_runtime_dir/intent
+  build_runtime_marker=$build_runtime_dir/process
+  build_runtime_lock=$build_runtime_lock_root/$apf_runtime_owner.lock
+}
+valid_build_runtime_generation() {
+  case "$1" in ''|*[!0-9:]*|:*|*::*|*:) return 1;; esac
+  apf_generation_pid=${1%%:*}
+  apf_generation_start=${1#*:}
+  [ "$apf_generation_pid" -gt 1 ] && [ "$apf_generation_start" -gt 0 ]
+}
+private_build_runtime_lock_root() {
+  safe_workspace_ancestors "$build_runtime_lock_root" || return 1
+  [ -d "$build_runtime_lock_root" ] && [ ! -L "$build_runtime_lock_root" ] || return 1
+  [ "$(stat -c '%u' "$build_runtime_lock_root")" = "$workspace_uid" ] || return 1
+  [ "$(stat -c '%a' "$build_runtime_lock_root")" = 700 ]
+}
+prepare_build_runtime_lock_root() {
+  if [ -e "$build_runtime_lock_root" ] || [ -L "$build_runtime_lock_root" ]; then
+    private_build_runtime_lock_root
+    return
+  fi
+  safe_workspace_ancestors "$build_runtime_lock_root" || return 1
+  (umask 077; mkdir -p "$build_runtime_lock_root")
+  chmod 0700 "$build_runtime_lock_root"
+  private_build_runtime_lock_root
+}
+acquire_owned_build_runtime_lock() {
+  apf_lock_owner=$1
+  runtime_paths_for_owner "$apf_lock_owner" || return 1
+  if [ -n "$runtime_lock_owner" ]; then
+    [ "$runtime_lock_owner" = "$apf_lock_owner" ] || return 1
+    return 0
+  fi
+  if ! prepare_build_runtime_lock_root; then
+    echo 'source-build runtime lock root is unowned or unsafe' >&2
+    return 1
+  fi
+  if [ -e "$build_runtime_lock" ] || [ -L "$build_runtime_lock" ]; then
+    if [ ! -f "$build_runtime_lock" ] || [ -L "$build_runtime_lock" ] ||
+       [ "$(stat -c '%u' "$build_runtime_lock")" != "$workspace_uid" ] ||
+       [ "$(stat -c '%a' "$build_runtime_lock")" != 600 ]; then
+      echo 'source-build runtime lock is unowned or unsafe' >&2
+      return 1
+    fi
+  else
+    (umask 077; : >"$build_runtime_lock")
+    chmod 0600 "$build_runtime_lock"
+  fi
+  exec 9>"$build_runtime_lock"
+  for apf_lock_wait in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    if flock -n 9; then
+      apf_lock_fd_identity=$(stat -Lc '%d:%i:%u:%a' "/proc/$$/fd/9") || {
+        exec 9>&-
+        return 1
+      }
+      apf_lock_path_identity=$(stat -c '%d:%i:%u:%a' "$build_runtime_lock") || {
+        exec 9>&-
+        return 1
+      }
+      if [ "$apf_lock_fd_identity" != "$apf_lock_path_identity" ] ||
+         [ ! -f "$build_runtime_lock" ] || [ -L "$build_runtime_lock" ]; then
+        echo 'source-build runtime lock changed during acquisition' >&2
+        exec 9>&-
+        return 1
+      fi
+      runtime_lock_owner=$apf_lock_owner
+      return 0
+    fi
+    sleep 1
+  done
+  echo 'timed out acquiring source-build runtime lock' >&2
+  exec 9>&-
+  return 1
+}
+release_owned_build_runtime_lock() {
+  apf_unlock_owner=$1
+  [ "$runtime_lock_owner" = "$apf_unlock_owner" ] || return 1
+  runtime_lock_owner=
+  exec 9>&-
+}
+capture_owned_build_runtime() {
+  apf_capture_owner=$1
+  runtime_paths_for_owner "$apf_capture_owner" || return 1
+  captured_runtime_state=absent
+  captured_runtime_identity=
+  captured_runtime_generation=
+  if [ ! -e "$build_runtime_dir" ] && [ ! -L "$build_runtime_dir" ]; then return 0; fi
+  if ! owned_build_runtime_dir "$apf_capture_owner"; then
+    if [ ! -e "$build_runtime_dir" ] && [ ! -L "$build_runtime_dir" ]; then return 0; fi
+    echo 'source-build runtime changed through an unsafe boundary' >&2
+    return 1
+  fi
+  captured_runtime_state=present
+  if ! captured_runtime_identity=$(stat -c '%d:%i' "$build_runtime_dir"); then
+    if [ ! -e "$build_runtime_dir" ] && [ ! -L "$build_runtime_dir" ]; then
+      captured_runtime_state=absent
+      return 0
+    fi
+    return 1
+  fi
+  if [ -e "$build_runtime_intent" ] || [ -L "$build_runtime_intent" ]; then
+    if load_owned_build_runtime_intent "$apf_capture_owner"; then
+      captured_runtime_generation=$build_runtime_generation
+    fi
+  fi
+}
+captured_owned_build_runtime_matches() {
+  apf_captured_owner=$1
+  runtime_paths_for_owner "$apf_captured_owner" || return 1
+  captured_runtime_gone=false
+  if [ "$captured_runtime_state" = absent ]; then
+    [ ! -e "$build_runtime_dir" ] && [ ! -L "$build_runtime_dir" ]
+    return
+  fi
+  if [ ! -e "$build_runtime_dir" ] && [ ! -L "$build_runtime_dir" ]; then
+    captured_runtime_gone=true
+    return 0
+  fi
+  owned_build_runtime_dir "$apf_captured_owner" || return 1
+  [ "$(stat -c '%d:%i' "$build_runtime_dir")" = "$captured_runtime_identity" ] || return 1
+  if [ -n "$captured_runtime_generation" ]; then
+    load_owned_build_runtime_intent "$apf_captured_owner" || return 1
+    [ "$build_runtime_generation" = "$captured_runtime_generation" ] || return 1
+  fi
+}
+begin_owned_build_runtime_transaction() {
+  apf_transaction_owner=$1
+  capture_owned_build_runtime "$apf_transaction_owner" || return 1
+  acquire_owned_build_runtime_lock "$apf_transaction_owner" || return 1
+  if ! captured_owned_build_runtime_matches "$apf_transaction_owner"; then
+    release_owned_build_runtime_lock "$apf_transaction_owner" || true
+    echo 'source-build runtime generation changed while waiting for its lock' >&2
+    return 1
+  fi
+  runtime_transaction_generation=$captured_runtime_generation
+}
+private_build_runtime_root() {
+  safe_workspace_ancestors "$build_runtime_root" || return 1
+  [ -d "$build_runtime_root" ] && [ ! -L "$build_runtime_root" ] || return 1
+  [ "$(stat -c '%u' "$build_runtime_root")" = "$workspace_uid" ] || return 1
+  [ "$(stat -c '%a' "$build_runtime_root")" = 700 ]
+}
+owned_build_runtime_dir() {
+  runtime_paths_for_owner "$1" || return 1
+  private_build_runtime_root || return 1
+  [ -d "$build_runtime_dir" ] && [ ! -L "$build_runtime_dir" ] || return 1
+  [ "$(stat -c '%u' "$build_runtime_dir")" = "$workspace_uid" ] || return 1
+  [ "$(stat -c '%a' "$build_runtime_dir")" = 700 ]
+}
+prepare_owned_build_runtime() {
+  apf_prepare_owner=$1
+  apf_prepare_identity=$2
+  apf_prepare_root=$3
+  apf_prepare_workspace=$4
+  runtime_paths_for_owner "$apf_prepare_owner" || return 1
+  valid_workspace_tuple "$apf_prepare_root" "$apf_prepare_workspace" "$apf_prepare_identity" || return 1
+  if [ -e "$build_runtime_dir" ] || [ -L "$build_runtime_dir" ]; then
+    echo 'source-build runtime directory already exists' >&2
+    return 1
+  fi
+  if [ -e "$build_runtime_root" ] || [ -L "$build_runtime_root" ]; then
+    if ! private_build_runtime_root; then
+      echo 'source-build runtime root is unowned or unsafe' >&2
+      return 1
+    fi
+  else
+    if ! safe_workspace_ancestors "$build_runtime_root"; then
+      echo 'source-build runtime root has an unsafe symbolic-link or ownership boundary' >&2
+      return 1
+    fi
+    mkdir -p "$build_runtime_root"
+    chmod 0700 "$build_runtime_root"
+    if ! private_build_runtime_root; then
+      echo 'source-build runtime root is unowned or unsafe after creation' >&2
+      return 1
+    fi
+  fi
+  mkdir "$build_runtime_dir"
+  chmod 0700 "$build_runtime_dir"
+  if ! owned_build_runtime_dir "$apf_prepare_owner"; then
+    echo 'source-build runtime directory is unowned or unsafe after creation' >&2
+    return 1
+  fi
+  read_build_runtime_process_stat "$$" || return 1
+  build_runtime_generation=$apf_stat_actual_pid:$apf_stat_start_time
+  valid_build_runtime_generation "$build_runtime_generation" || return 1
+  apf_runtime_intent_pending=$build_runtime_dir/intent.pending
+  printf 'APFRUNTIME1\n%s\n%s\n%s\n%s\n%s\n' \
+    "$build_runtime_generation" "$apf_prepare_owner" "$apf_prepare_identity" "$apf_prepare_root" "$apf_prepare_workspace" >"$apf_runtime_intent_pending"
+  chmod 0600 "$apf_runtime_intent_pending"
+  mv -f "$apf_runtime_intent_pending" "$build_runtime_intent"
+  load_owned_build_runtime_intent "$apf_prepare_owner"
+}
+load_owned_build_runtime_intent() {
+  apf_expected_runtime_owner=$1
+  owned_build_runtime_dir "$apf_expected_runtime_owner" || return 1
+  [ -f "$build_runtime_intent" ] && [ ! -L "$build_runtime_intent" ] || return 1
+  [ "$(stat -c '%u' "$build_runtime_intent")" = "$workspace_uid" ] || return 1
+  [ "$(stat -c '%a' "$build_runtime_intent")" = 600 ] || return 1
+  [ "$(wc -l <"$build_runtime_intent" | tr -d ' ')" = 6 ] || return 1
+  [ "$(sed -n '1p' "$build_runtime_intent")" = APFRUNTIME1 ] || return 1
+  build_runtime_generation=$(sed -n '2p' "$build_runtime_intent")
+  build_runtime_intent_owner=$(sed -n '3p' "$build_runtime_intent")
+  build_runtime_identity=$(sed -n '4p' "$build_runtime_intent")
+  build_runtime_workspace_root=$(sed -n '5p' "$build_runtime_intent")
+  build_runtime_workspace=$(sed -n '6p' "$build_runtime_intent")
+  valid_build_runtime_generation "$build_runtime_generation" || return 1
+  [ "$build_runtime_intent_owner" = "$apf_expected_runtime_owner" ] || return 1
+  valid_workspace_tuple "$build_runtime_workspace_root" "$build_runtime_workspace" "$build_runtime_identity"
+}
+load_owned_build_runtime() {
+  apf_expected_runtime_owner=$1
+  load_owned_build_runtime_intent "$apf_expected_runtime_owner" || return 1
+  [ -f "$build_runtime_marker" ] && [ ! -L "$build_runtime_marker" ] || return 1
+  [ "$(stat -c '%u' "$build_runtime_marker")" = "$workspace_uid" ] || return 1
+  [ "$(stat -c '%a' "$build_runtime_marker")" = 600 ] || return 1
+  [ "$(wc -l <"$build_runtime_marker" | tr -d ' ')" = 9 ] || return 1
+  [ "$(sed -n '1p' "$build_runtime_marker")" = APFPROCESS1 ] || return 1
+  [ "$(sed -n '2p' "$build_runtime_marker")" = "$build_runtime_generation" ] || return 1
+  [ "$(sed -n '3p' "$build_runtime_marker")" = "$apf_expected_runtime_owner" ] || return 1
+  [ "$(sed -n '4p' "$build_runtime_marker")" = "$build_runtime_identity" ] || return 1
+  [ "$(sed -n '5p' "$build_runtime_marker")" = "$build_runtime_workspace_root" ] || return 1
+  [ "$(sed -n '6p' "$build_runtime_marker")" = "$build_runtime_workspace" ] || return 1
+  build_runtime_pid=$(sed -n '7p' "$build_runtime_marker")
+  build_runtime_pgid=$(sed -n '8p' "$build_runtime_marker")
+  build_runtime_start_time=$(sed -n '9p' "$build_runtime_marker")
+  valid_workspace_tuple "$build_runtime_workspace_root" "$build_runtime_workspace" "$build_runtime_identity" || return 1
+  for apf_runtime_number in "$build_runtime_pid" "$build_runtime_pgid" "$build_runtime_start_time"; do
+    case "$apf_runtime_number" in ''|*[!0-9]*) return 1;; esac
+  done
+  [ "$build_runtime_pid" -gt 1 ] && [ "$build_runtime_pid" = "$build_runtime_pgid" ] && [ "$build_runtime_start_time" -gt 0 ]
+}
+read_build_runtime_process_stat() {
+  apf_stat_pid=$1
+  [ -r "/proc/$apf_stat_pid/stat" ] || return 1
+  apf_stat_contents=$(cat "/proc/$apf_stat_pid/stat") || return 1
+  [ -n "$apf_stat_contents" ] || return 1
+  apf_stat_actual_pid=${apf_stat_contents%% *}
+  apf_stat_tail=${apf_stat_contents##*) }
+  [ "$apf_stat_tail" != "$apf_stat_contents" ] || return 1
+  set -- $apf_stat_tail
+  [ "$#" -ge 20 ] || return 1
+  apf_stat_state=$1
+  apf_stat_pgid=$3
+  apf_stat_session=$4
+  shift 19
+  apf_stat_start_time=$1
+}
+build_runtime_group_exists() {
+  for apf_group_stat in /proc/[0-9]*/stat; do
+    [ -r "$apf_group_stat" ] || continue
+    apf_group_pid=${apf_group_stat#/proc/}
+    apf_group_pid=${apf_group_pid%/stat}
+    if read_build_runtime_process_stat "$apf_group_pid" && [ "$apf_stat_pgid" = "$build_runtime_pgid" ]; then
+      case "$apf_stat_state" in Z|X) ;; *) return 0;; esac
+    fi
+  done
+  return 1
+}
+owned_build_runtime_process() {
+  read_build_runtime_process_stat "$build_runtime_pid" || return 1
+  [ "$(stat -c '%u' "/proc/$build_runtime_pid")" = "$workspace_uid" ] || return 1
+  [ "$apf_stat_actual_pid" = "$build_runtime_pid" ] &&
+    [ "$apf_stat_pgid" = "$build_runtime_pgid" ] &&
+    [ "$apf_stat_session" = "$build_runtime_pid" ] &&
+    [ "$apf_stat_start_time" = "$build_runtime_start_time" ]
+}
+build_runtime_cmdline_matches_intent() {
+  apf_cmdline_pid=$1
+  [ -r "/proc/$apf_cmdline_pid/cmdline" ] || return 1
+  [ "$(stat -c '%u' "/proc/$apf_cmdline_pid")" = "$workspace_uid" ] || return 1
+  apf_runtime_arguments=$(tr '\000' '\n' <"/proc/$apf_cmdline_pid/cmdline") || return 1
+  apf_runtime_arg1=$(printf '%s\n' "$apf_runtime_arguments" | sed -n '1p')
+  apf_runtime_arg2=$(printf '%s\n' "$apf_runtime_arguments" | sed -n '2p')
+  apf_runtime_arg3=$(printf '%s\n' "$apf_runtime_arguments" | sed -n '3p')
+  if [ "$apf_runtime_arg2" = "$build_runtime_dir/supervisor" ]; then
+    apf_runtime_offset=2
+  elif [ "$apf_runtime_arg3" = "$build_runtime_dir/supervisor" ]; then
+    case "$apf_runtime_arg1" in setsid|*/setsid) ;; *) return 1;; esac
+    apf_runtime_offset=3
+  else
+    return 1
+  fi
+  [ "$(printf '%s\n' "$apf_runtime_arguments" | sed -n "$((apf_runtime_offset + 1))p")" = "$build_runtime_marker" ] &&
+    [ "$(printf '%s\n' "$apf_runtime_arguments" | sed -n "$((apf_runtime_offset + 2))p")" = "$build_runtime_generation" ] &&
+    [ "$(printf '%s\n' "$apf_runtime_arguments" | sed -n "$((apf_runtime_offset + 3))p")" = "$build_runtime_intent_owner" ] &&
+    [ "$(printf '%s\n' "$apf_runtime_arguments" | sed -n "$((apf_runtime_offset + 4))p")" = "$build_runtime_identity" ] &&
+    [ "$(printf '%s\n' "$apf_runtime_arguments" | sed -n "$((apf_runtime_offset + 5))p")" = "$build_runtime_workspace_root" ] &&
+    [ "$(printf '%s\n' "$apf_runtime_arguments" | sed -n "$((apf_runtime_offset + 6))p")" = "$build_runtime_workspace" ]
+}
+find_unrecorded_build_runtime_process() {
+  apf_unrecorded_owner=$1
+  load_owned_build_runtime_intent "$apf_unrecorded_owner" || return 2
+  unrecorded_runtime_pid=
+  for apf_runtime_cmdline in /proc/[0-9]*/cmdline; do
+    [ -r "$apf_runtime_cmdline" ] || continue
+    apf_runtime_candidate=${apf_runtime_cmdline#/proc/}
+    apf_runtime_candidate=${apf_runtime_candidate%/cmdline}
+    if build_runtime_cmdline_matches_intent "$apf_runtime_candidate"; then
+      if [ -n "$unrecorded_runtime_pid" ]; then
+        echo 'multiple unpublished source-build supervisors match one runtime' >&2
+        return 2
+      fi
+      read_build_runtime_process_stat "$apf_runtime_candidate" || continue
+      case "$apf_stat_state" in Z|X) continue;; esac
+      unrecorded_runtime_pid=$apf_runtime_candidate
+      unrecorded_runtime_pgid=$apf_stat_pgid
+      unrecorded_runtime_session=$apf_stat_session
+      unrecorded_runtime_start_time=$apf_stat_start_time
+    fi
+  done
+  [ -n "$unrecorded_runtime_pid" ]
+}
+owned_unrecorded_build_runtime_process() {
+  apf_unrecorded_check_pid=$unrecorded_runtime_pid
+  read_build_runtime_process_stat "$apf_unrecorded_check_pid" || return 1
+  [ "$apf_stat_actual_pid" = "$apf_unrecorded_check_pid" ] &&
+    [ "$apf_stat_pgid" = "$unrecorded_runtime_pgid" ] &&
+    [ "$apf_stat_session" = "$unrecorded_runtime_session" ] &&
+    [ "$apf_stat_start_time" = "$unrecorded_runtime_start_time" ] &&
+    build_runtime_cmdline_matches_intent "$apf_unrecorded_check_pid"
+}
+recover_stalled_build_runtime_publication() {
+  apf_recover_owner=$1
+  runtime_paths_for_owner "$apf_recover_owner" || return 1
+  [ "$runtime_lock_owner" = "$apf_recover_owner" ] || return 1
+  if [ -e "$build_runtime_marker" ] || [ -L "$build_runtime_marker" ]; then return 1; fi
+  find_unrecorded_build_runtime_process "$apf_recover_owner" || return 1
+  if [ "$unrecorded_runtime_pid" != "$unrecorded_runtime_pgid" ] ||
+     [ "$unrecorded_runtime_pid" != "$unrecorded_runtime_session" ] ||
+     ! owned_unrecorded_build_runtime_process; then
+    echo 'refusing to stop unpublished source-build supervisor without session ownership' >&2
+    return 1
+  fi
+  if ! kill -TERM "-$unrecorded_runtime_pgid" >/dev/null 2>&1 && owned_unrecorded_build_runtime_process; then
+    echo 'failed to terminate unpublished source-build supervisor' >&2
+    return 1
+  fi
+  for apf_runtime_wait in 1 2; do
+    if ! owned_unrecorded_build_runtime_process; then return 0; fi
+    sleep 1
+  done
+  if ! owned_unrecorded_build_runtime_process; then return 0; fi
+  if ! kill -KILL "-$unrecorded_runtime_pgid" >/dev/null 2>&1 && owned_unrecorded_build_runtime_process; then
+    echo 'failed to kill unpublished source-build supervisor' >&2
+    return 1
+  fi
+  for apf_runtime_wait in 1 2 3; do
+    if ! owned_unrecorded_build_runtime_process; then return 0; fi
+    sleep 1
+  done
+  echo 'unpublished source-build supervisor survived bounded termination' >&2
+  return 1
+}
+remove_incomplete_build_runtime_locked() {
+  apf_incomplete_owner=$1
+  runtime_paths_for_owner "$apf_incomplete_owner" || return 1
+  [ "$runtime_lock_owner" = "$apf_incomplete_owner" ] || return 1
+  owned_build_runtime_dir "$apf_incomplete_owner" || return 1
+  if [ -e "$build_runtime_intent" ] || [ -L "$build_runtime_intent" ] ||
+     [ -e "$build_runtime_marker" ] || [ -L "$build_runtime_marker" ]; then
+    return 1
+  fi
+  apf_incomplete_intent=$build_runtime_dir/intent.pending
+  if [ -e "$apf_incomplete_intent" ] || [ -L "$apf_incomplete_intent" ]; then
+    if [ ! -f "$apf_incomplete_intent" ] || [ -L "$apf_incomplete_intent" ] ||
+       [ "$(stat -c '%u' "$apf_incomplete_intent")" != "$workspace_uid" ] ||
+       [ "$(stat -c '%a' "$apf_incomplete_intent")" != 600 ]; then
+      echo 'refusing unsafe incomplete source-build runtime intent' >&2
+      return 1
+    fi
+    rm -f -- "$apf_incomplete_intent" || return 1
+  fi
+  if find "$build_runtime_dir" -mindepth 1 -print -quit | grep -q .; then
+    echo 'refusing incomplete source-build runtime containing unknown files' >&2
+    return 1
+  fi
+  rmdir "$build_runtime_dir"
+}
+remove_build_runtime_secret_files() {
+  apf_secret_owner=$1
+  runtime_paths_for_owner "$apf_secret_owner" || return 1
+  if [ ! -e "$build_runtime_dir" ] && [ ! -L "$build_runtime_dir" ]; then return 0; fi
+  owned_build_runtime_dir "$apf_secret_owner" || return 1
+  for apf_runtime_secret in "$build_runtime_dir/manifest" "$build_runtime_dir/stdin" "$build_runtime_dir/environment"; do
+    if [ -d "$apf_runtime_secret" ] && [ ! -L "$apf_runtime_secret" ]; then
+      echo 'refusing directory at source-build protected runtime path' >&2
+      return 1
+    fi
+    rm -f -- "$apf_runtime_secret" || return 1
+  done
+}
+stop_owned_build_runtime_locked() {
+  apf_stop_owner=$1
+  runtime_paths_for_owner "$apf_stop_owner" || return 1
+  [ "$runtime_lock_owner" = "$apf_stop_owner" ] || return 1
+  if [ ! -e "$build_runtime_dir" ] && [ ! -L "$build_runtime_dir" ]; then return 0; fi
+  if ! owned_build_runtime_dir "$apf_stop_owner"; then
+    echo 'refusing to stop an unowned or unsafe source-build runtime' >&2
+    return 1
+  fi
+  if [ ! -e "$build_runtime_intent" ] && [ ! -L "$build_runtime_intent" ]; then
+    if ! remove_incomplete_build_runtime_locked "$apf_stop_owner"; then
+      echo 'refusing to remove incomplete source-build runtime' >&2
+      return 1
+    fi
+    return 0
+  fi
+  if [ ! -e "$build_runtime_marker" ] && [ ! -L "$build_runtime_marker" ]; then
+    apf_unrecorded_status=0
+    find_unrecorded_build_runtime_process "$apf_stop_owner" || apf_unrecorded_status=$?
+    if [ "$apf_unrecorded_status" -eq 0 ]; then
+      if ! recover_stalled_build_runtime_publication "$apf_stop_owner"; then
+        echo 'refusing to remove source-build runtime while an unpublished supervisor is active' >&2
+        return 1
+      fi
+    elif [ "$apf_unrecorded_status" -gt 1 ]; then
+      echo 'refusing to remove source-build runtime with invalid launch metadata' >&2
+      return 1
+    fi
+    if [ ! -e "$build_runtime_marker" ] && [ ! -L "$build_runtime_marker" ]; then
+      remove_build_runtime_secret_files "$apf_stop_owner"
+      return
+    fi
+  fi
+  if ! load_owned_build_runtime "$apf_stop_owner"; then
+    echo 'refusing to stop source-build process without valid runtime ownership metadata' >&2
+    return 1
+  fi
+  if owned_build_runtime_process; then
+    if ! kill -TERM "-$build_runtime_pgid" >/dev/null 2>&1 && build_runtime_group_exists; then
+      echo 'failed to terminate owned source-build process group' >&2
+      return 1
+    fi
+    for apf_runtime_wait in 1 2 3; do
+      if ! build_runtime_group_exists; then break; fi
+      sleep 1
+    done
+    if build_runtime_group_exists; then
+      if ! owned_build_runtime_process; then
+        echo 'refusing to kill source-build process group after its leader identity changed' >&2
+        return 1
+      fi
+      if ! kill -KILL "-$build_runtime_pgid" >/dev/null 2>&1 && build_runtime_group_exists; then
+        echo 'failed to kill owned source-build process group' >&2
+        return 1
+      fi
+      for apf_runtime_wait in 1 2 3 4 5; do
+        if ! build_runtime_group_exists; then break; fi
+        sleep 1
+      done
+    fi
+  elif build_runtime_group_exists; then
+    echo 'refusing to signal a leaderless or reused source-build process group' >&2
+    return 1
+  fi
+  if build_runtime_group_exists; then
+    echo 'owned source-build process group survived bounded termination' >&2
+    return 1
+  fi
+  remove_build_runtime_secret_files "$apf_stop_owner"
+}
+finish_owned_build_runtime_locked() {
+  apf_finish_owner=$1
+  apf_finish_generation=${2:-}
+  runtime_paths_for_owner "$apf_finish_owner" || return 1
+  [ "$runtime_lock_owner" = "$apf_finish_owner" ] || return 1
+  if [ ! -e "$build_runtime_dir" ] && [ ! -L "$build_runtime_dir" ]; then return 0; fi
+  if ! owned_build_runtime_dir "$apf_finish_owner"; then
+    echo 'refusing to remove an unowned or unsafe source-build runtime' >&2
+    return 1
+  fi
+  if [ ! -e "$build_runtime_intent" ] && [ ! -L "$build_runtime_intent" ]; then
+    if ! remove_incomplete_build_runtime_locked "$apf_finish_owner"; then
+      echo 'refusing to remove incomplete source-build runtime' >&2
+      return 1
+    fi
+    return 0
+  fi
+  if ! load_owned_build_runtime_intent "$apf_finish_owner"; then
+    echo 'refusing to remove source-build runtime with invalid launch intent' >&2
+    return 1
+  fi
+  if [ -n "$apf_finish_generation" ] && [ "$build_runtime_generation" != "$apf_finish_generation" ]; then
+    return 0
+  fi
+  apf_saved_runtime_intent=$(cat "$build_runtime_intent") || return 1
+  apf_saved_runtime_marker=
+  if [ -e "$build_runtime_marker" ] || [ -L "$build_runtime_marker" ]; then
+    if ! load_owned_build_runtime "$apf_finish_owner"; then
+      echo 'refusing to remove source-build runtime with invalid ownership metadata' >&2
+      return 1
+    fi
+    if build_runtime_group_exists; then
+      echo 'refusing to remove source-build runtime while its process group is active' >&2
+      return 1
+    fi
+    apf_saved_runtime_marker=$(cat "$build_runtime_marker") || return 1
+  fi
+  remove_build_runtime_secret_files "$apf_finish_owner" || return 1
+  for apf_runtime_file in "$build_runtime_dir/supervisor" "$build_runtime_dir/intent.pending" "$build_runtime_dir/intent.restore" "$build_runtime_dir/process.pending" "$build_runtime_dir/process.ready.pending" "$build_runtime_dir/process.ready" "$build_runtime_dir/process.recover" "$build_runtime_dir/process.restore"; do
+    if [ -d "$apf_runtime_file" ] && [ ! -L "$apf_runtime_file" ]; then
+      echo 'refusing directory at source-build runtime metadata path' >&2
+      return 1
+    fi
+    rm -f -- "$apf_runtime_file" || return 1
+  done
+  if find "$build_runtime_dir" -mindepth 1 ! -path "$build_runtime_intent" ! -path "$build_runtime_marker" -print -quit | grep -q .; then
+    echo 'refusing to remove source-build runtime containing unknown files' >&2
+    return 1
+  fi
+  rm -f -- "$build_runtime_marker" "$build_runtime_intent" || return 1
+  if ! rmdir "$build_runtime_dir"; then
+    if owned_build_runtime_dir "$apf_finish_owner"; then
+      if [ ! -e "$build_runtime_intent" ] && [ ! -L "$build_runtime_intent" ]; then
+        apf_restore_intent=$build_runtime_dir/intent.restore
+        if printf '%s\n' "$apf_saved_runtime_intent" >"$apf_restore_intent" && chmod 0600 "$apf_restore_intent"; then
+          mv -f "$apf_restore_intent" "$build_runtime_intent" || true
+        fi
+      fi
+      if [ -n "$apf_saved_runtime_marker" ] && [ ! -e "$build_runtime_marker" ] && [ ! -L "$build_runtime_marker" ]; then
+        apf_restore_marker=$build_runtime_dir/process.restore
+        if printf '%s\n' "$apf_saved_runtime_marker" >"$apf_restore_marker" && chmod 0600 "$apf_restore_marker"; then
+          mv -f "$apf_restore_marker" "$build_runtime_marker" || true
+        fi
+      fi
+    fi
+    echo 'source-build runtime directory cleanup did not remove the owned path' >&2
     return 1
   fi
 }
@@ -434,12 +976,16 @@ if ! load_dependency_workspace "$dependency_marker" "$virtual" "$owner" "$defaul
   echo 'source-build dependency marker does not own the selected workspace' >&2
   exit 1
 fi
+begin_owned_build_runtime_transaction "$owner"
+stop_owned_build_runtime_locked "$owner"
 if ! safe_workspace_ancestors "$root"; then echo 'source-build workspace root has an unsafe ownership, mode, or symbolic-link boundary' >&2; exit 1; fi
 umask 077
 mkdir -p -- "$root"
 if ! safe_workspace_ancestors "$root" || [ ! -d "$root" ]; then echo 'source-build workspace root is unsafe' >&2; exit 1; fi
 if ! private_workspace_root "$root"; then echo 'source-build workspace root is not private and root-owned' >&2; exit 1; fi
 remove_dependency_workspace "$owner"
+finish_owned_build_runtime_locked "$owner" "$runtime_transaction_generation"
+release_owned_build_runtime_lock "$owner"
 workspace_created=false
 cleanup_partial_workspace() {
   operation_status=$?
@@ -541,21 +1087,59 @@ case "$working" in .) directory=$build;; *) directory=$build/$working;; esac
 if [ ! -d "$directory" ] || [ -L "$directory" ]; then echo 'source-build working directory is missing or unsafe' >&2; exit 1; fi
 physical=$(cd -P "$directory" && pwd)
 case "$physical" in "$build"|"$build"/*) ;; *) echo 'source-build working directory escapes workspace' >&2; exit 1;; esac
-runtime_root=/run/alpineform/build-runtime
-mkdir -p "$runtime_root"
-chmod 0700 "$runtime_root"
-manifest=$(mktemp "$runtime_root/manifest.XXXXXX")
-stdin_file=$(mktemp "$runtime_root/stdin.XXXXXX")
-env_names=$(mktemp "$runtime_root/env.XXXXXX")
 pid=
-cleanup() { rm -f "$manifest" "$stdin_file" "$env_names"; }
-terminate() {
-  if [ -n "$pid" ]; then kill -TERM "-$pid" >/dev/null 2>&1 || true; fi
-  cleanup
-  exit 130
+runtime_generation=
+cleanup_runtime() {
+  operation_status=$?
+  trap - EXIT HUP INT TERM
+  cleanup_status=0
+  runtime_stop_succeeded=false
+  if [ "$runtime_lock_owner" != "$owner" ]; then
+    if ! acquire_owned_build_runtime_lock "$owner"; then cleanup_status=1; fi
+  fi
+  if [ "$runtime_lock_owner" = "$owner" ]; then
+    if [ -e "$build_runtime_dir" ] || [ -L "$build_runtime_dir" ]; then
+      if [ -n "$runtime_generation" ] &&
+         { ! load_owned_build_runtime_intent "$owner" || [ "$build_runtime_generation" != "$runtime_generation" ]; }; then
+        cleanup_status=1
+      elif stop_owned_build_runtime_locked "$owner"; then
+        runtime_stop_succeeded=true
+      else
+        cleanup_status=1
+      fi
+    else
+      runtime_stop_succeeded=true
+    fi
+    if [ "$runtime_stop_succeeded" = true ]; then
+      if [ -n "$pid" ]; then
+        wait "$pid" >/dev/null 2>&1 || true
+        pid=
+      fi
+      if ! finish_owned_build_runtime_locked "$owner" "$runtime_generation"; then cleanup_status=1; fi
+    fi
+    if ! release_owned_build_runtime_lock "$owner"; then cleanup_status=1; fi
+  fi
+  if [ "$operation_status" -ne 0 ]; then exit "$operation_status"; fi
+  if [ "$cleanup_status" -ne 0 ]; then exit 1; fi
 }
-trap cleanup EXIT
-trap terminate HUP INT TERM
+trap cleanup_runtime EXIT
+trap 'exit 130' HUP INT TERM
+umask 077
+if ! command -v flock >/dev/null 2>&1; then
+  echo 'source builds require flock on the managed target' >&2
+  exit 1
+fi
+acquire_owned_build_runtime_lock "$owner"
+prepare_owned_build_runtime "$owner" "$identity" "$root" "$workspace"
+runtime_generation=$build_runtime_generation
+manifest=$build_runtime_dir/manifest
+stdin_file=$build_runtime_dir/stdin
+env_names=$build_runtime_dir/environment
+supervisor=$build_runtime_dir/supervisor
+: >"$manifest"
+: >"$stdin_file"
+: >"$env_names"
+chmod 0600 "$manifest" "$stdin_file" "$env_names"
 cat >"$manifest"
 exec 3<"$manifest"
 IFS= read -r magic <&3 || true
@@ -583,7 +1167,121 @@ fi
 case "$working" in .) sandbox_directory=/workspace;; *) sandbox_directory=/workspace/$working;; esac
 ulimit -c 0
 ulimit -f 2097152
-setsid bwrap \
+cat >"$supervisor" <<'APF_BUILD_SUPERVISOR'
+#!/bin/sh
+set -eu
+marker=$1
+generation=$2
+owner=$3
+identity=$4
+root=$5
+workspace=$6
+workspace_uid=$7
+shift 7
+cancelled=false
+child=
+child_start_time=
+read_supervisor_process_stat() {
+  supervisor_stat_pid=$1
+  [ -r "/proc/$supervisor_stat_pid/stat" ] || return 1
+  supervisor_stat_contents=$(cat "/proc/$supervisor_stat_pid/stat") || return 1
+  supervisor_stat_actual_pid=${supervisor_stat_contents%% *}
+  supervisor_stat_fields=${supervisor_stat_contents##*) }
+  [ "$supervisor_stat_fields" != "$supervisor_stat_contents" ] || return 1
+  set -- $supervisor_stat_fields
+  [ "$#" -ge 20 ] || return 1
+  supervisor_stat_state=$1
+  supervisor_stat_pgid=$3
+  supervisor_stat_session=$4
+  shift 19
+  supervisor_stat_start_time=$1
+}
+owned_supervisor_child() {
+  [ -n "$child" ] && [ -n "$child_start_time" ] || return 1
+  read_supervisor_process_stat "$child" || return 1
+  [ "$supervisor_stat_actual_pid" = "$child" ] &&
+    [ "$supervisor_stat_pgid" = "$$" ] &&
+    [ "$supervisor_stat_session" = "$$" ] &&
+    [ "$supervisor_stat_start_time" = "$child_start_time" ]
+}
+cancel_build() {
+  cancelled=true
+  if owned_supervisor_child; then kill -TERM "$child" >/dev/null 2>&1 || true; fi
+}
+trap cancel_build HUP INT TERM
+read_supervisor_process_stat "$$"
+process_pid=$supervisor_stat_actual_pid
+process_pgid=$supervisor_stat_pgid
+process_session=$supervisor_stat_session
+process_start_time=$supervisor_stat_start_time
+[ "$process_pid" = "$$" ]
+[ "$process_pgid" = "$$" ]
+[ "$process_session" = "$$" ]
+case "$process_start_time" in ''|*[!0-9]*) exit 1;; esac
+pending=${marker%/*}/process.pending
+ready=${marker%/*}/process.ready
+printf 'APFPROCESS1\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+  "$generation" "$owner" "$identity" "$root" "$workspace" "$process_pid" "$process_pgid" "$process_start_time" >"$pending"
+chmod 0600 "$pending"
+mv -f "$pending" "$marker"
+while [ ! -e "$ready" ] && [ ! -L "$ready" ]; do
+  if [ "$cancelled" = true ]; then exit 130; fi
+  sleep 0.1
+done
+if [ ! -f "$ready" ] || [ -L "$ready" ] ||
+   [ "$(stat -c '%u' "$ready")" != "$workspace_uid" ] ||
+   [ "$(stat -c '%a' "$ready")" != 600 ] ||
+   [ "$(cat "$ready")" != "$generation" ]; then
+  exit 1
+fi
+rm -f -- "$ready"
+if [ "$cancelled" = true ]; then exit 130; fi
+supervisor_group_has_live_member() {
+  for supervisor_stat_path in /proc/[0-9]*/stat; do
+    [ -r "$supervisor_stat_path" ] || continue
+    supervisor_stat=$(cat "$supervisor_stat_path") || continue
+    supervisor_member_pid=${supervisor_stat%% *}
+    supervisor_fields=${supervisor_stat##*) }
+    [ "$supervisor_fields" != "$supervisor_stat" ] || continue
+    set -- $supervisor_fields
+    [ "$#" -ge 4 ] || continue
+    supervisor_state=$1
+    supervisor_pgid=$3
+    if [ "$supervisor_member_pid" != "$$" ] && [ "$supervisor_pgid" = "$$" ]; then
+      case "$supervisor_state" in Z|X) ;; *) return 0;; esac
+    fi
+  done
+  return 1
+}
+"$@" &
+child=$!
+if read_supervisor_process_stat "$child" &&
+   [ "$supervisor_stat_actual_pid" = "$child" ] &&
+   [ "$supervisor_stat_pgid" = "$$" ] &&
+   [ "$supervisor_stat_session" = "$$" ]; then
+  child_start_time=$supervisor_stat_start_time
+fi
+if [ "$cancelled" = true ]; then cancel_build; fi
+command_status=0
+while [ -n "$child" ]; do
+  if wait "$child"; then
+    command_status=0
+    child=
+    child_start_time=
+  else
+    command_status=$?
+    if ! owned_supervisor_child; then
+      child=
+      child_start_time=
+    fi
+  fi
+done
+while supervisor_group_has_live_member; do sleep 1; done
+if [ "$cancelled" = true ]; then exit 130; fi
+exit "$command_status"
+APF_BUILD_SUPERVISOR
+chmod 0700 "$supervisor"
+setsid sh "$supervisor" "$build_runtime_marker" "$runtime_generation" "$owner" "$identity" "$root" "$workspace" "$workspace_uid" bwrap \
   --die-with-parent \
   --unshare-pid \
   --unshare-ipc \
@@ -604,16 +1302,32 @@ setsid bwrap \
   --dir /var/tmp \
   --bind "$build" /workspace \
   --chdir "$sandbox_directory" \
-  -- "$@" <"$stdin_file" >/dev/null 2>&1 &
+  -- "$@" <"$stdin_file" >/dev/null 2>&1 9>&- &
 pid=$!
+runtime_ready=false
+for runtime_wait in 1 2 3 4 5; do
+  if [ -e "$build_runtime_marker" ] || [ -L "$build_runtime_marker" ]; then
+    runtime_ready=true
+    break
+  fi
+  if ! kill -0 "$pid" >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+if [ "$runtime_ready" != true ] || ! load_owned_build_runtime "$owner" || [ "$build_runtime_pid" != "$pid" ] || ! owned_build_runtime_process; then
+  echo 'source-build sandbox failed to publish valid process ownership metadata' >&2
+  exit 1
+fi
+runtime_ready_pending=$build_runtime_dir/process.ready.pending
+printf '%s\n' "$runtime_generation" >"$runtime_ready_pending"
+chmod 0600 "$runtime_ready_pending"
+mv -f "$runtime_ready_pending" "$build_runtime_dir/process.ready"
+release_owned_build_runtime_lock "$owner"
 if ! wait "$pid"; then
   pid=
   echo 'source-build command failed; command output omitted' >&2
   exit 1
 fi
 pid=
-cleanup
-trap - EXIT HUP INT TERM
 `
 
 const componentBuildWorkspaceReadyScript = `set -eu
@@ -710,6 +1424,12 @@ owner=$7
 default_root=$8
 if [ ! -f "$output_marker" ] || [ "$(sed -n '1p' "$output_marker")" != "$identity" ]; then echo missing; exit 0; fi
 if ! valid_workspace_tuple "$root" "$workspace" "$identity" || ! valid_build_owner "$owner"; then echo unsafe; exit 0; fi
+runtime_paths_for_owner "$owner"
+if [ -e "$build_runtime_dir" ] || [ -L "$build_runtime_dir" ]; then
+  if ! owned_build_runtime_dir "$owner"; then echo unsafe; exit 0; fi
+  echo pending
+  exit 0
+fi
 if [ -e "$dependency_marker" ] || [ -L "$dependency_marker" ]; then
   if ! load_dependency_workspace "$dependency_marker" "$virtual" "$owner" "$default_root"; then echo unsafe; exit 0; fi
   echo pending
@@ -735,6 +1455,8 @@ if ! valid_workspace_tuple "$root" "$workspace" "$identity" || ! valid_build_own
   echo 'invalid source-build workspace cleanup metadata' >&2
   exit 1
 fi
+begin_owned_build_runtime_transaction "$owner"
+stop_owned_build_runtime_locked "$owner"
 marker_owned=false
 if [ -e "$marker" ] || [ -L "$marker" ]; then
   if ! load_dependency_workspace "$marker" "$virtual" "$owner" "$default_root"; then
@@ -756,6 +1478,8 @@ for protected_path in "$@"; do
   if [ -d "$protected_path" ]; then echo 'refusing directory at protected source-build input path' >&2; exit 1; fi
   rm -f "$protected_path"
 done
+finish_owned_build_runtime_locked "$owner" "$runtime_transaction_generation"
+release_owned_build_runtime_lock "$owner"
 if [ "$marker_owned" = true ]; then rm -f "$marker"; fi
 `
 
