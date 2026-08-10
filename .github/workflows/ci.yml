@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -31,6 +33,17 @@ jobs:
           cache: false
       - name: Check formatting
         run: make format-check
+      - name: Check bilingual documentation
+        env:
+          DOCS_CHANGED_FROM: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+        run: |
+          docs_check_args=""
+          if [[ -n "$DOCS_CHANGED_FROM" ]] && \
+            git cat-file -e "${DOCS_CHANGED_FROM}^{commit}" 2>/dev/null; then
+            docs_check_args="--changed-from ${DOCS_CHANGED_FROM}"
+          fi
+          make docs-check DOCS_CHECK_ARGS="$docs_check_args"
+          make test-docs
       - name: Run static analysis
         run: make vet
       - name: Run vulnerability scan

@@ -10,6 +10,7 @@ ALPINE_BRANCH ?= v3.24
 VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+DOCS_CHECK_ARGS ?=
 
 VERSION_PACKAGE := github.com/mofelee/alpineform/internal/version
 LDFLAGS := -s -w \
@@ -17,7 +18,7 @@ LDFLAGS := -s -w \
 	-X $(VERSION_PACKAGE).Commit=$(COMMIT) \
 	-X $(VERSION_PACKAGE).Date=$(BUILD_DATE)
 
-.PHONY: build install test test-unit test-installer test-release-layout test-integration test-integration-case test-integration-layout vet format-check vulncheck update-golden check clean
+.PHONY: build install docs-check test test-unit test-docs test-installer test-release-layout test-integration test-integration-case test-integration-layout vet format-check vulncheck update-golden check clean
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) $(PACKAGE)
@@ -27,11 +28,17 @@ install: build
 	$(INSTALL) -m 0755 "$(BINARY)" "$(DESTDIR)$(BINDIR)/apf"
 	$(INSTALL) -m 0644 README.md LICENSE NOTICE.md "$(DESTDIR)$(DATADIR)/"
 
+docs-check:
+	python3 scripts/check-docs.py $(DOCS_CHECK_ARGS)
+
 test:
 	go test ./...
 
 test-unit:
 	go test -race -count=1 ./...
+
+test-docs:
+	python3 scripts/test-check-docs.py
 
 test-installer:
 	scripts/test-install.sh
@@ -61,7 +68,7 @@ vulncheck:
 update-golden:
 	UPDATE_GOLDEN=1 go test ./internal/core/plan
 
-check: test-unit vet format-check test-integration-layout test-release-layout
+check: docs-check test-docs test-unit vet format-check test-integration-layout test-release-layout
 
 clean:
 	go clean

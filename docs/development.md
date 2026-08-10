@@ -186,8 +186,9 @@ git diff --check
 
 `make check` includes the bilingual documentation gate and the static layout
 gate for the Alpine 3.21-3.24 libvirt matrix. The documentation gate requires
-every maintained Markdown change to update its counterpart and retain
-same-language navigation, structure, and technical meaning. The matrix remains
+every changed maintained Markdown file to update its counterpart and checks
+same-language navigation, tracked structure, fenced content, links, and
+technical literals. The matrix remains
 12 cases crossed with four branches (48 jobs). Its
 blocking `components` case covers binary, file, archive, and CA-certificate
 artifacts; this is the runtime evidence boundary for their Beta status, while

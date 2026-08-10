@@ -152,7 +152,8 @@ git diff --check
 ```
 
 `make check` 包含双语文档门禁和 Alpine 3.21-3.24 libvirt matrix 的静态 layout gate。
-文档门禁要求每次维护中 Markdown 变更都更新其对应版本，并保持同语言导航、结构和技术含义。
+文档门禁要求每个发生变更的维护中 Markdown 文件同步更新其对应版本，并检查同语言导航、
+已跟踪结构、围栏内容、链接和技术字面量。
 matrix 保持 12 个 case 与四个 branch 交叉组合（48 个 job）。其中阻塞性的 `components` case 覆盖 binary、file、archive
 和 CA-certificate artifact；这是它们 Beta 状态的运行时证据边界，而每个 instance 的 source-expression
 语法仍是增量 alpha。现有的四 branch `openrc` case 还验证 package -> managed configuration ->
