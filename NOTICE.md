@@ -1,5 +1,7 @@
 # Provenance
 
+<p align="right"><strong>English</strong> | <a href="NOTICE.zh-CN.md">简体中文</a></p>
+
 AlpineForm uses DebianForm v0.6.0 as an architecture and selected-code
 reference:
 

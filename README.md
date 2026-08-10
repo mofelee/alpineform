@@ -1,5 +1,7 @@
 # AlpineForm
 
+<p align="right"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
+
 AlpineForm (`apf`) is a declarative configuration tool for Alpine Linux hosts.
 It validates HCL configuration, previews changes, converges a target over root
 SSH, and reports drift with the same configuration:
@@ -52,6 +54,10 @@ curl -fsSL https://raw.githubusercontent.com/mofelee/alpineform/main/scripts/ins
   sh -s -- --version v0.1.0-alpha.5
 apf version
 ```
+
+Every archive also carries the bilingual root documents and complete bilingual
+`docs/` tree. The curl installer and `make install` place that material under
+`<prefix>/share/alpineform`; start with the [documentation index](docs/README.md).
 
 Install into a private prefix:
 
@@ -167,6 +173,7 @@ Operational contracts are covered by the [architecture](docs/architecture.md),
 
 ```sh
 make build
+make docs-check
 make check
 make vulncheck
 make test-integration-layout
@@ -174,7 +181,8 @@ make test-integration-layout
 
 The real-VM harness and remote-libvirt settings are documented in
 [the integration runbook](test/integration/libvirt/README.md). Release work
-follows [the release process](docs/release-process.md).
+follows [the release process](docs/release-process.md). Documentation changes
+follow [the localization policy](docs/localization-policy.md).
 
 ## Provenance And License
 

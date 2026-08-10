@@ -1,5 +1,7 @@
 # Security Policy
 
+<p align="right"><strong>English</strong> | <a href="SECURITY.zh-CN.md">简体中文</a></p>
+
 Report suspected vulnerabilities privately through
 <https://github.com/mofelee/alpineform/security/advisories/new>.
 
