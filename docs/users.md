@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="users.zh.md">简体中文</a></p>
+
 # Managed users
 
 Host-level `users.user` resources manage Alpine accounts through root SSH:

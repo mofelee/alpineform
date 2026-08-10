@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="components.zh.md">简体中文</a></p>
+
 # Components, artifacts, and change scripts
 
 Components combine typed inputs with AlpineForm's existing files,

@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="groups.zh.md">简体中文</a></p>
+
 # Managed groups
 
 Host-level `groups.group` resources manage Alpine groups through root SSH:

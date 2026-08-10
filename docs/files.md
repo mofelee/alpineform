@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="files.zh.md">简体中文</a></p>
+
 # Managed files
 
 Host-level `files.file` resources manage regular files through root SSH:

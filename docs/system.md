@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="system.zh.md">简体中文</a></p>
+
 # Alpine system settings
 
 Host labels identify AlpineForm hosts and do not implicitly manage the target

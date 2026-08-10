@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="apk.zh.md">简体中文</a></p>
+
 # APK repositories and keys
 
 Host-level `apk` blocks manage Alpine repository entries and custom signing

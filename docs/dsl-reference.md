@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="dsl-reference.zh.md">简体中文</a></p>
+
 # DSL And CLI Reference
 
 This page is the v0.1 index. Domain pages define detailed attributes, defaults,

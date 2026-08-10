@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="directories.zh.md">简体中文</a></p>
+
 # Managed directories
 
 Host-level `directories.directory` resources manage directories through root

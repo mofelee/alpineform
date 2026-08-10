@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="nftables.zh.md">简体中文</a></p>
+
 # nftables management
 
 The nftables domain is Preview. It manages only explicitly declared named
