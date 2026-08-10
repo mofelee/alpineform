@@ -208,10 +208,24 @@ fi
 if [[ ${#unprivileged_run[@]} -gt 0 ]] && id nobody >/dev/null 2>&1; then
   chmod 0755 "$WORK"
   cp "$ROOT_DIR/scripts/install.sh" "$WORK/install.sh"
-  cp -R "$WORK/archive" "$WORK/unreadable-archive"
-  chmod 000 "$WORK/unreadable-archive/docs/localization-policy.zh.md"
-  mkdir -p "$WORK/unreadable-release" "$WORK/unreadable-prefix"
-  tar -C "$WORK/unreadable-archive" -czf "$WORK/unreadable-release/$ARTIFACT" .
+  real_tar="$(command -v tar)"
+  mkdir -p "$WORK/unreadable-bin" "$WORK/unreadable-release" \
+    "$WORK/unreadable-prefix"
+  cat >"$WORK/unreadable-bin/tar" <<EOF
+#!/bin/sh
+"$real_tar" "\$@" || exit
+if [ "\${1:-}" = -xzf ]; then
+  previous=
+  destination=
+  for argument do
+    if [ "\$previous" = -C ]; then destination=\$argument; fi
+    previous=\$argument
+  done
+  chmod 000 "\$destination/docs/localization-policy.zh.md"
+fi
+EOF
+  chmod 0755 "$WORK/unreadable-bin/tar"
+  cp "$WORK/release/$ARTIFACT" "$WORK/unreadable-release/$ARTIFACT"
   (
     cd "$WORK/unreadable-release"
     sha256sum "$ARTIFACT" >checksums.txt
@@ -222,6 +236,7 @@ if [[ ${#unprivileged_run[@]} -gt 0 ]] && id nobody >/dev/null 2>&1; then
   printf 'previous package data\n' >"$WORK/unreadable-prefix/share/alpineform/sentinel"
   "${unprivileged_chown[@]}" -R "nobody:${nobody_group}" "$WORK/unreadable-prefix"
   if "${unprivileged_run[@]}" env \
+    PATH="$WORK/unreadable-bin:$PATH" \
     APF_RELEASE_BASE_URL="file://$WORK/unreadable-release" \
     "$WORK/install.sh" --version "$VERSION" --prefix "$WORK/unreadable-prefix" \
     --os linux --arch amd64 >"$WORK/unreadable-output" 2>&1; then
@@ -234,7 +249,6 @@ if [[ ${#unprivileged_run[@]} -gt 0 ]] && id nobody >/dev/null 2>&1; then
     "$WORK/unreadable-prefix/share/alpineform/sentinel"
   test ! -e "$WORK/unreadable-prefix/share/alpineform/README.md"
   "${unprivileged_chown[@]}" -R "$(id -u):$(id -g)" "$WORK/unreadable-prefix"
-  chmod 0644 "$WORK/unreadable-archive/docs/localization-policy.zh.md"
 
   mkdir -p "$WORK/cross-user-prefix/.alpineform-install-locks"
   "${unprivileged_chown[@]}" -R "nobody:${nobody_group}" "$WORK/cross-user-prefix"
