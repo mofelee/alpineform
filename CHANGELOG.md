@@ -1,5 +1,7 @@
 # Changelog
 
+<p align="right"><strong>English</strong> | <a href="CHANGELOG.zh-CN.md">简体中文</a></p>
+
 All notable user-visible changes to AlpineForm are recorded here.
 
 ## [Unreleased]
@@ -83,6 +85,11 @@ All notable user-visible changes to AlpineForm are recorded here.
   configuration -> OpenRC service ordering through first apply, no-op, drift
   repair, reverse explicit cleanup, and default forget. It remains one of the
   existing 12 cases, so the blocking matrix remains 48 jobs.
+- Publish complete Simplified Chinese counterparts for every maintained
+  Markdown document except `AGENTS.md`, with reciprocal selectors,
+  same-language navigation, independent documentation indexes, a structural and
+  technical `make docs-check` gate, and bilingual GoReleaser, curl-installer,
+  and `make install` data.
 
 ### Changed
 

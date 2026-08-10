@@ -1,5 +1,7 @@
 # Release Notes Template
 
+<p align="right"><strong>English</strong> | <a href="release-notes-template.zh.md">简体中文</a></p>
+
 Keep every section for each AlpineForm release.
 
 ```markdown

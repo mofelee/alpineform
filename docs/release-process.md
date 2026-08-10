@@ -1,5 +1,7 @@
 # Release Process
 
+<p align="right"><strong>English</strong> | <a href="release-process.zh.md">简体中文</a></p>
+
 The first complete public contract is `v0.1.0-alpha.5`. Alpha.1 through alpha.4
 are retained as incomplete prereleases for auditability. Releases are built
 from a commit whose core CI and release dry-run both passed.
@@ -18,7 +20,10 @@ GoReleaser builds with `CGO_ENABLED=0` and `-trimpath`:
 Every release includes `checksums.txt`, `checksums.txt.sigstore.json`, and one
 `<archive>.sbom.spdx.json` per archive. GitHub provenance attestations cover the
 archives listed in the checksum file. Archives contain `apf`, README, license,
-notice, changelog, docs, and examples.
+notice, security policy, changelog, docs, and examples. The four root Markdown
+documents and complete `docs/` tree are present in English and Simplified
+Chinese, and the embedded package manifest makes missing documentation an
+installer error.
 
 Homebrew is deliberately omitted from this release. It cannot be published
 until install, test, and upgrade have blocking evidence.
@@ -27,11 +32,13 @@ until install, test, and upgrade have blocking evidence.
 
 1. Classify DSL, CLI, address, state, plan JSON, installer, and artifact changes
    under [the compatibility policy](compatibility-policy.md).
-2. Update `CHANGELOG.md` and the versioned release notes.
+2. Update `CHANGELOG.md`, `CHANGELOG.zh-CN.md`, and both languages of the
+   versioned release notes.
 3. Run:
 
    ```sh
    make build
+   make docs-check
    make check
    make vulncheck
    go mod verify
@@ -85,9 +92,11 @@ After workflow success:
 2. Verify archive checksums, the Sigstore bundle, and GitHub attestation.
 3. Confirm `apf version` reports the tag, release commit, build time, Go version,
    and selected platform.
-4. Confirm release notes contain the final verification matrix and known alpha
+4. Confirm every archive and installed-data tree contains the complete bilingual
+   documentation package manifest.
+5. Confirm release notes contain the final verification matrix and known alpha
    limits.
-5. Close the release tracker only after fresh-install and VM evidence exists.
+6. Close the release tracker only after fresh-install and VM evidence exists.
 
 Never replace assets under an existing tag. If publishing or verification
 fails, correct the workflow or code and issue a new prerelease tag; document any
