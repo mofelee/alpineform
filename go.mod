@@ -3,7 +3,7 @@ module github.com/mofelee/alpineform
 go 1.26
 
 require (
-	github.com/hashicorp/hcl/v2 v2.24.0
+	github.com/hashicorp/hcl/v2 v2.25.0
 	github.com/zclconf/go-cty v1.19.0
 	golang.org/x/crypto v0.54.0
 )
