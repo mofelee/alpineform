@@ -163,7 +163,7 @@ jobs:
       - name: Record verification
         run: printf '%s\n' 'linux_amd64_installer=yes' 'supply_chain=yes' > "${RUNNER_TEMP}/linux.env"
       - name: Upload verification result
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-verification-linux-${{ needs.release.outputs.tag }}
           path: ${{ runner.temp }}/linux.env
@@ -201,7 +201,7 @@ jobs:
           printf 'darwin_%s_installer=yes\n' "${{ matrix.arch }}" \
             > "${RUNNER_TEMP}/darwin-${{ matrix.arch }}.env"
       - name: Upload verification result
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-verification-darwin-${{ matrix.arch }}-${{ needs.release.outputs.tag }}
           path: ${{ runner.temp }}/darwin-${{ matrix.arch }}.env
@@ -240,7 +240,7 @@ jobs:
         run: test/integration/libvirt/run.sh
       - name: Upload redacted diagnostics
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-quickstart-${{ matrix.alpine }}-diagnostics-${{ needs.release.outputs.tag }}
           path: ${{ runner.temp }}/alpineform-integration-artifacts
@@ -253,7 +253,7 @@ jobs:
           printf 'alpine_%s_x86_64_quickstart=yes\n' "${version/./_}" \
             > "${RUNNER_TEMP}/alpine-${ALPINE_BRANCH}.env"
       - name: Upload verification result
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-verification-alpine-${{ matrix.alpine }}-${{ needs.release.outputs.tag }}
           path: ${{ runner.temp }}/alpine-${{ matrix.alpine }}.env
